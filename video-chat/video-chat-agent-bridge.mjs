@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -46,6 +46,10 @@ function getExport(mod, name) {
 
 async function main() {
   const runnerPath = resolveRunnerPath(process.argv);
+  const wrapperPath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "video-chat-agent-runner-wrapper.mjs",
+  );
   const agentsModule = await loadAgentsModule(runnerPath);
   const AgentServer = getExport(agentsModule, "AgentServer");
   const ServerOptions = getExport(agentsModule, "ServerOptions");
@@ -53,9 +57,10 @@ async function main() {
 
   const logLevel = process.env.LOG_LEVEL?.trim() || "info";
   initializeLogger({ pretty: true, level: logLevel });
+  process.env.OPENCLAW_VIDEO_CHAT_BASE_RUNNER = runnerPath;
   const worker = new AgentServer(
     new ServerOptions({
-      agent: runnerPath,
+      agent: wrapperPath,
       agentName: "openclaw-video-chat",
       wsURL: requireEnv("LIVEKIT_URL"),
       apiKey: requireEnv("LIVEKIT_API_KEY"),
