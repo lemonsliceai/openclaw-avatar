@@ -61,6 +61,9 @@ const GATEWAY_WS_CLIENT = {
 };
 const CHAT_PANE_MIN_WIDTH = 300;
 const CHAT_PANE_MAX_WIDTH = 640;
+const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
+const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
+const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 
 let activeSession = null;
 let activeRoom = null;
@@ -93,6 +96,7 @@ let setupFormBaseline = {
   elevenLabsVoiceId: "",
 };
 let setupRawBaseline = "";
+const renderedVoiceUserRuns = new Set();
 
 function escapeSelectorValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -852,6 +856,7 @@ function initChatPane() {
 }
 
 function clearChatLog() {
+  renderedVoiceUserRuns.clear();
   if (!chatLogEl) {
     return;
   }
@@ -929,6 +934,93 @@ function extractAssistantText(message) {
     .map((item) => (typeof item.text === "string" ? item.text.trim() : ""))
     .filter(Boolean);
   return textBlocks.join("\n\n");
+}
+
+function extractUserText(message) {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  if (typeof message.content === "string" && message.content.trim()) {
+    return message.content.trim();
+  }
+  if (Array.isArray(message.content)) {
+    const textBlocks = message.content
+      .filter((item) => item && typeof item === "object" && item.type === "text")
+      .map((item) => (typeof item.text === "string" ? item.text.trim() : ""))
+      .filter(Boolean);
+    if (textBlocks.length > 0) {
+      return textBlocks.join("\n\n");
+    }
+  }
+  if (typeof message.text === "string" && message.text.trim()) {
+    return message.text.trim();
+  }
+  return "";
+}
+
+function isVoiceRunId(runId) {
+  return typeof runId === "string" && runId.startsWith(VOICE_CHAT_RUN_ID_PREFIX);
+}
+
+function decodeLiveKitDataPayload(payload) {
+  if (typeof payload === "string") {
+    return payload;
+  }
+  if (payload instanceof Uint8Array) {
+    return new TextDecoder().decode(payload);
+  }
+  if (payload && typeof payload === "object" && payload.buffer instanceof ArrayBuffer) {
+    return new TextDecoder().decode(new Uint8Array(payload.buffer));
+  }
+  return "";
+}
+
+function appendVoiceUserTranscript(payload) {
+  const expectedSessionKey = resolveChatSessionKey();
+  const payloadSessionKey = typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
+  if (!expectedSessionKey || !payloadSessionKey || payloadSessionKey !== expectedSessionKey) {
+    return;
+  }
+  const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+  if (!text) {
+    return;
+  }
+  const idempotencyKey =
+    typeof payload?.idempotencyKey === "string" ? payload.idempotencyKey.trim() : "";
+  if (isVoiceRunId(idempotencyKey) && renderedVoiceUserRuns.has(idempotencyKey)) {
+    return;
+  }
+  appendChatLine("user", text);
+  if (isVoiceRunId(idempotencyKey)) {
+    renderedVoiceUserRuns.add(idempotencyKey);
+  }
+  setChatStatus("Awaiting agent reply...");
+}
+
+function handleLiveKitDataMessage(payload, topic) {
+  const normalizedTopic = typeof topic === "string" ? topic.trim() : "";
+  if (normalizedTopic && normalizedTopic !== VOICE_TRANSCRIPT_EVENT_TOPIC) {
+    return;
+  }
+
+  const json = decodeLiveKitDataPayload(payload);
+  if (!json) {
+    return;
+  }
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return;
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return;
+  }
+  if (parsed.type !== VOICE_TRANSCRIPT_EVENT_TYPE) {
+    return;
+  }
+  appendVoiceUserTranscript(parsed);
 }
 
 function resolveChatSessionKey() {
@@ -1194,11 +1286,16 @@ async function loadChatHistory() {
     const text =
       role === "assistant"
         ? extractAssistantText(message)
-        : typeof message.content === "string"
-          ? message.content
-          : extractAssistantText(message);
+        : extractUserText(message);
     if (text) {
       appendChatLine(role, text);
+      if (role === "user") {
+        const idempotencyKey =
+          typeof message.idempotencyKey === "string" ? message.idempotencyKey.trim() : "";
+        if (isVoiceRunId(idempotencyKey)) {
+          renderedVoiceUserRuns.add(idempotencyKey);
+        }
+      }
     }
   }
 }
@@ -1350,6 +1447,11 @@ function bindRoomEvents(room) {
   if (!LIVEKIT) {
     return;
   }
+  room.on(LIVEKIT.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+    void participant;
+    void kind;
+    handleLiveKitDataMessage(payload, topic);
+  });
   room.on(LIVEKIT.RoomEvent.TrackSubscribed, (track, publication, participant) => {
     const container = getRemoteMediaContainer(participant.identity);
     attachTrackToContainer(track, container);

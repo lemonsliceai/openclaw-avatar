@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
 const USER_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
+const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
+const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -92,6 +94,33 @@ function extractTextFromMessage(message) {
     }
   }
   return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+async function publishVoiceTranscriptEvent(params) {
+  const participant = params.room?.localParticipant;
+  if (!participant || typeof participant.publishData !== "function") {
+    return;
+  }
+  const text = typeof params.text === "string" ? params.text.trim() : "";
+  const sessionKey = typeof params.sessionKey === "string" ? params.sessionKey.trim() : "";
+  const idempotencyKey =
+    typeof params.idempotencyKey === "string" ? params.idempotencyKey.trim() : "";
+  if (!text || !sessionKey || !idempotencyKey) {
+    return;
+  }
+
+  const payload = new TextEncoder().encode(
+    JSON.stringify({
+      type: VOICE_TRANSCRIPT_EVENT_TYPE,
+      sessionKey,
+      idempotencyKey,
+      text,
+    }),
+  );
+  await participant.publishData(payload, {
+    reliable: true,
+    topic: VOICE_TRANSCRIPT_EVENT_TOPIC,
+  });
 }
 
 class GatewayWsClient {
@@ -364,11 +393,24 @@ async function runVideoChatAgentEntry(ctx) {
 
     try {
       console.log(`[video-chat-agent] forwarding user transcript: ${transcript}`);
+      const idempotencyKey = `video-chat-agent-${randomUUID()}`;
       await session.interrupt({ force: true });
+      try {
+        await publishVoiceTranscriptEvent({
+          room: ctx.room,
+          sessionKey: metadata.sessionKey,
+          idempotencyKey,
+          text: transcript,
+        });
+      } catch (error) {
+        console.warn(
+          `[video-chat-agent] failed to publish live transcript event: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       await gatewayClient.request("chat.send", {
         sessionKey: metadata.sessionKey,
         message: transcript,
-        idempotencyKey: `video-chat-agent-${randomUUID()}`,
+        idempotencyKey,
       });
     } catch (error) {
       console.error(
