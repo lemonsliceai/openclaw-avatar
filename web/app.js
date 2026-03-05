@@ -16,6 +16,10 @@ const tokenInput = document.getElementById("gateway-token");
 const clearTokenButton = document.getElementById("clear-token");
 const replaceTokenButton = document.getElementById("replace-token");
 const navCollapseButton = document.getElementById("nav-collapse-toggle");
+const chatPaneToggleButton = document.getElementById("chat-pane-toggle");
+const chatPaneCloseButton = document.getElementById("chat-pane-close");
+const chatPaneBackdropEl = document.getElementById("chat-pane-backdrop");
+const chatPaneEl = document.getElementById("chat-pane");
 const shellEl = document.querySelector(".shell");
 const navEl = document.getElementById("plugin-nav") || document.querySelector(".nav");
 const themeToggleEl = document.getElementById("theme-toggle");
@@ -41,6 +45,7 @@ const OPENCLAW_SETTINGS_STORAGE_KEY = "openclaw.control.settings.v1";
 const LEGACY_TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
 const THEME_STORAGE_KEY = "videoChat.themePreference";
 const NAV_COLLAPSE_STORAGE_KEY = "videoChat.navCollapsed";
+const CHAT_PANE_STORAGE_KEY = "videoChat.chatPaneOpen";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -68,6 +73,8 @@ const configSectionFilterButtons = Array.from(document.querySelectorAll("[data-s
 const configSectionCards = Array.from(document.querySelectorAll("[data-config-section]"));
 const configModeButtons = Array.from(document.querySelectorAll("[data-config-mode]"));
 const secretEditState = new Set();
+const mobileChatPaneMedia =
+  typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 960px)") : null;
 const systemThemeMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
 let activeThemePreference = "system";
@@ -666,6 +673,86 @@ function initNavCollapseToggle() {
     const isCollapsed =
       shellEl?.classList.contains("shell--nav-collapsed") || navEl?.classList.contains("nav--collapsed");
     setNavCollapsed(!isCollapsed);
+  });
+}
+
+function isMobileChatPane() {
+  return Boolean(mobileChatPaneMedia?.matches);
+}
+
+function updateChatPaneToggleState(isOpen) {
+  if (!chatPaneToggleButton) {
+    return;
+  }
+  chatPaneToggleButton.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  chatPaneToggleButton.setAttribute("title", isOpen ? "Hide text chat panel" : "Show text chat panel");
+}
+
+function setChatPaneOpen(isOpen, options = {}) {
+  const shouldPersist = options.persist !== false;
+  shellEl?.classList.toggle("shell--chat-pane-open", isOpen);
+  shellEl?.classList.toggle("shell--chat-pane-closed", !isOpen);
+  if (chatPaneEl) {
+    chatPaneEl.setAttribute("aria-hidden", isOpen ? "false" : "true");
+  }
+  if (chatPaneBackdropEl) {
+    chatPaneBackdropEl.hidden = !isMobileChatPane();
+  }
+  updateChatPaneToggleState(isOpen);
+
+  if (shouldPersist) {
+    try {
+      localStorage.setItem(CHAT_PANE_STORAGE_KEY, isOpen ? "1" : "0");
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+}
+
+function initChatPane() {
+  let isOpen = true;
+  try {
+    const stored = localStorage.getItem(CHAT_PANE_STORAGE_KEY);
+    if (stored === "0") {
+      isOpen = false;
+    } else if (stored === "1") {
+      isOpen = true;
+    }
+  } catch {
+    isOpen = true;
+  }
+
+  setChatPaneOpen(isOpen, { persist: false });
+
+  chatPaneToggleButton?.addEventListener("click", () => {
+    const nextOpen = shellEl ? shellEl.classList.contains("shell--chat-pane-closed") : true;
+    setChatPaneOpen(nextOpen);
+    if (nextOpen && activeSession && chatInput) {
+      chatInput.focus();
+    }
+  });
+
+  chatPaneCloseButton?.addEventListener("click", () => {
+    setChatPaneOpen(false);
+  });
+
+  chatPaneBackdropEl?.addEventListener("click", () => {
+    setChatPaneOpen(false);
+  });
+
+  mobileChatPaneMedia?.addEventListener("change", () => {
+    const open = shellEl ? shellEl.classList.contains("shell--chat-pane-open") : true;
+    setChatPaneOpen(open, { persist: false });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    if (!shellEl?.classList.contains("shell--chat-pane-open")) {
+      return;
+    }
+    setChatPaneOpen(false);
   });
 }
 
@@ -1473,6 +1560,7 @@ if (sessionForm) {
       body: JSON.stringify({ sessionKey }),
     });
     activeSession = payload.session;
+    setChatPaneOpen(true);
     setOutput({ action: "session-started", session: activeSession });
     updateRoomButtons();
     updateChatControls();
@@ -1603,6 +1691,7 @@ if (chatForm) {
     return;
   }
   const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  setChatPaneOpen(true);
   appendChatLine("user", message);
   chatInput.value = "";
   setChatStatus("Sending message...");
@@ -1683,6 +1772,7 @@ if (clearTokenButton) {
 
 migrateLegacyGatewayTokenIfNeeded();
 initNavCollapseToggle();
+initChatPane();
 updateTokenFieldMasking();
 initThemeToggle();
 initConfigSectionFiltering();
