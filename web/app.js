@@ -4,6 +4,7 @@ const setupForm = document.getElementById("setup-form");
 const sessionForm = document.getElementById("session-form");
 const ttsForm = document.getElementById("tts-form");
 const reloadButton = document.getElementById("reload-status");
+const setupSaveButton = document.querySelector('button[form="setup-form"][type="submit"]');
 const stopSessionButton = document.getElementById("stop-session");
 const tokenForm = document.getElementById("token-form");
 const tokenInput = document.getElementById("gateway-token");
@@ -61,6 +62,10 @@ let activeThemePreference = "system";
 let tokenEditMode = false;
 let latestSetupStatus = null;
 let activeConfigSectionFilter = "all";
+let setupFormBaseline = {
+  lemonSliceImageUrl: "",
+  livekitUrl: "",
+};
 
 function escapeSelectorValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -237,6 +242,63 @@ function updateSensitiveFieldMasking(setup) {
     button.style.display = "";
     button.textContent = secretEditState.has(fieldName) ? "Cancel" : "Replace";
   }
+
+  updateSetupSaveButtonState();
+}
+
+function normalizeOptionalInputValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getSetupFieldValue(name) {
+  if (!setupForm) {
+    return "";
+  }
+  const field = setupForm.elements.namedItem(name);
+  return normalizeOptionalInputValue(field?.value);
+}
+
+function snapshotSetupFormBaseline() {
+  setupFormBaseline = {
+    lemonSliceImageUrl: getSetupFieldValue("lemonSliceImageUrl"),
+    livekitUrl: getSetupFieldValue("livekitUrl"),
+  };
+}
+
+function isSecretFieldDirty(name) {
+  if (!setupForm) {
+    return false;
+  }
+  const field = setupForm.elements.namedItem(name);
+  if (!field || field.disabled) {
+    return false;
+  }
+  return normalizeOptionalInputValue(field.value).length > 0;
+}
+
+function isSetupFormDirty() {
+  if (!setupForm) {
+    return false;
+  }
+
+  const urlsDirty =
+    getSetupFieldValue("lemonSliceImageUrl") !== setupFormBaseline.lemonSliceImageUrl ||
+    getSetupFieldValue("livekitUrl") !== setupFormBaseline.livekitUrl;
+
+  const secretsDirty =
+    isSecretFieldDirty("lemonSliceApiKey") ||
+    isSecretFieldDirty("livekitApiKey") ||
+    isSecretFieldDirty("livekitApiSecret") ||
+    isSecretFieldDirty("elevenLabsApiKey");
+
+  return urlsDirty || secretsDirty;
+}
+
+function updateSetupSaveButtonState() {
+  if (!setupSaveButton) {
+    return;
+  }
+  setupSaveButton.disabled = !isSetupFormDirty();
 }
 
 function updateTokenFieldMasking() {
@@ -962,6 +1024,8 @@ async function refreshSetupStatus() {
     latestSetupStatus = null;
     secretEditState.clear();
     updateSensitiveFieldMasking(latestSetupStatus);
+    snapshotSetupFormBaseline();
+    updateSetupSaveButtonState();
     if (statusEl) {
       statusEl.textContent = "Enter a gateway token above, then click Use Token.";
     }
@@ -985,17 +1049,20 @@ async function refreshSetupStatus() {
     if (setupForm) {
       const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
       const imageUrlField = setupForm.elements.namedItem("lemonSliceImageUrl");
-      if (livekitUrlField && payload.setup?.livekit?.url) {
-        livekitUrlField.value = payload.setup.livekit.url;
+      if (livekitUrlField) {
+        livekitUrlField.value = normalizeOptionalInputValue(payload.setup?.livekit?.url);
       }
-      if (imageUrlField && payload.setup?.lemonSlice?.imageUrl) {
-        imageUrlField.value = payload.setup.lemonSlice.imageUrl;
+      if (imageUrlField) {
+        imageUrlField.value = normalizeOptionalInputValue(payload.setup?.lemonSlice?.imageUrl);
       }
       updateSensitiveFieldMasking(latestSetupStatus);
+      snapshotSetupFormBaseline();
+      updateSetupSaveButtonState();
     }
   } catch (error) {
     latestSetupStatus = null;
     updateSensitiveFieldMasking(latestSetupStatus);
+    updateSetupSaveButtonState();
     const message = error instanceof Error ? error.message : "Failed to load status";
     if (statusEl) {
       statusEl.textContent = message;
@@ -1011,6 +1078,13 @@ async function refreshSetupStatus() {
 }
 
 if (setupForm) {
+  setupForm.addEventListener("input", () => {
+    updateSetupSaveButtonState();
+  });
+  setupForm.addEventListener("change", () => {
+    updateSetupSaveButtonState();
+  });
+
   for (const input of sensitiveFieldInputs) {
     input.addEventListener("copy", preventSensitiveCopy);
     input.addEventListener("cut", preventSensitiveCopy);
@@ -1032,6 +1106,7 @@ if (setupForm) {
         input.value = "";
         input.focus();
       }
+      updateSetupSaveButtonState();
     });
   }
 
@@ -1054,11 +1129,16 @@ if (setupForm) {
       updateSensitiveFieldMasking(latestSetupStatus);
       setOutput({ action: "setup-saved", setup: payload.setup });
       setupForm.reset();
+      snapshotSetupFormBaseline();
+      updateSetupSaveButtonState();
     } catch (error) {
       setGatewayHealthStatus("danger", "Error");
       setOutput({ action: "setup-save-failed", error: String(error) });
     }
   });
+
+  snapshotSetupFormBaseline();
+  updateSetupSaveButtonState();
 }
 
 if (sessionForm) {
