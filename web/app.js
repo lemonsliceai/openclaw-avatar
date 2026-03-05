@@ -10,6 +10,10 @@ const tokenInput = document.getElementById("gateway-token");
 const clearTokenButton = document.getElementById("clear-token");
 const themeToggleEl = document.getElementById("theme-toggle");
 const themeToggleButtons = Array.from(document.querySelectorAll("[data-theme-value]"));
+const gatewayHealthDotEl = document.getElementById("gateway-health-dot");
+const gatewayHealthValueEl = document.getElementById("gateway-health-value");
+const keysHealthDotEl = document.getElementById("keys-health-dot");
+const keysHealthValueEl = document.getElementById("keys-health-value");
 const roomStatusEl = document.getElementById("room-status");
 const localPreviewEl = document.getElementById("local-preview");
 const remoteGridEl = document.getElementById("remote-grid");
@@ -53,10 +57,16 @@ function escapeSelectorValue(value) {
 }
 
 function setOutput(value) {
+  if (!outputEl) {
+    return;
+  }
   outputEl.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 function setRoomStatus(text) {
+  if (!roomStatusEl) {
+    return;
+  }
   roomStatusEl.textContent = text;
 }
 
@@ -79,7 +89,42 @@ function getAuthHeaders() {
 }
 
 function setChatStatus(text) {
+  if (!chatStatusEl) {
+    return;
+  }
   chatStatusEl.textContent = text;
+}
+
+function setHealthStatus(dotEl, valueEl, tone, text) {
+  if (!dotEl || !valueEl) {
+    return;
+  }
+  dotEl.classList.remove("ok", "warn");
+  if (tone === "ok" || tone === "warn") {
+    dotEl.classList.add(tone);
+  }
+  valueEl.textContent = text;
+}
+
+function setGatewayHealthStatus(tone, text) {
+  setHealthStatus(gatewayHealthDotEl, gatewayHealthValueEl, tone, text);
+}
+
+function setKeysHealthStatus(tone, text) {
+  setHealthStatus(keysHealthDotEl, keysHealthValueEl, tone, text);
+}
+
+function updateKeysHealthFromSetup(setup) {
+  if (!setup || typeof setup !== "object") {
+    setKeysHealthStatus("warn", "Unknown");
+    return;
+  }
+  if (setup.configured) {
+    setKeysHealthStatus("ok", "OK");
+    return;
+  }
+  const missingCount = Array.isArray(setup.missing) ? setup.missing.length : 0;
+  setKeysHealthStatus("warn", missingCount > 0 ? `Missing ${missingCount}` : "Missing");
 }
 
 function resolveThemePreference(value) {
@@ -146,11 +191,14 @@ function initThemeToggle() {
 }
 
 function clearChatLog() {
+  if (!chatLogEl) {
+    return;
+  }
   chatLogEl.textContent = "";
 }
 
 function appendChatLine(role, text) {
-  if (!text) {
+  if (!chatLogEl || !text) {
     return;
   }
   const line = document.createElement("article");
@@ -205,6 +253,9 @@ function resolveChatSessionKey() {
 }
 
 function updateChatControls() {
+  if (!chatInput || !chatSendButton) {
+    return;
+  }
   const hasSession = Boolean(activeSession);
   chatInput.disabled = !hasSession;
   chatSendButton.disabled = !hasSession;
@@ -461,10 +512,16 @@ async function loadChatHistory() {
 }
 
 function clearRemoteTiles() {
+  if (!remoteGridEl) {
+    return;
+  }
   remoteGridEl.textContent = "";
 }
 
 function createRemoteTile(participantIdentity) {
+  if (!remoteGridEl) {
+    return null;
+  }
   const tile = document.createElement("article");
   tile.className = "tile list-item";
   tile.dataset.participantIdentity = participantIdentity;
@@ -484,6 +541,9 @@ function createRemoteTile(participantIdentity) {
 }
 
 function getRemoteMediaContainer(participantIdentity) {
+  if (!remoteGridEl) {
+    return null;
+  }
   const existing = remoteGridEl.querySelector(
     `[data-media-owner="${escapeSelectorValue(participantIdentity)}"]`,
   );
@@ -494,6 +554,9 @@ function getRemoteMediaContainer(participantIdentity) {
 }
 
 function attachTrackToContainer(track, container) {
+  if (!container) {
+    return;
+  }
   const element = track.attach();
   element.autoplay = true;
   element.playsInline = true;
@@ -534,10 +597,15 @@ function releaseLocalTracks() {
   }
   localAudioTrack = null;
   localVideoTrack = null;
-  localPreviewEl.textContent = "";
+  if (localPreviewEl) {
+    localPreviewEl.textContent = "";
+  }
 }
 
 function updateRoomButtons() {
+  if (!connectRoomButton || !leaveRoomButton || !toggleMicButton || !toggleCameraButton) {
+    return;
+  }
   const hasSession = Boolean(activeSession);
   const hasRoom = Boolean(activeRoom);
   connectRoomButton.disabled = !hasSession || hasRoom;
@@ -549,6 +617,9 @@ function updateRoomButtons() {
 }
 
 function removeParticipantTile(participantIdentity) {
+  if (!remoteGridEl) {
+    return;
+  }
   const tile = remoteGridEl.querySelector(
     `[data-participant-identity="${escapeSelectorValue(participantIdentity)}"]`,
   );
@@ -575,8 +646,10 @@ async function publishLocalTracks(room) {
       localMediaElement.autoplay = true;
       localMediaElement.playsInline = true;
       localMediaElement.muted = true;
-      localPreviewEl.textContent = "";
-      localPreviewEl.appendChild(localMediaElement);
+      if (localPreviewEl) {
+        localPreviewEl.textContent = "";
+        localPreviewEl.appendChild(localMediaElement);
+      }
     }
   }
 }
@@ -710,44 +783,76 @@ function setupStatusLabel(setup) {
 
 async function refreshSetupStatus() {
   if (!hasGatewayToken()) {
-    statusEl.textContent = "Enter a gateway token above, then click Use Token.";
+    if (statusEl) {
+      statusEl.textContent = "Enter a gateway token above, then click Use Token.";
+    }
+    setGatewayHealthStatus("warn", "Token Missing");
+    setKeysHealthStatus("warn", "Needs Token");
     return;
   }
-  statusEl.textContent = "Loading setup status...";
+  if (statusEl) {
+    statusEl.textContent = "Loading setup status...";
+  }
+  setGatewayHealthStatus("warn", "Checking");
+  setKeysHealthStatus("warn", "Checking");
   try {
     const payload = await requestJson("/plugins/video-chat/api/setup");
-    statusEl.textContent = setupStatusLabel(payload.setup);
-    const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
-    const imageUrlField = setupForm.elements.namedItem("lemonSliceImageUrl");
-    if (livekitUrlField && payload.setup?.livekit?.url) {
-      livekitUrlField.value = payload.setup.livekit.url;
+    if (statusEl) {
+      statusEl.textContent = setupStatusLabel(payload.setup);
     }
-    if (imageUrlField && payload.setup?.lemonSlice?.imageUrl) {
-      imageUrlField.value = payload.setup.lemonSlice.imageUrl;
+    setGatewayHealthStatus("ok", "OK");
+    updateKeysHealthFromSetup(payload.setup);
+    if (setupForm) {
+      const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
+      const imageUrlField = setupForm.elements.namedItem("lemonSliceImageUrl");
+      if (livekitUrlField && payload.setup?.livekit?.url) {
+        livekitUrlField.value = payload.setup.livekit.url;
+      }
+      if (imageUrlField && payload.setup?.lemonSlice?.imageUrl) {
+        imageUrlField.value = payload.setup.lemonSlice.imageUrl;
+      }
     }
   } catch (error) {
-    statusEl.textContent = error instanceof Error ? error.message : "Failed to load status";
+    const message = error instanceof Error ? error.message : "Failed to load status";
+    if (statusEl) {
+      statusEl.textContent = message;
+    }
+    if (message.toLowerCase().includes("unauthorized")) {
+      setGatewayHealthStatus("warn", "Unauthorized");
+      setKeysHealthStatus("warn", "Needs Auth");
+    } else {
+      setGatewayHealthStatus("danger", "Error");
+      setKeysHealthStatus("danger", "Unknown");
+    }
   }
 }
 
-setupForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const formData = new FormData(setupForm);
-  const body = Object.fromEntries(formData.entries());
-  try {
-    const payload = await requestJson("/plugins/video-chat/api/setup", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    statusEl.textContent = setupStatusLabel(payload.setup);
-    setOutput({ action: "setup-saved", setup: payload.setup });
-    setupForm.reset();
-  } catch (error) {
-    setOutput({ action: "setup-save-failed", error: String(error) });
-  }
-});
+if (setupForm) {
+  setupForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(setupForm);
+    const body = Object.fromEntries(formData.entries());
+    try {
+      const payload = await requestJson("/plugins/video-chat/api/setup", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (statusEl) {
+        statusEl.textContent = setupStatusLabel(payload.setup);
+      }
+      setGatewayHealthStatus("ok", "OK");
+      updateKeysHealthFromSetup(payload.setup);
+      setOutput({ action: "setup-saved", setup: payload.setup });
+      setupForm.reset();
+    } catch (error) {
+      setGatewayHealthStatus("danger", "Error");
+      setOutput({ action: "setup-save-failed", error: String(error) });
+    }
+  });
+}
 
-sessionForm.addEventListener("submit", async (event) => {
+if (sessionForm) {
+  sessionForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(sessionForm);
   const sessionKey = String(formData.get("sessionKey") || "").trim();
@@ -772,9 +877,11 @@ sessionForm.addEventListener("submit", async (event) => {
   } catch (error) {
     setOutput({ action: "session-start-failed", error: String(error) });
   }
-});
+  });
+}
 
-stopSessionButton.addEventListener("click", () => {
+if (stopSessionButton) {
+  stopSessionButton.addEventListener("click", () => {
   disconnectRoom();
   activeSession = null;
   updateRoomButtons();
@@ -782,55 +889,65 @@ stopSessionButton.addEventListener("click", () => {
   clearChatLog();
   setChatStatus("Start a session to use text chat.");
   setOutput({ action: "session-stopped" });
-});
+  });
+}
 
-connectRoomButton.addEventListener("click", async () => {
-  try {
-    await connectToRoom();
-    setOutput({ action: "room-connected", roomName: activeSession?.roomName ?? null });
-  } catch (error) {
-    setOutput({ action: "room-connect-failed", error: String(error) });
-  }
-});
-
-leaveRoomButton.addEventListener("click", () => {
-  disconnectRoom();
-  setOutput({ action: "room-left" });
-});
-
-toggleMicButton.addEventListener("click", async () => {
-  if (!localAudioTrack) {
-    return;
-  }
-  try {
-    if (localAudioTrack.isMuted) {
-      await localAudioTrack.unmute();
-    } else {
-      await localAudioTrack.mute();
+if (connectRoomButton) {
+  connectRoomButton.addEventListener("click", async () => {
+    try {
+      await connectToRoom();
+      setOutput({ action: "room-connected", roomName: activeSession?.roomName ?? null });
+    } catch (error) {
+      setOutput({ action: "room-connect-failed", error: String(error) });
     }
-    updateRoomButtons();
-  } catch (error) {
-    setOutput({ action: "mic-toggle-failed", error: String(error) });
-  }
-});
+  });
+}
 
-toggleCameraButton.addEventListener("click", async () => {
-  if (!localVideoTrack) {
-    return;
-  }
-  try {
-    if (localVideoTrack.isMuted) {
-      await localVideoTrack.unmute();
-    } else {
-      await localVideoTrack.mute();
+if (leaveRoomButton) {
+  leaveRoomButton.addEventListener("click", () => {
+    disconnectRoom();
+    setOutput({ action: "room-left" });
+  });
+}
+
+if (toggleMicButton) {
+  toggleMicButton.addEventListener("click", async () => {
+    if (!localAudioTrack) {
+      return;
     }
-    updateRoomButtons();
-  } catch (error) {
-    setOutput({ action: "camera-toggle-failed", error: String(error) });
-  }
-});
+    try {
+      if (localAudioTrack.isMuted) {
+        await localAudioTrack.unmute();
+      } else {
+        await localAudioTrack.mute();
+      }
+      updateRoomButtons();
+    } catch (error) {
+      setOutput({ action: "mic-toggle-failed", error: String(error) });
+    }
+  });
+}
 
-ttsForm.addEventListener("submit", async (event) => {
+if (toggleCameraButton) {
+  toggleCameraButton.addEventListener("click", async () => {
+    if (!localVideoTrack) {
+      return;
+    }
+    try {
+      if (localVideoTrack.isMuted) {
+        await localVideoTrack.unmute();
+      } else {
+        await localVideoTrack.mute();
+      }
+      updateRoomButtons();
+    } catch (error) {
+      setOutput({ action: "camera-toggle-failed", error: String(error) });
+    }
+  });
+}
+
+if (ttsForm) {
+  ttsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(ttsForm);
   const text = String(formData.get("text") || "");
@@ -847,9 +964,11 @@ ttsForm.addEventListener("submit", async (event) => {
   } catch (error) {
     setOutput({ action: "tts-failed", error: String(error) });
   }
-});
+  });
+}
 
-chatForm.addEventListener("submit", async (event) => {
+if (chatForm) {
+  chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = String(chatInput.value || "").trim();
   if (!message) {
@@ -877,48 +996,69 @@ chatForm.addEventListener("submit", async (event) => {
     setOutput({ action: "chat-send-failed", error: String(error) });
     setChatStatus("Chat send failed.");
   }
-});
+  });
+}
 
-reloadButton.addEventListener("click", () => {
-  refreshSetupStatus().catch(() => {});
-});
+if (reloadButton) {
+  reloadButton.addEventListener("click", () => {
+    refreshSetupStatus().catch(() => {});
+  });
+}
 
-tokenForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const token = String(tokenInput.value || "").trim();
-  if (token) {
-    localStorage.setItem(TOKEN_STORAGE_KEY, token);
-  } else {
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
-  }
-  window.location.reload();
-});
+if (tokenForm) {
+  tokenForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const token = String(tokenInput?.value || "").trim();
+    if (token) {
+      localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    } else {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+    window.location.reload();
+  });
+}
 
-clearTokenButton.addEventListener("click", () => {
+if (clearTokenButton) {
+  clearTokenButton.addEventListener("click", () => {
   disconnectRoom();
   closeGatewaySocket("Gateway token cleared.");
   localStorage.removeItem(TOKEN_STORAGE_KEY);
-  tokenInput.value = "";
+  if (tokenInput) {
+    tokenInput.value = "";
+  }
   activeSession = null;
   updateRoomButtons();
   updateChatControls();
   clearChatLog();
   setChatStatus("Enter a gateway token to use text chat.");
-  statusEl.textContent = "Gateway token cleared. Enter a token to continue.";
+  setGatewayHealthStatus("warn", "Token Missing");
+  setKeysHealthStatus("warn", "Needs Token");
+  if (statusEl) {
+    statusEl.textContent = "Gateway token cleared. Enter a token to continue.";
+  }
   setOutput({ action: "gateway-token-cleared" });
-});
+  });
+}
 
-tokenInput.value = getGatewayToken();
+if (tokenInput) {
+  tokenInput.value = getGatewayToken();
+}
 initThemeToggle();
 updateRoomButtons();
 updateChatControls();
 clearChatLog();
 
 if (hasGatewayToken()) {
+  setGatewayHealthStatus("warn", "Checking");
+  setKeysHealthStatus("warn", "Checking");
   refreshSetupStatus().catch(() => {});
   setChatStatus("Start a session to use text chat.");
 } else {
-  statusEl.textContent = "Enter a gateway token above, then click Use Token.";
+  if (statusEl) {
+    statusEl.textContent = "Enter a gateway token above, then click Use Token.";
+  }
+  setGatewayHealthStatus("warn", "Token Missing");
+  setKeysHealthStatus("warn", "Needs Token");
   setChatStatus("Enter a gateway token to use text chat.");
 }
 

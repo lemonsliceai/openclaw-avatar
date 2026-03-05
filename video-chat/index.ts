@@ -972,9 +972,22 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
     return webRootPath;
   };
 
-  const readWebAsset = async (fileName: "index.html" | "app.js"): Promise<string> => {
+  const readWebAsset = async (relativePath: string): Promise<string> => {
+    const normalized = path.posix.normalize(`/${relativePath}`).replace(/^\/+/, "");
+    if (
+      !normalized ||
+      normalized.startsWith("..") ||
+      (!normalized.endsWith(".html") && !normalized.endsWith(".js"))
+    ) {
+      throw new Error("invalid web asset path");
+    }
     const webRootPath = await resolveWebRootPath();
-    return readFile(path.join(webRootPath, fileName), "utf8");
+    const resolvedPath = path.resolve(webRootPath, normalized);
+    const relative = path.relative(webRootPath, resolvedPath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("invalid web asset path");
+    }
+    return readFile(resolvedPath, "utf8");
   };
 
   const resolveStylesRootPath = async (): Promise<string> => {
@@ -1190,21 +1203,37 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
           sendHttpResponse(res, asTextResponse(css, "text/css; charset=utf-8"));
           return true;
         }
-        if (normalizedPath === "/plugins/video-chat/app.js") {
-          const script = await readWebAsset("app.js");
-          sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
-          return true;
-        }
         if (normalizedPath === "/plugins/video-chat") {
           const html = await readWebAsset("index.html");
           sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
           return true;
         }
+        if (normalizedPath === "/plugins/video-chat/settings") {
+          const html = await readWebAsset("settings.html");
+          sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
+          return true;
+        }
+        if (normalizedPath.startsWith("/plugins/video-chat/")) {
+          const assetPath = decodeURIComponent(normalizedPath.slice("/plugins/video-chat/".length));
+          if (assetPath.endsWith(".js")) {
+            const script = await readWebAsset(assetPath);
+            sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
+            return true;
+          }
+          if (assetPath.endsWith(".html")) {
+            const html = await readWebAsset(assetPath);
+            sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
+            return true;
+          }
+        }
         sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
         return true;
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "video chat plugin page request failed";
+        const message = error instanceof Error ? error.message : "video chat plugin page request failed";
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+          sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
+          return true;
+        }
         sendHttpResponse(
           res,
           asJsonResponse(

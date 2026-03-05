@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenClaw Video Chat Setup</title>
+    <title>OpenClaw Video Chat</title>
     <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
@@ -42,15 +42,6 @@
       .video-chat-form {
         display: grid;
         gap: 12px;
-      }
-
-      .video-chat-grid {
-        display: grid;
-        gap: 16px;
-      }
-
-      .video-chat-grid.cols-2 {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
       .room-grid {
@@ -107,12 +98,6 @@
       .media audio {
         width: 100%;
       }
-
-      @media (max-width: 900px) {
-        .video-chat-grid.cols-2 {
-          grid-template-columns: 1fr;
-        }
-      }
     </style>
   </head>
   <body class="video-chat-shell">
@@ -122,7 +107,7 @@
           <div class="brand">
             <div class="brand-text">
               <span class="brand-title">Video Chat Plugin</span>
-              <span class="brand-sub">OpenClaw Gateway Style</span>
+              <span class="brand-sub">Runtime Controls</span>
             </div>
           </div>
         </div>
@@ -167,9 +152,15 @@
               </button>
             </div>
           </div>
-          <span class="pill">
-            <span class="statusDot"></span>
-            Plugin UI
+          <span class="pill" id="gateway-health-pill">
+            <span class="statusDot warn" id="gateway-health-dot"></span>
+            Gateway:
+            <span class="mono" id="gateway-health-value">Checking</span>
+          </span>
+          <span class="pill" id="keys-health-pill">
+            <span class="statusDot warn" id="keys-health-dot"></span>
+            Keys:
+            <span class="mono" id="keys-health-value">Unknown</span>
           </span>
         </div>
       </header>
@@ -177,16 +168,15 @@
       <nav class="nav">
         <div class="nav-group">
           <div class="nav-label nav-label--static">
-            <span class="nav-label__text">Sections</span>
+            <span class="nav-label__text">Plugin</span>
           </div>
           <div class="nav-group__items">
-            <a class="nav-item active" href="#gateway-token-card"><span class="nav-item__text">Gateway Token</span></a>
-            <a class="nav-item" href="#setup-card"><span class="nav-item__text">Setup</span></a>
-            <a class="nav-item" href="#session-card"><span class="nav-item__text">Session</span></a>
-            <a class="nav-item" href="#chat-card"><span class="nav-item__text">Text Chat</span></a>
-            <a class="nav-item" href="#room-card"><span class="nav-item__text">LiveKit Room</span></a>
-            <a class="nav-item" href="#audio-card"><span class="nav-item__text">Audio Helpers</span></a>
-            <a class="nav-item" href="#output-card"><span class="nav-item__text">Output</span></a>
+            <a class="nav-item active" href="/plugins/video-chat">
+              <span class="nav-item__text">Video Chat</span>
+            </a>
+            <a class="nav-item" href="/plugins/video-chat/settings">
+              <span class="nav-item__text">Settings</span>
+            </a>
           </div>
         </div>
       </nav>
@@ -194,68 +184,12 @@
       <main class="content">
         <div class="content-header">
           <div>
-            <h1 class="page-title">Video Chat Control</h1>
-            <p class="page-sub">Plugin-owned setup, session controls, room preview, and chat.</p>
+            <h1 class="page-title">Video Chat</h1>
+            <p class="page-sub">Session controls, LiveKit room management, text chat, and TTS.</p>
           </div>
         </div>
 
         <p id="status" class="callout info">Loading setup status...</p>
-
-        <section class="card stack video-chat-section" id="gateway-token-card">
-          <header class="video-chat-head">
-            <h2 class="card-title">Gateway Token</h2>
-            <p class="card-sub">Enter your gateway token once to authorize API calls from this page.</p>
-          </header>
-          <form id="token-form" class="video-chat-form">
-            <label class="field">
-              <span>Gateway token</span>
-              <input type="password" id="gateway-token" autocomplete="off" />
-            </label>
-            <div class="row">
-              <button class="btn primary" type="submit">Use Token</button>
-              <button class="btn danger" type="button" id="clear-token">Clear Token</button>
-            </div>
-          </form>
-        </section>
-
-        <section class="card stack video-chat-section" id="setup-card">
-          <header class="video-chat-head">
-            <h2 class="card-title">Setup</h2>
-            <p class="card-sub">Configure provider credentials and media/session endpoints.</p>
-          </header>
-          <form id="setup-form" class="video-chat-form">
-            <div class="video-chat-grid cols-2">
-              <label class="field">
-                <span>LemonSlice API key</span>
-                <input type="password" name="lemonSliceApiKey" autocomplete="off" />
-              </label>
-              <label class="field">
-                <span>LemonSlice image URL</span>
-                <input type="url" name="lemonSliceImageUrl" placeholder="https://..." />
-              </label>
-              <label class="field">
-                <span>LiveKit URL</span>
-                <input type="url" name="livekitUrl" placeholder="wss://..." />
-              </label>
-              <label class="field">
-                <span>LiveKit API key</span>
-                <input type="password" name="livekitApiKey" autocomplete="off" />
-              </label>
-              <label class="field">
-                <span>LiveKit API secret</span>
-                <input type="password" name="livekitApiSecret" autocomplete="off" />
-              </label>
-              <label class="field">
-                <span>ElevenLabs API key</span>
-                <input type="password" name="elevenLabsApiKey" autocomplete="off" />
-              </label>
-            </div>
-            <div class="row">
-              <button class="btn primary" type="submit">Save Setup</button>
-              <button class="btn" type="button" id="reload-status">Reload Status</button>
-            </div>
-          </form>
-        </section>
 
         <section class="card stack video-chat-section" id="session-card">
           <header class="video-chat-head">
