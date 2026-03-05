@@ -146,6 +146,16 @@
           </div>
         </div>
         <div class="topbar-status">
+          <span class="pill" id="gateway-health-pill">
+            <span class="statusDot warn" id="gateway-health-dot"></span>
+            Gateway:
+            <span class="mono" id="gateway-health-value">Checking</span>
+          </span>
+          <span class="pill" id="keys-health-pill">
+            <span class="statusDot warn" id="keys-health-dot"></span>
+            Config:
+            <span class="mono" id="keys-health-value">Unknown</span>
+          </span>
           <div class="theme-toggle" id="theme-toggle">
             <div class="theme-toggle__track">
               <span class="theme-toggle__indicator" aria-hidden="true"></span>
@@ -186,16 +196,6 @@
               </button>
             </div>
           </div>
-          <span class="pill" id="gateway-health-pill">
-            <span class="statusDot warn" id="gateway-health-dot"></span>
-            Gateway:
-            <span class="mono" id="gateway-health-value">Checking</span>
-          </span>
-          <span class="pill" id="keys-health-pill">
-            <span class="statusDot warn" id="keys-health-dot"></span>
-            Keys:
-            <span class="mono" id="keys-health-value">Unknown</span>
-          </span>
         </div>
       </header>
 
