@@ -45,6 +45,7 @@ type VideoChatConfigResponse = {
 type VideoChatSessionResult = {
   provider: "lemonslice";
   sessionKey: string;
+  chatSessionKey: string;
   roomName: string;
   livekitUrl: string;
   participantIdentity: string;
@@ -329,6 +330,24 @@ function sanitizeVideoChatRoomPart(value: string): string {
     return VIDEO_CHAT_ROOM_PART_FALLBACK;
   }
   return normalized.slice(0, VIDEO_CHAT_ROOM_PART_MAX_LENGTH);
+}
+
+function resolveVideoChatChatSessionKey(params: {
+  requestedSessionKey: string;
+  config: OpenClawConfig;
+}): string {
+  const requested = params.requestedSessionKey.trim();
+  if (!requested) {
+    return "agent:main:main";
+  }
+  if (requested.includes(":")) {
+    return requested;
+  }
+  const mainKey = normalizeOptionalString(params.config.session?.mainKey) ?? "main";
+  if (requested.toLowerCase() !== mainKey.toLowerCase()) {
+    return requested;
+  }
+  return `agent:main:${mainKey}`;
 }
 
 function toBase64Url(value: Buffer | string): string {
@@ -1276,6 +1295,10 @@ async function createVideoChatSession(params: {
   }
 
   const roomName = `${VIDEO_CHAT_ROOM_PREFIX}-${sanitizeVideoChatRoomPart(params.sessionKey)}-${randomUUID().slice(0, 8)}`;
+  const chatSessionKey = resolveVideoChatChatSessionKey({
+    requestedSessionKey: params.sessionKey,
+    config: effectiveConfig,
+  });
   const participantIdentity = `control-ui-${randomUUID().slice(0, 12)}`;
   const participantToken = createLiveKitAccessToken({
     apiKey,
@@ -1291,7 +1314,7 @@ async function createVideoChatSession(params: {
         {
           agentName: VIDEO_CHAT_AGENT_NAME,
           metadata: buildVideoChatDispatchMetadata({
-            sessionKey: params.sessionKey,
+            sessionKey: chatSessionKey,
             imageUrl: lemonSliceImageUrl,
           }),
         },
@@ -1303,6 +1326,7 @@ async function createVideoChatSession(params: {
   return {
     provider: "lemonslice",
     sessionKey: params.sessionKey,
+    chatSessionKey,
     roomName,
     livekitUrl,
     participantIdentity,

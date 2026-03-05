@@ -186,6 +186,33 @@ describe("video-chat plugin", () => {
     });
   });
 
+  it("returns canonical chat session key for default main session", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const payload = call?.[1] as
+      | {
+          sessionKey?: string;
+          chatSessionKey?: string;
+          participantToken?: string;
+        }
+      | undefined;
+    expect(payload?.sessionKey).toBe("main");
+    expect(payload?.chatSessionKey).toBe("agent:main:main");
+    expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
+      roomConfig: {
+        agents: [
+          {
+            metadata:
+              '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png"}',
+          },
+        ],
+      },
+    });
+  });
+
   it("returns setup state for plugin-owned setup surfaces", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.setup.get", {});

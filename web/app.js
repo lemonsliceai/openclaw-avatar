@@ -15,14 +15,32 @@ const connectRoomButton = document.getElementById("connect-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const toggleMicButton = document.getElementById("toggle-mic");
 const toggleCameraButton = document.getElementById("toggle-camera");
+const chatStatusEl = document.getElementById("chat-status");
+const chatLogEl = document.getElementById("chat-log");
+const chatForm = document.getElementById("chat-form");
+const chatInput = document.getElementById("chat-input");
+const chatSendButton = document.getElementById("chat-send");
 
 const TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
+const GATEWAY_PROTOCOL_VERSION = 3;
+const GATEWAY_WS_CLIENT = {
+  id: "test",
+  version: "video-chat-plugin-ui",
+  platform: "web",
+  mode: "test",
+};
 
 let activeSession = null;
 let activeRoom = null;
 let localAudioTrack = null;
 let localVideoTrack = null;
+let gatewaySocket = null;
+let gatewaySocketReady = false;
+let gatewayHandshakePromise = null;
+let gatewayConnectRequestId = null;
+let gatewayRequestCounter = 0;
+const gatewayPendingRequests = new Map();
 
 function escapeSelectorValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -52,6 +70,320 @@ function getAuthHeaders() {
   return {
     Authorization: `Bearer ${token}`,
   };
+}
+
+function setChatStatus(text) {
+  chatStatusEl.textContent = text;
+}
+
+function clearChatLog() {
+  chatLogEl.textContent = "";
+}
+
+function appendChatLine(role, text) {
+  if (!text) {
+    return;
+  }
+  const line = document.createElement("article");
+  line.className = `chat-line ${role}`;
+  const heading = document.createElement("strong");
+  heading.textContent =
+    role === "user" ? "You" : role === "assistant" ? "Agent" : role === "system" ? "System" : role;
+  const body = document.createElement("p");
+  body.textContent = text;
+  line.appendChild(heading);
+  line.appendChild(body);
+  chatLogEl.appendChild(line);
+  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+}
+
+function extractAssistantText(message) {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  if (typeof message.text === "string" && message.text.trim()) {
+    return message.text.trim();
+  }
+  if (typeof message.content === "string" && message.content.trim()) {
+    return message.content.trim();
+  }
+  if (!Array.isArray(message.content)) {
+    return "";
+  }
+  const textBlocks = message.content
+    .filter((item) => item && typeof item === "object" && item.type === "text")
+    .map((item) => (typeof item.text === "string" ? item.text.trim() : ""))
+    .filter(Boolean);
+  return textBlocks.join("\n\n");
+}
+
+function resolveChatSessionKey() {
+  if (!activeSession) {
+    return "";
+  }
+  if (typeof activeSession.chatSessionKey === "string" && activeSession.chatSessionKey.trim()) {
+    return activeSession.chatSessionKey.trim();
+  }
+  if (typeof activeSession.sessionKey === "string" && activeSession.sessionKey.trim()) {
+    return activeSession.sessionKey.trim();
+  }
+  return "";
+}
+
+function updateChatControls() {
+  const hasSession = Boolean(activeSession);
+  chatInput.disabled = !hasSession;
+  chatSendButton.disabled = !hasSession;
+}
+
+function nextGatewayRequestId() {
+  gatewayRequestCounter += 1;
+  return `video-chat-ui-${Date.now()}-${gatewayRequestCounter}`;
+}
+
+function clearGatewayPendingRequests(error) {
+  for (const [id, pending] of gatewayPendingRequests.entries()) {
+    clearTimeout(pending.timer);
+    pending.reject(error);
+    gatewayPendingRequests.delete(id);
+  }
+}
+
+function closeGatewaySocket(reason) {
+  gatewaySocketReady = false;
+  gatewayConnectRequestId = null;
+  if (gatewaySocket) {
+    try {
+      gatewaySocket.close();
+    } catch {}
+  }
+  gatewaySocket = null;
+  gatewayHandshakePromise = null;
+  clearGatewayPendingRequests(new Error(reason));
+}
+
+function handleGatewayChatEvent(payload) {
+  const expectedSessionKey = resolveChatSessionKey();
+  const payloadSessionKey = typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
+  if (!expectedSessionKey || !payloadSessionKey || payloadSessionKey !== expectedSessionKey) {
+    return;
+  }
+
+  const state = typeof payload.state === "string" ? payload.state : "";
+  if (state === "delta") {
+    setChatStatus("Agent is responding...");
+    return;
+  }
+  if (state === "final") {
+    const text = extractAssistantText(payload.message) || "[No text in final message]";
+    appendChatLine("assistant", text);
+    setChatStatus("Reply received.");
+    return;
+  }
+  if (state === "error") {
+    appendChatLine("system", payload.errorMessage || "Chat request failed.");
+    setChatStatus("Chat error.");
+    return;
+  }
+  if (state === "aborted") {
+    appendChatLine("system", "Chat run aborted.");
+    setChatStatus("Chat run aborted.");
+  }
+}
+
+function handleGatewaySocketMessage(raw) {
+  let frame = null;
+  try {
+    frame = JSON.parse(String(raw));
+  } catch {
+    return;
+  }
+  if (!frame || typeof frame !== "object") {
+    return;
+  }
+
+  if (frame.type === "event" && frame.event === "connect.challenge") {
+    const token = getGatewayToken().trim();
+    const connectRequestId = nextGatewayRequestId();
+    gatewayConnectRequestId = connectRequestId;
+    const params = {
+      minProtocol: GATEWAY_PROTOCOL_VERSION,
+      maxProtocol: GATEWAY_PROTOCOL_VERSION,
+      client: GATEWAY_WS_CLIENT,
+      role: "operator",
+      scopes: ["operator.admin"],
+      ...(token ? { auth: { token } } : {}),
+    };
+    gatewaySocket?.send(
+      JSON.stringify({
+        type: "req",
+        id: connectRequestId,
+        method: "connect",
+        params,
+      }),
+    );
+    return;
+  }
+
+  if (frame.type === "res") {
+    if (frame.id === gatewayConnectRequestId) {
+      gatewayConnectRequestId = null;
+      if (!frame.ok) {
+        const message = frame?.error?.message || "Gateway websocket authorization failed.";
+        closeGatewaySocket(message);
+        setChatStatus(message);
+        return;
+      }
+      gatewaySocketReady = true;
+      setChatStatus("Chat connected.");
+      return;
+    }
+
+    const pending = gatewayPendingRequests.get(frame.id);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    gatewayPendingRequests.delete(frame.id);
+    if (frame.ok) {
+      pending.resolve(frame.payload ?? {});
+      return;
+    }
+    const message = frame?.error?.message || `${pending.method} failed`;
+    pending.reject(new Error(message));
+    return;
+  }
+
+  if (frame.type === "event" && frame.event === "chat") {
+    handleGatewayChatEvent(frame.payload || {});
+  }
+}
+
+async function ensureGatewaySocketConnected() {
+  if (gatewaySocketReady && gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN) {
+    return;
+  }
+  if (gatewayHandshakePromise) {
+    return gatewayHandshakePromise;
+  }
+
+  gatewayHandshakePromise = new Promise((resolve, reject) => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const socketUrl = `${protocol}//${window.location.host}`;
+    let settled = false;
+    const onSettledError = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      gatewayHandshakePromise = null;
+      reject(error);
+    };
+    const onSettledSuccess = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      gatewayHandshakePromise = null;
+      resolve();
+    };
+
+    setChatStatus("Connecting chat websocket...");
+    const ws = new WebSocket(socketUrl);
+    gatewaySocket = ws;
+    gatewaySocketReady = false;
+    gatewayConnectRequestId = null;
+
+    const connectTimer = setTimeout(() => {
+      onSettledError(new Error("Timed out connecting to gateway websocket."));
+      closeGatewaySocket("Timed out connecting to gateway websocket.");
+    }, 10_000);
+
+    ws.addEventListener("message", (event) => {
+      handleGatewaySocketMessage(event.data);
+      if (!settled && gatewaySocketReady) {
+        clearTimeout(connectTimer);
+        onSettledSuccess();
+      }
+    });
+
+    ws.addEventListener("close", () => {
+      if (!settled) {
+        clearTimeout(connectTimer);
+        onSettledError(new Error("Gateway websocket closed before connect completed."));
+      }
+      if (gatewaySocket === ws) {
+        gatewaySocket = null;
+      }
+      gatewaySocketReady = false;
+      gatewayConnectRequestId = null;
+      clearGatewayPendingRequests(new Error("Gateway websocket closed."));
+      setChatStatus("Chat disconnected.");
+    });
+
+    ws.addEventListener("error", () => {
+      if (!settled) {
+        clearTimeout(connectTimer);
+        onSettledError(new Error("Gateway websocket connection failed."));
+      }
+    });
+  });
+
+  return gatewayHandshakePromise;
+}
+
+async function gatewayRpc(method, params) {
+  await ensureGatewaySocketConnected();
+  if (!gatewaySocket || gatewaySocket.readyState !== WebSocket.OPEN || !gatewaySocketReady) {
+    throw new Error("Gateway websocket is not connected.");
+  }
+  const id = nextGatewayRequestId();
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      gatewayPendingRequests.delete(id);
+      reject(new Error(`${method} timed out.`));
+    }, 20_000);
+    gatewayPendingRequests.set(id, { resolve, reject, timer, method });
+    gatewaySocket.send(
+      JSON.stringify({
+        type: "req",
+        id,
+        method,
+        params,
+      }),
+    );
+  });
+}
+
+async function loadChatHistory() {
+  const sessionKey = resolveChatSessionKey();
+  if (!sessionKey) {
+    return;
+  }
+  const history = await gatewayRpc("chat.history", {
+    sessionKey,
+    limit: 30,
+  });
+  clearChatLog();
+  const messages = Array.isArray(history?.messages) ? history.messages : [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    const role = typeof message.role === "string" ? message.role : "";
+    if (role !== "user" && role !== "assistant") {
+      continue;
+    }
+    const text =
+      role === "assistant"
+        ? extractAssistantText(message)
+        : typeof message.content === "string"
+          ? message.content
+          : extractAssistantText(message);
+    if (text) {
+      appendChatLine(role, text);
+    }
+  }
 }
 
 function clearRemoteTiles() {
@@ -352,6 +684,15 @@ sessionForm.addEventListener("submit", async (event) => {
     activeSession = payload.session;
     setOutput({ action: "session-started", session: activeSession });
     updateRoomButtons();
+    updateChatControls();
+    try {
+      await ensureGatewaySocketConnected();
+      await loadChatHistory();
+      setChatStatus(`Text chat ready for ${resolveChatSessionKey()}.`);
+    } catch (chatError) {
+      setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
+      appendChatLine("system", "Text chat initialization failed.");
+    }
     await connectToRoom();
   } catch (error) {
     setOutput({ action: "session-start-failed", error: String(error) });
@@ -362,6 +703,9 @@ stopSessionButton.addEventListener("click", () => {
   disconnectRoom();
   activeSession = null;
   updateRoomButtons();
+  updateChatControls();
+  clearChatLog();
+  setChatStatus("Start a session to use text chat.");
   setOutput({ action: "session-stopped" });
 });
 
@@ -430,6 +774,36 @@ ttsForm.addEventListener("submit", async (event) => {
   }
 });
 
+chatForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = String(chatInput.value || "").trim();
+  if (!message) {
+    return;
+  }
+  const sessionKey = resolveChatSessionKey();
+  if (!sessionKey) {
+    appendChatLine("system", "Start a session before sending chat messages.");
+    return;
+  }
+  const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  appendChatLine("user", message);
+  chatInput.value = "";
+  setChatStatus("Sending message...");
+  try {
+    const response = await gatewayRpc("chat.send", {
+      sessionKey,
+      message,
+      idempotencyKey,
+    });
+    setOutput({ action: "chat-sent", sessionKey, response });
+    setChatStatus("Awaiting agent reply...");
+  } catch (error) {
+    appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.");
+    setOutput({ action: "chat-send-failed", error: String(error) });
+    setChatStatus("Chat send failed.");
+  }
+});
+
 reloadButton.addEventListener("click", () => {
   refreshSetupStatus().catch(() => {});
 });
@@ -447,21 +821,29 @@ tokenForm.addEventListener("submit", (event) => {
 
 clearTokenButton.addEventListener("click", () => {
   disconnectRoom();
+  closeGatewaySocket("Gateway token cleared.");
   localStorage.removeItem(TOKEN_STORAGE_KEY);
   tokenInput.value = "";
   activeSession = null;
   updateRoomButtons();
+  updateChatControls();
+  clearChatLog();
+  setChatStatus("Enter a gateway token to use text chat.");
   statusEl.textContent = "Gateway token cleared. Enter a token to continue.";
   setOutput({ action: "gateway-token-cleared" });
 });
 
 tokenInput.value = getGatewayToken();
 updateRoomButtons();
+updateChatControls();
+clearChatLog();
 
 if (hasGatewayToken()) {
   refreshSetupStatus().catch(() => {});
+  setChatStatus("Start a session to use text chat.");
 } else {
   statusEl.textContent = "Enter a gateway token above, then click Use Token.";
+  setChatStatus("Enter a gateway token to use text chat.");
 }
 
 if (LIVEKIT) {
