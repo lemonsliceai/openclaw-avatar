@@ -29,8 +29,8 @@
 
       .video-chat-layout {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 24px;
+        grid-template-columns: minmax(0, 1fr) 18px auto;
+        gap: 0;
         align-items: start;
       }
 
@@ -39,6 +39,7 @@
       }
 
       .video-chat-main {
+        grid-column: 1;
         min-width: 0;
         display: grid;
         gap: 24px;
@@ -73,7 +74,8 @@
       }
 
       .video-chat-chatpane {
-        width: min(360px, 32vw);
+        grid-column: 3;
+        width: var(--video-chat-pane-width, min(360px, 32vw));
         min-width: 300px;
         max-height: calc(100dvh - var(--shell-topbar-height) - 24px);
         position: sticky;
@@ -89,6 +91,52 @@
           border-color 200ms var(--ease-out),
           opacity 200ms var(--ease-out),
           transform 200ms var(--ease-out);
+      }
+
+      .video-chat-resizer {
+        grid-column: 2;
+        position: relative;
+        width: 18px;
+        min-height: calc(100dvh - var(--shell-topbar-height) - 24px);
+        cursor: col-resize;
+        touch-action: none;
+        user-select: none;
+      }
+
+      .video-chat-resizer::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 12px;
+        bottom: 12px;
+        width: 1px;
+        transform: translateX(-50%);
+        background: var(--border);
+        transition: background-color 160ms var(--ease-out), opacity 160ms var(--ease-out);
+      }
+
+      .video-chat-resizer::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 4px;
+        height: 44px;
+        transform: translate(-50%, -50%);
+        border-radius: 999px;
+        background:
+          radial-gradient(circle at center, var(--muted) 0 1px, transparent 1.5px) center 8px / 4px 10px repeat-y;
+        opacity: 0.7;
+      }
+
+      .video-chat-resizer:hover::before,
+      .video-chat-resizer:focus-visible::before,
+      .shell--chat-pane-resizing .video-chat-resizer::before {
+        background: var(--accent);
+      }
+
+      .video-chat-resizer:focus-visible {
+        outline: none;
       }
 
       .video-chat-chatpane__header {
@@ -119,6 +167,7 @@
       }
 
       .video-chat-chatpane__backdrop {
+        grid-column: 1 / -1;
         display: none;
       }
 
@@ -131,6 +180,18 @@
         overflow: hidden;
         transform: translateX(16px);
         pointer-events: none;
+      }
+
+      .shell--chat-pane-closed .video-chat-resizer {
+        width: 0;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .shell--chat-pane-resizing,
+      .shell--chat-pane-resizing * {
+        cursor: col-resize;
+        user-select: none;
       }
 
       .video-chat-grid {
@@ -248,6 +309,10 @@
           border-bottom: none;
           z-index: 60;
           transform: translateX(calc(100% + 24px));
+        }
+
+        .video-chat-resizer {
+          display: none;
         }
 
         .shell--chat-pane-open .video-chat-chatpane {
@@ -457,6 +522,15 @@
             </section>
           </div>
         </div>
+
+        <div
+          class="video-chat-resizer"
+          id="chat-pane-resizer"
+          role="separator"
+          aria-label="Resize text chat panel"
+          aria-orientation="vertical"
+          tabindex="0"
+        ></div>
 
         <div class="video-chat-chatpane__backdrop" id="chat-pane-backdrop" hidden></div>
 

@@ -19,7 +19,9 @@ const navCollapseButton = document.getElementById("nav-collapse-toggle");
 const chatPaneToggleButton = document.getElementById("chat-pane-toggle");
 const chatPaneCloseButton = document.getElementById("chat-pane-close");
 const chatPaneBackdropEl = document.getElementById("chat-pane-backdrop");
+const chatPaneResizerEl = document.getElementById("chat-pane-resizer");
 const chatPaneEl = document.getElementById("chat-pane");
+const contentEl = document.querySelector(".content.video-chat-layout");
 const shellEl = document.querySelector(".shell");
 const navEl = document.getElementById("plugin-nav") || document.querySelector(".nav");
 const themeToggleEl = document.getElementById("theme-toggle");
@@ -46,6 +48,7 @@ const LEGACY_TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
 const THEME_STORAGE_KEY = "videoChat.themePreference";
 const NAV_COLLAPSE_STORAGE_KEY = "videoChat.navCollapsed";
 const CHAT_PANE_STORAGE_KEY = "videoChat.chatPaneOpen";
+const CHAT_PANE_WIDTH_STORAGE_KEY = "videoChat.chatPaneWidth";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -56,6 +59,8 @@ const GATEWAY_WS_CLIENT = {
   platform: "web",
   mode: "test",
 };
+const CHAT_PANE_MIN_WIDTH = 300;
+const CHAT_PANE_MAX_WIDTH = 640;
 
 let activeSession = null;
 let activeRoom = null;
@@ -688,6 +693,36 @@ function updateChatPaneToggleState(isOpen) {
   chatPaneToggleButton.setAttribute("title", isOpen ? "Hide text chat panel" : "Show text chat panel");
 }
 
+function getChatPaneWidthBounds() {
+  const layoutWidth = contentEl?.getBoundingClientRect().width ?? window.innerWidth;
+  const maxWidth = Math.max(
+    CHAT_PANE_MIN_WIDTH,
+    Math.min(CHAT_PANE_MAX_WIDTH, Math.floor(layoutWidth - 320)),
+  );
+  return {
+    min: CHAT_PANE_MIN_WIDTH,
+    max: maxWidth,
+  };
+}
+
+function applyChatPaneWidth(nextWidth, options = {}) {
+  if (!shellEl || !Number.isFinite(nextWidth)) {
+    return;
+  }
+  const shouldPersist = options.persist !== false;
+  const { min, max } = getChatPaneWidthBounds();
+  const clamped = Math.min(max, Math.max(min, Math.round(nextWidth)));
+  shellEl.style.setProperty("--video-chat-pane-width", `${clamped}px`);
+  if (!shouldPersist) {
+    return;
+  }
+  try {
+    localStorage.setItem(CHAT_PANE_WIDTH_STORAGE_KEY, String(clamped));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 function setChatPaneOpen(isOpen, options = {}) {
   const shouldPersist = options.persist !== false;
   shellEl?.classList.toggle("shell--chat-pane-open", isOpen);
@@ -711,6 +746,7 @@ function setChatPaneOpen(isOpen, options = {}) {
 
 function initChatPane() {
   let isOpen = true;
+  let storedWidth = 360;
   try {
     const stored = localStorage.getItem(CHAT_PANE_STORAGE_KEY);
     if (stored === "0") {
@@ -718,10 +754,16 @@ function initChatPane() {
     } else if (stored === "1") {
       isOpen = true;
     }
+    const parsedWidth = Number(localStorage.getItem(CHAT_PANE_WIDTH_STORAGE_KEY));
+    if (Number.isFinite(parsedWidth) && parsedWidth > 0) {
+      storedWidth = parsedWidth;
+    }
   } catch {
     isOpen = true;
+    storedWidth = 360;
   }
 
+  applyChatPaneWidth(storedWidth, { persist: false });
   setChatPaneOpen(isOpen, { persist: false });
 
   chatPaneToggleButton?.addEventListener("click", () => {
@@ -742,7 +784,60 @@ function initChatPane() {
 
   mobileChatPaneMedia?.addEventListener("change", () => {
     const open = shellEl ? shellEl.classList.contains("shell--chat-pane-open") : true;
+    applyChatPaneWidth(parseInt(shellEl?.style.getPropertyValue("--video-chat-pane-width") || "360", 10), {
+      persist: false,
+    });
     setChatPaneOpen(open, { persist: false });
+  });
+
+  if (chatPaneResizerEl) {
+    const resizeFromClientX = (clientX) => {
+      const rect = contentEl?.getBoundingClientRect();
+      if (!rect) {
+        return;
+      }
+      applyChatPaneWidth(rect.right - clientX);
+    };
+
+    chatPaneResizerEl.addEventListener("pointerdown", (event) => {
+      if (isMobileChatPane() || shellEl?.classList.contains("shell--chat-pane-closed")) {
+        return;
+      }
+      event.preventDefault();
+      shellEl?.classList.add("shell--chat-pane-resizing");
+      resizeFromClientX(event.clientX);
+
+      const handlePointerMove = (moveEvent) => {
+        resizeFromClientX(moveEvent.clientX);
+      };
+
+      const handlePointerUp = () => {
+        shellEl?.classList.remove("shell--chat-pane-resizing");
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", handlePointerUp);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", handlePointerUp);
+    });
+
+    chatPaneResizerEl.addEventListener("keydown", (event) => {
+      if (isMobileChatPane()) {
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      event.preventDefault();
+      const currentWidth = parseInt(shellEl?.style.getPropertyValue("--video-chat-pane-width") || "360", 10);
+      const delta = event.key === "ArrowLeft" ? 24 : -24;
+      applyChatPaneWidth(currentWidth + delta);
+    });
+  }
+
+  window.addEventListener("resize", () => {
+    const currentWidth = parseInt(shellEl?.style.getPropertyValue("--video-chat-pane-width") || "360", 10);
+    applyChatPaneWidth(currentWidth, { persist: false });
   });
 
   document.addEventListener("keydown", (event) => {
