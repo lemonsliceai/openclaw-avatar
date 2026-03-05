@@ -1208,7 +1208,10 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
           sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
           return true;
         }
-        if (normalizedPath === "/plugins/video-chat/settings") {
+        if (
+          normalizedPath === "/plugins/video-chat/settings" ||
+          normalizedPath === "/plugins/video-chat/config"
+        ) {
           const html = await readWebAsset("settings.html");
           sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
           return true;

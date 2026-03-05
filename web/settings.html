@@ -3,15 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenClaw Video Chat Settings</title>
+    <title>OpenClaw Video Chat Config</title>
     <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/components.css" />
+    <link rel="stylesheet" href="/plugins/video-chat/styles/config.css" />
     <style>
       .video-chat-shell .content {
-        max-width: 1080px;
-        margin: 0 auto;
+        max-width: 100%;
+        margin: 0;
       }
 
       .video-chat-shell .nav {
@@ -37,6 +38,24 @@
         gap: 12px;
       }
 
+      .provider-group {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-accent);
+        padding: 14px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .provider-group h3 {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .provider-group[id] {
+        scroll-margin-top: 18px;
+      }
+
       .video-chat-grid {
         display: grid;
         gap: 16px;
@@ -44,6 +63,30 @@
 
       .video-chat-grid.cols-2 {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .secret-field {
+        display: grid;
+        gap: 8px;
+      }
+
+      .secret-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .config-nav__item {
+        text-decoration: none;
+      }
+
+      .is-filter-hidden {
+        display: none !important;
+      }
+
+      .video-chat-status {
+        margin: 0 0 16px;
       }
 
       @media (max-width: 900px) {
@@ -127,86 +170,210 @@
             <a class="nav-item" href="/plugins/video-chat">
               <span class="nav-item__text">Video Chat</span>
             </a>
-            <a class="nav-item active" href="/plugins/video-chat/settings">
-              <span class="nav-item__text">Settings</span>
+            <a class="nav-item active" href="/plugins/video-chat/config">
+              <span class="nav-item__text">Config</span>
             </a>
           </div>
         </div>
       </nav>
 
       <main class="content">
-        <div class="content-header">
-          <div>
-            <h1 class="page-title">Settings</h1>
-            <p class="page-sub">Manage gateway auth token and required provider keys.</p>
-          </div>
+        <div class="config-layout">
+          <aside class="config-sidebar">
+            <div class="config-sidebar__header">
+              <div class="config-sidebar__title">Settings</div>
+            </div>
+            <nav class="config-nav">
+              <button class="config-nav__item active" type="button" data-section-filter="all">
+                <span class="config-nav__label">All Settings</span>
+              </button>
+              <button class="config-nav__item" type="button" data-section-filter="gateway-token">
+                <span class="config-nav__label">Gateway Token</span>
+              </button>
+              <button class="config-nav__item" type="button" data-section-filter="lemonslice">
+                <span class="config-nav__label">LemonSlice</span>
+              </button>
+              <button class="config-nav__item" type="button" data-section-filter="livekit">
+                <span class="config-nav__label">LiveKit</span>
+              </button>
+              <button class="config-nav__item" type="button" data-section-filter="elevenlabs">
+                <span class="config-nav__label">11Labs</span>
+              </button>
+              <button class="config-nav__item" type="button" data-section-filter="output">
+                <span class="config-nav__label">Output</span>
+              </button>
+            </nav>
+            <div class="config-sidebar__footer">
+              <div class="config-mode-toggle">
+                <button class="config-mode-toggle__btn active" type="button" disabled>Form</button>
+                <button class="config-mode-toggle__btn" type="button" disabled>Raw</button>
+              </div>
+            </div>
+          </aside>
+
+          <main class="config-main">
+            <div class="config-actions">
+              <div class="config-actions__left">
+                <span class="config-status">Config</span>
+              </div>
+              <div class="config-actions__right">
+                <button class="btn btn--sm" type="button" id="reload-status">Reload</button>
+                <button class="btn btn--sm primary" type="submit" form="setup-form">Save</button>
+              </div>
+            </div>
+
+            <div class="config-content" id="all-settings">
+              <div class="config-section-hero">
+                <div class="config-section-hero__text">
+                  <div class="config-section-hero__title">Config</div>
+                  <div class="config-section-hero__desc">Manage gateway auth token and required provider keys.</div>
+                </div>
+              </div>
+
+              <p id="status" class="callout info video-chat-status">Loading setup status...</p>
+
+              <section class="config-section-card stack" id="gateway-token-section" data-config-section="gateway-token">
+                <header class="config-section-card__header video-chat-head">
+                  <h2 class="card-title">Gateway Token</h2>
+                  <p class="card-sub">Enter your gateway token once to authorize API calls from this page.</p>
+                </header>
+                <div class="config-section-card__content">
+                  <form id="token-form" class="video-chat-form">
+                    <label class="field full">
+                      <span>Gateway token</span>
+                      <div class="secret-row">
+                        <input type="password" id="gateway-token" autocomplete="off" />
+                        <button class="btn btn--sm" type="button" id="replace-token">Replace</button>
+                      </div>
+                    </label>
+                    <div class="row">
+                      <button class="btn primary" type="submit">Use Token</button>
+                      <button class="btn danger" type="button" id="clear-token">Clear Token</button>
+                    </div>
+                  </form>
+                </div>
+              </section>
+
+              <form id="setup-form" class="video-chat-form">
+                <section class="config-section-card stack" id="lemonslice-section" data-config-section="lemonslice">
+                  <header class="config-section-card__header video-chat-head">
+                    <h2 class="card-title">LemonSlice</h2>
+                    <p class="card-sub">Configure LemonSlice credentials and image endpoint.</p>
+                  </header>
+                  <div class="config-section-card__content">
+                    <div class="provider-group" id="lemonslice">
+                      <h3>LemonSlice</h3>
+                      <div class="video-chat-grid cols-2">
+                        <label class="field secret-field">
+                          <span>API key</span>
+                          <div class="secret-row">
+                            <input
+                              type="password"
+                              name="lemonSliceApiKey"
+                              autocomplete="off"
+                              data-sensitive-field="lemonSliceApiKey"
+                            />
+                            <button class="btn btn--sm" type="button" data-replace-secret="lemonSliceApiKey">
+                              Replace
+                            </button>
+                          </div>
+                        </label>
+                        <label class="field">
+                          <span>Image URL</span>
+                          <input type="url" name="lemonSliceImageUrl" placeholder="https://..." />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="config-section-card stack" id="livekit-section" data-config-section="livekit">
+                  <header class="config-section-card__header video-chat-head">
+                    <h2 class="card-title">LiveKit</h2>
+                    <p class="card-sub">Configure LiveKit URL and API credentials.</p>
+                  </header>
+                  <div class="config-section-card__content">
+                    <div class="provider-group" id="livekit">
+                      <h3>LiveKit</h3>
+                      <div class="video-chat-grid cols-2">
+                        <label class="field">
+                          <span>URL</span>
+                          <input type="url" name="livekitUrl" placeholder="wss://..." />
+                        </label>
+                        <label class="field secret-field">
+                          <span>API key</span>
+                          <div class="secret-row">
+                            <input
+                              type="password"
+                              name="livekitApiKey"
+                              autocomplete="off"
+                              data-sensitive-field="livekitApiKey"
+                            />
+                            <button class="btn btn--sm" type="button" data-replace-secret="livekitApiKey">
+                              Replace
+                            </button>
+                          </div>
+                        </label>
+                        <label class="field secret-field">
+                          <span>API secret</span>
+                          <div class="secret-row">
+                            <input
+                              type="password"
+                              name="livekitApiSecret"
+                              autocomplete="off"
+                              data-sensitive-field="livekitApiSecret"
+                            />
+                            <button class="btn btn--sm" type="button" data-replace-secret="livekitApiSecret">
+                              Replace
+                            </button>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="config-section-card stack" id="elevenlabs-section" data-config-section="elevenlabs">
+                  <header class="config-section-card__header video-chat-head">
+                    <h2 class="card-title">11Labs</h2>
+                    <p class="card-sub">Configure ElevenLabs API key.</p>
+                  </header>
+                  <div class="config-section-card__content">
+                    <div class="provider-group" id="elevenlabs">
+                      <h3>11Labs</h3>
+                      <div class="video-chat-grid cols-2">
+                        <label class="field secret-field">
+                          <span>API key</span>
+                          <div class="secret-row">
+                            <input
+                              type="password"
+                              name="elevenLabsApiKey"
+                              autocomplete="off"
+                              data-sensitive-field="elevenLabsApiKey"
+                            />
+                            <button class="btn btn--sm" type="button" data-replace-secret="elevenLabsApiKey">
+                              Replace
+                            </button>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </form>
+
+              <section class="config-section-card stack" id="output-section" data-config-section="output">
+                <header class="config-section-card__header video-chat-head">
+                  <h2 class="card-title">Output</h2>
+                  <p class="card-sub">Recent setup responses and validation feedback.</p>
+                </header>
+                <div class="config-section-card__content">
+                  <pre class="code-block" id="output">No events yet.</pre>
+                </div>
+              </section>
+            </div>
+          </main>
         </div>
-
-        <p id="status" class="callout info">Loading setup status...</p>
-
-        <section class="card stack">
-          <header class="video-chat-head">
-            <h2 class="card-title">Gateway Token</h2>
-            <p class="card-sub">Enter your gateway token once to authorize API calls from this page.</p>
-          </header>
-          <form id="token-form" class="video-chat-form">
-            <label class="field full">
-              <span>Gateway token</span>
-              <input type="password" id="gateway-token" autocomplete="off" />
-            </label>
-            <div class="row">
-              <button class="btn primary" type="submit">Use Token</button>
-              <button class="btn danger" type="button" id="clear-token">Clear Token</button>
-            </div>
-          </form>
-        </section>
-
-        <section class="card stack">
-          <header class="video-chat-head">
-            <h2 class="card-title">Keys Setup</h2>
-            <p class="card-sub">Configure provider credentials and media/session endpoints.</p>
-          </header>
-          <form id="setup-form" class="video-chat-form">
-            <div class="video-chat-grid cols-2">
-              <label class="field">
-                <span>LemonSlice API key</span>
-                <input type="password" name="lemonSliceApiKey" autocomplete="off" />
-              </label>
-              <label class="field">
-                <span>LemonSlice image URL</span>
-                <input type="url" name="lemonSliceImageUrl" placeholder="https://..." />
-              </label>
-              <label class="field">
-                <span>LiveKit URL</span>
-                <input type="url" name="livekitUrl" placeholder="wss://..." />
-              </label>
-              <label class="field">
-                <span>LiveKit API key</span>
-                <input type="password" name="livekitApiKey" autocomplete="off" />
-              </label>
-              <label class="field">
-                <span>LiveKit API secret</span>
-                <input type="password" name="livekitApiSecret" autocomplete="off" />
-              </label>
-              <label class="field">
-                <span>ElevenLabs API key</span>
-                <input type="password" name="elevenLabsApiKey" autocomplete="off" />
-              </label>
-            </div>
-            <div class="row">
-              <button class="btn primary" type="submit">Save Setup</button>
-              <button class="btn" type="button" id="reload-status">Reload Status</button>
-            </div>
-          </form>
-        </section>
-
-        <section class="card stack">
-          <header class="video-chat-head">
-            <h2 class="card-title">Output</h2>
-            <p class="card-sub">Recent setup responses and validation feedback.</p>
-          </header>
-          <pre class="code-block" id="output">No events yet.</pre>
-        </section>
       </main>
     </div>
     <script type="module" src="/plugins/video-chat/app.js"></script>

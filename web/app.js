@@ -8,6 +8,7 @@ const stopSessionButton = document.getElementById("stop-session");
 const tokenForm = document.getElementById("token-form");
 const tokenInput = document.getElementById("gateway-token");
 const clearTokenButton = document.getElementById("clear-token");
+const replaceTokenButton = document.getElementById("replace-token");
 const themeToggleEl = document.getElementById("theme-toggle");
 const themeToggleButtons = Array.from(document.querySelectorAll("[data-theme-value]"));
 const gatewayHealthDotEl = document.getElementById("gateway-health-dot");
@@ -27,7 +28,8 @@ const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const chatSendButton = document.getElementById("chat-send");
 
-const TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
+const OPENCLAW_SETTINGS_STORAGE_KEY = "openclaw.control.settings.v1";
+const LEGACY_TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
 const THEME_STORAGE_KEY = "videoChat.themePreference";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
 const GATEWAY_PROTOCOL_VERSION = 3;
@@ -48,9 +50,17 @@ let gatewayHandshakePromise = null;
 let gatewayConnectRequestId = null;
 let gatewayRequestCounter = 0;
 const gatewayPendingRequests = new Map();
+const sensitiveFieldReplaceButtons = Array.from(document.querySelectorAll("[data-replace-secret]"));
+const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
+const configSectionFilterButtons = Array.from(document.querySelectorAll("[data-section-filter]"));
+const configSectionCards = Array.from(document.querySelectorAll("[data-config-section]"));
+const secretEditState = new Set();
 const systemThemeMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
 let activeThemePreference = "system";
+let tokenEditMode = false;
+let latestSetupStatus = null;
+let activeConfigSectionFilter = "all";
 
 function escapeSelectorValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -71,11 +81,79 @@ function setRoomStatus(text) {
 }
 
 function getGatewayToken() {
-  return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+  try {
+    const rawSettings = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
+    if (rawSettings) {
+      const parsed = JSON.parse(rawSettings);
+      if (parsed && typeof parsed === "object" && typeof parsed.token === "string") {
+        return parsed.token;
+      }
+    }
+  } catch {
+    // Fall through to legacy key lookup.
+  }
+  return localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY) || "";
 }
 
 function hasGatewayToken() {
   return getGatewayToken().trim().length > 0;
+}
+
+function persistGatewayToken(token) {
+  const nextToken = typeof token === "string" ? token.trim() : "";
+  let settings = {};
+  try {
+    const raw = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        settings = parsed;
+      }
+    }
+  } catch {
+    settings = {};
+  }
+  localStorage.setItem(
+    OPENCLAW_SETTINGS_STORAGE_KEY,
+    JSON.stringify({
+      ...settings,
+      token: nextToken,
+    }),
+  );
+}
+
+function clearGatewayToken() {
+  let settings = {};
+  try {
+    const raw = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        settings = parsed;
+      }
+    }
+  } catch {
+    settings = {};
+  }
+  localStorage.setItem(
+    OPENCLAW_SETTINGS_STORAGE_KEY,
+    JSON.stringify({
+      ...settings,
+      token: "",
+    }),
+  );
+  localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+}
+
+function migrateLegacyGatewayTokenIfNeeded() {
+  const legacy = localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY);
+  if (!legacy || !legacy.trim()) {
+    return;
+  }
+  if (!getGatewayToken().trim()) {
+    persistGatewayToken(legacy);
+  }
+  localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
 }
 
 function getAuthHeaders() {
@@ -112,6 +190,73 @@ function setGatewayHealthStatus(tone, text) {
 
 function setKeysHealthStatus(tone, text) {
   setHealthStatus(keysHealthDotEl, keysHealthValueEl, tone, text);
+}
+
+function preventSensitiveCopy(event) {
+  event.preventDefault();
+}
+
+function maskSensitiveField(input, isMasked) {
+  if (!input) {
+    return;
+  }
+  if (isMasked) {
+    input.value = "";
+    input.placeholder = "******** (configured)";
+    input.disabled = true;
+  } else {
+    input.disabled = false;
+    input.placeholder = "";
+  }
+}
+
+function updateSensitiveFieldMasking(setup) {
+  if (!setupForm) {
+    return;
+  }
+  const configuredMap = new Map([
+    ["lemonSliceApiKey", Boolean(setup?.lemonSlice?.apiKeyConfigured)],
+    ["livekitApiKey", Boolean(setup?.livekit?.apiKeyConfigured)],
+    ["livekitApiSecret", Boolean(setup?.livekit?.apiSecretConfigured)],
+    ["elevenLabsApiKey", Boolean(setup?.tts?.elevenLabsApiKeyConfigured)],
+  ]);
+
+  for (const [fieldName, configured] of configuredMap.entries()) {
+    const input = setupForm.elements.namedItem(fieldName);
+    const editing = secretEditState.has(fieldName);
+    maskSensitiveField(input, configured && !editing);
+  }
+
+  for (const button of sensitiveFieldReplaceButtons) {
+    const fieldName = button.getAttribute("data-replace-secret");
+    const configured = configuredMap.get(fieldName);
+    if (!fieldName || !configured) {
+      button.style.display = "none";
+      continue;
+    }
+    button.style.display = "";
+    button.textContent = secretEditState.has(fieldName) ? "Cancel" : "Replace";
+  }
+}
+
+function updateTokenFieldMasking() {
+  if (!tokenInput) {
+    return;
+  }
+  const hasStoredToken = hasGatewayToken();
+  const shouldMask = hasStoredToken && !tokenEditMode;
+  if (shouldMask) {
+    tokenInput.value = "";
+    tokenInput.placeholder = "******** (stored)";
+    tokenInput.disabled = true;
+  } else {
+    tokenInput.disabled = false;
+    tokenInput.placeholder = "";
+  }
+  if (replaceTokenButton) {
+    replaceTokenButton.style.display = hasStoredToken ? "" : "none";
+    replaceTokenButton.textContent = tokenEditMode ? "Cancel" : "Replace";
+  }
 }
 
 function updateKeysHealthFromSetup(setup) {
@@ -195,6 +340,37 @@ function clearChatLog() {
     return;
   }
   chatLogEl.textContent = "";
+}
+
+function applyConfigSectionFilter(nextFilter) {
+  const normalizedFilter = typeof nextFilter === "string" && nextFilter.trim() ? nextFilter.trim() : "all";
+  activeConfigSectionFilter = normalizedFilter;
+
+  for (const button of configSectionFilterButtons) {
+    const buttonFilter = (button.getAttribute("data-section-filter") || "").trim() || "all";
+    button.classList.toggle("active", buttonFilter === normalizedFilter);
+  }
+
+  for (const section of configSectionCards) {
+    const sectionKey = (section.getAttribute("data-config-section") || "").trim();
+    const shouldHide = normalizedFilter !== "all" && sectionKey !== normalizedFilter;
+    section.classList.toggle("is-filter-hidden", shouldHide);
+  }
+}
+
+function initConfigSectionFiltering() {
+  if (!configSectionFilterButtons.length || !configSectionCards.length) {
+    return;
+  }
+
+  for (const button of configSectionFilterButtons) {
+    button.addEventListener("click", () => {
+      const nextFilter = button.getAttribute("data-section-filter") || "all";
+      applyConfigSectionFilter(nextFilter);
+    });
+  }
+
+  applyConfigSectionFilter(activeConfigSectionFilter);
 }
 
 function appendChatLine(role, text) {
@@ -783,6 +959,9 @@ function setupStatusLabel(setup) {
 
 async function refreshSetupStatus() {
   if (!hasGatewayToken()) {
+    latestSetupStatus = null;
+    secretEditState.clear();
+    updateSensitiveFieldMasking(latestSetupStatus);
     if (statusEl) {
       statusEl.textContent = "Enter a gateway token above, then click Use Token.";
     }
@@ -797,6 +976,7 @@ async function refreshSetupStatus() {
   setKeysHealthStatus("warn", "Checking");
   try {
     const payload = await requestJson("/plugins/video-chat/api/setup");
+    latestSetupStatus = payload.setup ?? null;
     if (statusEl) {
       statusEl.textContent = setupStatusLabel(payload.setup);
     }
@@ -811,8 +991,11 @@ async function refreshSetupStatus() {
       if (imageUrlField && payload.setup?.lemonSlice?.imageUrl) {
         imageUrlField.value = payload.setup.lemonSlice.imageUrl;
       }
+      updateSensitiveFieldMasking(latestSetupStatus);
     }
   } catch (error) {
+    latestSetupStatus = null;
+    updateSensitiveFieldMasking(latestSetupStatus);
     const message = error instanceof Error ? error.message : "Failed to load status";
     if (statusEl) {
       statusEl.textContent = message;
@@ -828,6 +1011,30 @@ async function refreshSetupStatus() {
 }
 
 if (setupForm) {
+  for (const input of sensitiveFieldInputs) {
+    input.addEventListener("copy", preventSensitiveCopy);
+    input.addEventListener("cut", preventSensitiveCopy);
+  }
+  for (const button of sensitiveFieldReplaceButtons) {
+    button.addEventListener("click", () => {
+      const fieldName = button.getAttribute("data-replace-secret");
+      if (!fieldName || !setupForm) {
+        return;
+      }
+      if (secretEditState.has(fieldName)) {
+        secretEditState.delete(fieldName);
+      } else {
+        secretEditState.add(fieldName);
+      }
+      updateSensitiveFieldMasking(latestSetupStatus);
+      const input = setupForm.elements.namedItem(fieldName);
+      if (input && !input.disabled) {
+        input.value = "";
+        input.focus();
+      }
+    });
+  }
+
   setupForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const formData = new FormData(setupForm);
@@ -840,8 +1047,11 @@ if (setupForm) {
       if (statusEl) {
         statusEl.textContent = setupStatusLabel(payload.setup);
       }
+      latestSetupStatus = payload.setup ?? null;
       setGatewayHealthStatus("ok", "OK");
       updateKeysHealthFromSetup(payload.setup);
+      secretEditState.clear();
+      updateSensitiveFieldMasking(latestSetupStatus);
       setOutput({ action: "setup-saved", setup: payload.setup });
       setupForm.reset();
     } catch (error) {
@@ -1010,11 +1220,27 @@ if (tokenForm) {
     event.preventDefault();
     const token = String(tokenInput?.value || "").trim();
     if (token) {
-      localStorage.setItem(TOKEN_STORAGE_KEY, token);
-    } else {
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      persistGatewayToken(token);
+    } else if (!hasGatewayToken()) {
+      clearGatewayToken();
     }
     window.location.reload();
+  });
+}
+
+if (tokenInput) {
+  tokenInput.addEventListener("copy", preventSensitiveCopy);
+  tokenInput.addEventListener("cut", preventSensitiveCopy);
+}
+
+if (replaceTokenButton) {
+  replaceTokenButton.addEventListener("click", () => {
+    tokenEditMode = !tokenEditMode;
+    updateTokenFieldMasking();
+    if (tokenEditMode && tokenInput) {
+      tokenInput.value = "";
+      tokenInput.focus();
+    }
   });
 }
 
@@ -1022,10 +1248,12 @@ if (clearTokenButton) {
   clearTokenButton.addEventListener("click", () => {
   disconnectRoom();
   closeGatewaySocket("Gateway token cleared.");
-  localStorage.removeItem(TOKEN_STORAGE_KEY);
+  clearGatewayToken();
   if (tokenInput) {
     tokenInput.value = "";
   }
+  tokenEditMode = false;
+  updateTokenFieldMasking();
   activeSession = null;
   updateRoomButtons();
   updateChatControls();
@@ -1040,10 +1268,10 @@ if (clearTokenButton) {
   });
 }
 
-if (tokenInput) {
-  tokenInput.value = getGatewayToken();
-}
+migrateLegacyGatewayTokenIfNeeded();
+updateTokenFieldMasking();
 initThemeToggle();
+initConfigSectionFiltering();
 updateRoomButtons();
 updateChatControls();
 clearChatLog();
