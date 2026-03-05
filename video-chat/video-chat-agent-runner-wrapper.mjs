@@ -4,9 +4,21 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 function requireBaseRunnerPath() {
-  const value = process.env.OPENCLAW_VIDEO_CHAT_BASE_RUNNER?.trim();
+  const value =
+    process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER?.trim() ||
+    process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim();
   if (!value) {
-    throw new Error("Missing OPENCLAW_VIDEO_CHAT_BASE_RUNNER");
+    throw new Error("Missing OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER");
+  }
+  return path.resolve(value);
+}
+
+function requireRunnerPath() {
+  const value =
+    process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim() ||
+    process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER?.trim();
+  if (!value) {
+    throw new Error("Missing OPENCLAW_VIDEO_CHAT_RUNNER_PATH");
   }
   return path.resolve(value);
 }
@@ -107,9 +119,10 @@ async function patchLemonSliceLogging(baseRunnerPath) {
 }
 
 const baseRunnerPath = requireBaseRunnerPath();
+const runnerPath = requireRunnerPath();
 await patchLemonSliceLogging(baseRunnerPath);
 
-const baseRunnerModule = await import(pathToFileURL(baseRunnerPath).href);
+const baseRunnerModule = await import(pathToFileURL(runnerPath).href);
 const baseEntry =
   baseRunnerModule?.default?.entry ??
   baseRunnerModule?.videoChatAgent?.entry ??

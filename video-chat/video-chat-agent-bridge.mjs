@@ -18,14 +18,19 @@ function resolveRunnerPath(argv) {
   return path.resolve(candidate);
 }
 
-async function loadAgentsModule(runnerPath) {
-  const resolver = createRequire(path.join(path.dirname(runnerPath), "__openclaw_sidecar__.js"));
+function resolveDepsBaseRunnerPath(argv, runnerPath) {
+  const candidate = argv[3]?.trim();
+  return candidate ? path.resolve(candidate) : runnerPath;
+}
+
+async function loadAgentsModule(baseRunnerPath) {
+  const resolver = createRequire(path.join(path.dirname(baseRunnerPath), "__openclaw_sidecar__.js"));
   let agentsEntryPath;
   try {
     agentsEntryPath = resolver.resolve("@livekit/agents");
   } catch (error) {
     throw new Error(
-      `Unable to resolve @livekit/agents from runner path ${runnerPath}. Ensure LiveKit deps are installed alongside OpenClaw. ${String(error)}`,
+      `Unable to resolve @livekit/agents from runner path ${baseRunnerPath}. Ensure LiveKit deps are installed alongside OpenClaw. ${String(error)}`,
       { cause: error },
     );
   }
@@ -46,18 +51,20 @@ function getExport(mod, name) {
 
 async function main() {
   const runnerPath = resolveRunnerPath(process.argv);
+  const depsBaseRunnerPath = resolveDepsBaseRunnerPath(process.argv, runnerPath);
   const wrapperPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "video-chat-agent-runner-wrapper.mjs",
   );
-  const agentsModule = await loadAgentsModule(runnerPath);
+  const agentsModule = await loadAgentsModule(depsBaseRunnerPath);
   const AgentServer = getExport(agentsModule, "AgentServer");
   const ServerOptions = getExport(agentsModule, "ServerOptions");
   const initializeLogger = getExport(agentsModule, "initializeLogger");
 
   const logLevel = process.env.LOG_LEVEL?.trim() || "info";
   initializeLogger({ pretty: true, level: logLevel });
-  process.env.OPENCLAW_VIDEO_CHAT_BASE_RUNNER = runnerPath;
+  process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH = runnerPath;
+  process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER = depsBaseRunnerPath;
   const worker = new AgentServer(
     new ServerOptions({
       agent: wrapperPath,

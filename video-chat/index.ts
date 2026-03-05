@@ -1284,6 +1284,11 @@ function resolveSidecarBridgeScriptPath(): string {
   return path.join(moduleDir, "video-chat-agent-bridge.mjs");
 }
 
+function resolveCustomSidecarRunnerPath(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return path.join(moduleDir, "video-chat-agent-runner.js");
+}
+
 function collectRunnerCandidates(params: { entryScript?: string }): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
@@ -1335,9 +1340,24 @@ async function resolveNativeGatewayEntrypoint(runnerPath: string): Promise<strin
 async function resolveSidecarLaunchCommand(
   entryScript: string | undefined,
 ): Promise<SidecarLaunchCommand | null> {
-  const runnerPath = await resolveExistingFile(collectRunnerCandidates({ entryScript }));
-  if (runnerPath) {
-    const nativeGatewayEntrypoint = await resolveNativeGatewayEntrypoint(runnerPath);
+  const customRunnerPath = await resolveExistingFile([resolveCustomSidecarRunnerPath()]);
+  const baseRunnerCandidates = collectRunnerCandidates({ entryScript }).filter((candidate) => {
+    if (!customRunnerPath) {
+      return true;
+    }
+    return path.resolve(candidate) !== path.resolve(customRunnerPath);
+  });
+  const baseRunnerPath = await resolveExistingFile(baseRunnerCandidates);
+  if (customRunnerPath && baseRunnerPath) {
+    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
+    return {
+      executable: process.execPath,
+      args: [bridgeScriptPath, customRunnerPath, baseRunnerPath],
+      description: `node ${bridgeScriptPath} ${customRunnerPath} ${baseRunnerPath}`,
+    };
+  }
+  if (baseRunnerPath) {
+    const nativeGatewayEntrypoint = await resolveNativeGatewayEntrypoint(baseRunnerPath);
     const forceBridge = normalizeOptionalString(process.env.OPENCLAW_VIDEO_CHAT_FORCE_BRIDGE) === "1";
     if (nativeGatewayEntrypoint && !forceBridge) {
       return {
@@ -1349,8 +1369,8 @@ async function resolveSidecarLaunchCommand(
     const bridgeScriptPath = resolveSidecarBridgeScriptPath();
     return {
       executable: process.execPath,
-      args: [bridgeScriptPath, runnerPath],
-      description: `node ${bridgeScriptPath} ${runnerPath}`,
+      args: [bridgeScriptPath, baseRunnerPath],
+      description: `node ${bridgeScriptPath} ${baseRunnerPath}`,
     };
   }
   if (entryScript) {
