@@ -27,6 +27,13 @@
         scroll-margin-top: 72px;
       }
 
+      .video-chat-grid {
+        display: grid;
+        gap: 24px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-items: start;
+      }
+
       .video-chat-head {
         display: grid;
         gap: 6px;
@@ -98,6 +105,12 @@
 
       .media audio {
         width: 100%;
+      }
+
+      @media (max-width: 960px) {
+        .video-chat-grid {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -221,12 +234,10 @@
           </div>
         </div>
 
-        <p id="status" class="callout info">Loading setup status...</p>
-
         <section class="card stack video-chat-section" id="session-card">
           <header class="video-chat-head">
             <h2 class="card-title">Session</h2>
-            <p class="card-sub">Start or stop the managed video chat session.</p>
+            <p class="card-sub">Use a session key to connect to an existing OpenClaw agent session and open a LiveKit room with the agent.</p>
           </header>
           <form id="session-form" class="video-chat-form">
             <label class="field full">
@@ -240,53 +251,55 @@
           </form>
         </section>
 
-        <section class="card stack video-chat-section" id="chat-card">
-          <header class="video-chat-head">
-            <h2 class="card-title">Text Chat</h2>
-            <p class="card-sub">Send messages to the active agent session.</p>
-          </header>
-          <p class="callout info" id="chat-status">Start a session to use text chat.</p>
-          <div class="chat-log" id="chat-log"></div>
-          <form id="chat-form" class="video-chat-form">
-            <label class="field full">
-              <span>Message</span>
-              <textarea id="chat-input" placeholder="Type a message to the agent..."></textarea>
-            </label>
-            <div class="row">
-              <button class="btn primary" type="submit" id="chat-send">Send Message</button>
-            </div>
-          </form>
-        </section>
+        <div class="video-chat-grid">
+          <section class="card stack video-chat-section" id="chat-card">
+            <header class="video-chat-head">
+              <h2 class="card-title">Text Chat</h2>
+              <p class="card-sub">Send messages to the active agent session.</p>
+            </header>
+            <p class="callout info" id="chat-status">Start a session to use text chat.</p>
+            <div class="chat-log" id="chat-log"></div>
+            <form id="chat-form" class="video-chat-form">
+              <label class="field full">
+                <span>Message</span>
+                <textarea id="chat-input" placeholder="Type a message to the agent..."></textarea>
+              </label>
+              <div class="row">
+                <button class="btn primary" type="submit" id="chat-send">Send Message</button>
+              </div>
+            </form>
+          </section>
 
-        <section class="card stack video-chat-section" id="room-card">
-          <header class="video-chat-head">
-            <h2 class="card-title">LiveKit Room</h2>
-            <p class="card-sub">Join room, monitor participants, and manage local media tracks.</p>
-          </header>
-          <p id="room-status" class="callout info">No active room connection.</p>
-          <div class="row">
-            <button class="btn primary" type="button" id="connect-room">Join Room</button>
-            <button class="btn" type="button" id="leave-room">Leave Room</button>
-            <button class="btn" type="button" id="toggle-mic">Mute Mic</button>
-            <button class="btn" type="button" id="toggle-camera">Disable Camera</button>
-          </div>
-          <div class="room-grid">
-            <article class="list-item">
-              <div class="list-main">
-                <h3 class="list-title">Local Preview</h3>
-                <p class="list-sub">Camera and microphone preview before or during room join.</p>
-              </div>
-              <div class="media" id="local-preview"></div>
-            </article>
-            <article class="list-item">
-              <div class="list-main">
-                <h3 class="list-title">Remote Participants</h3>
-                <p class="list-sub">Live media from connected room participants.</p>
-              </div>
-              <div class="room-grid" id="remote-grid"></div>
-            </article>
-          </div>
-        </section>
+          <section class="card stack video-chat-section" id="room-card">
+            <header class="video-chat-head">
+              <h2 class="card-title">LiveKit Room</h2>
+              <p class="card-sub">Join room, monitor participants, and manage local media tracks.</p>
+            </header>
+            <p id="room-status" class="callout info">No active room connection.</p>
+            <div class="row">
+              <button class="btn primary" type="button" id="connect-room">Join Room</button>
+              <button class="btn" type="button" id="leave-room">Leave Room</button>
+              <button class="btn" type="button" id="toggle-mic">Mute Mic</button>
+              <button class="btn" type="button" id="toggle-camera">Disable Camera</button>
+            </div>
+            <div class="room-grid">
+              <article class="list-item">
+                <div class="list-main">
+                  <h3 class="list-title">Local Preview</h3>
+                  <p class="list-sub">Camera and microphone preview before or during room join.</p>
+                </div>
+                <div class="media" id="local-preview"></div>
+              </article>
+              <article class="list-item">
+                <div class="list-main">
+                  <h3 class="list-title">Remote Participants</h3>
+                  <p class="list-sub">Live media from connected room participants.</p>
+                </div>
+                <div class="room-grid" id="remote-grid"></div>
+              </article>
+            </div>
+          </section>
+        </div>
 
         <section class="card stack video-chat-section" id="output-card">
           <header class="video-chat-head">
