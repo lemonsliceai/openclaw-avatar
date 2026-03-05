@@ -248,6 +248,18 @@ describe("video-chat plugin", () => {
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
   });
 
+  it("rejects setup save when LemonSlice image URL is not a direct URL", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.setup.save", {
+      lemonSliceImageUrl: "https://e9riw81orx.ufs.sh/f/",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.code).toBe("INVALID_REQUEST");
+    expect(call?.[2]?.message).toContain("videoChat.lemonSlice.imageUrl");
+  });
+
   it("rejects invalid session params", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.create", {
@@ -258,6 +270,26 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
     expect(call?.[2]?.message).toContain("invalid videoChat.session.create params");
+  });
+
+  it("rejects session create when configured LemonSlice image URL is not direct", async () => {
+    const config = {
+      ...baseConfig,
+      videoChat: {
+        ...baseConfig.videoChat,
+        lemonSlice: {
+          ...baseConfig.videoChat.lemonSlice,
+          imageUrl: "https://e9riw81orx.ufs.sh/f/",
+        },
+      },
+    };
+    const { methods } = setup(config);
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.code).toBe("INVALID_REQUEST");
+    expect(call?.[2]?.message).toContain("videoChat.lemonSlice.imageUrl");
   });
 
   it("returns generated reply audio for browser publishing", async () => {

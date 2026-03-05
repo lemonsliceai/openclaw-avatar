@@ -115,6 +115,31 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function validateLemonSliceImageUrl(value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "videoChat.lemonSlice.imageUrl must be a valid URL";
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "videoChat.lemonSlice.imageUrl must use http or https";
+  }
+
+  const trimmedPath = parsed.pathname.replace(/\/+$/g, "");
+  if (!trimmedPath || trimmedPath === "/") {
+    return "videoChat.lemonSlice.imageUrl must be a direct image URL, not a directory";
+  }
+
+  const lastPathSegment = trimmedPath.split("/").at(-1) ?? "";
+  if (!lastPathSegment || lastPathSegment === "f") {
+    return "videoChat.lemonSlice.imageUrl must include an image path after the host";
+  }
+
+  return null;
+}
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -425,7 +450,7 @@ function parseVideoChatSetupInput(
     return value;
   };
 
-  return {
+  const parsed: VideoChatSetupInput = {
     lemonSliceApiKey: readInput("lemonSliceApiKey"),
     lemonSliceImageUrl: readInput("lemonSliceImageUrl"),
     livekitUrl: readInput("livekitUrl"),
@@ -433,6 +458,16 @@ function parseVideoChatSetupInput(
     livekitApiSecret: readInput("livekitApiSecret"),
     elevenLabsApiKey: readInput("elevenLabsApiKey"),
   };
+
+  const lemonSliceImageUrl = normalizeOptionalString(parsed.lemonSliceImageUrl);
+  if (lemonSliceImageUrl) {
+    const validationError = validateLemonSliceImageUrl(lemonSliceImageUrl);
+    if (validationError) {
+      throw new Error(`invalid ${method} params: ${validationError}`);
+    }
+  }
+
+  return parsed;
 }
 
 function applyVideoChatSetupToConfig(
@@ -1164,11 +1199,28 @@ function collectRunnerCandidates(params: { entryScript?: string }): string[] {
   return candidates;
 }
 
+async function resolveNativeGatewayEntrypoint(runnerPath: string): Promise<string | null> {
+  const runnerDir = path.dirname(path.resolve(runnerPath));
+  return resolveExistingFile([
+    path.join(runnerDir, "index.js"),
+    path.join(path.dirname(runnerDir), "index.js"),
+  ]);
+}
+
 async function resolveSidecarLaunchCommand(
   entryScript: string | undefined,
 ): Promise<SidecarLaunchCommand | null> {
   const runnerPath = await resolveExistingFile(collectRunnerCandidates({ entryScript }));
   if (runnerPath) {
+    const nativeGatewayEntrypoint = await resolveNativeGatewayEntrypoint(runnerPath);
+    const forceBridge = normalizeOptionalString(process.env.OPENCLAW_VIDEO_CHAT_FORCE_BRIDGE) === "1";
+    if (nativeGatewayEntrypoint && !forceBridge) {
+      return {
+        executable: process.execPath,
+        args: [nativeGatewayEntrypoint, "gateway", "video-chat-agent"],
+        description: `node ${nativeGatewayEntrypoint} gateway video-chat-agent`,
+      };
+    }
     const bridgeScriptPath = resolveSidecarBridgeScriptPath();
     return {
       executable: process.execPath,
@@ -1217,6 +1269,10 @@ async function createVideoChatSession(params: {
     throw new Error(
       "video chat is not configured: missing LemonSlice, LiveKit, or ElevenLabs credentials",
     );
+  }
+  const imageUrlValidationError = validateLemonSliceImageUrl(lemonSliceImageUrl);
+  if (imageUrlValidationError) {
+    throw new Error(`video chat is not configured: ${imageUrlValidationError}`);
   }
 
   const roomName = `${VIDEO_CHAT_ROOM_PREFIX}-${sanitizeVideoChatRoomPart(params.sessionKey)}-${randomUUID().slice(0, 8)}`;

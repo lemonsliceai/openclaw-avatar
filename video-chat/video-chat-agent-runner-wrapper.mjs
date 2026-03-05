@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -16,112 +17,64 @@ async function importFromBase(baseRunnerPath, specifier) {
   return import(pathToFileURL(resolved).href);
 }
 
+function resolveFromBase(baseRunnerPath, specifier) {
+  const resolver = createRequire(path.join(path.dirname(baseRunnerPath), "__openclaw_runner__.js"));
+  return resolver.resolve(specifier);
+}
+
+function resolvePackageRootFromResolvedMain(mainPath) {
+  let current = path.dirname(mainPath);
+  while (current !== path.dirname(current)) {
+    const candidate = path.join(current, "package.json");
+    if (fs.existsSync(candidate)) {
+      return current;
+    }
+    current = path.dirname(current);
+  }
+  return null;
+}
+
 async function patchLemonSliceLogging(baseRunnerPath) {
-  const agentsModule = await importFromBase(baseRunnerPath, "@livekit/agents");
-  const rtcNodeModule = await importFromBase(baseRunnerPath, "@livekit/rtc-node");
-  const livekitServerSdkModule = await importFromBase(baseRunnerPath, "livekit-server-sdk");
-  const lemonSliceModule = await importFromBase(baseRunnerPath, "@livekit/agents-plugin-lemonslice");
+  const lemonSliceMainPath = resolveFromBase(baseRunnerPath, "@livekit/agents-plugin-lemonslice");
+  const lemonSlicePackageRoot = resolvePackageRootFromResolvedMain(lemonSliceMainPath);
+  const avatarModulePath = lemonSlicePackageRoot
+    ? path.join(lemonSlicePackageRoot, "dist", "avatar.js")
+    : null;
+  const lemonSliceModule = avatarModulePath
+    ? await import(pathToFileURL(avatarModulePath).href)
+    : await importFromBase(baseRunnerPath, "@livekit/agents-plugin-lemonslice");
   const AvatarSession = lemonSliceModule?.AvatarSession;
   if (!AvatarSession || !AvatarSession.prototype) {
     throw new Error("Unable to load LemonSlice AvatarSession");
   }
-  const AccessToken = livekitServerSdkModule?.AccessToken;
-  const voice = agentsModule?.voice;
-  const TrackKind = rtcNodeModule?.TrackKind;
-  if (!AccessToken || !voice?.DataStreamAudioOutput || !TrackKind) {
-    throw new Error("Unable to load LiveKit runtime modules needed for avatar fallback start");
-  }
-
-  const waitForLocalParticipantIdentity = async (room, timeoutMs = 4_000) => {
-    const startMs = Date.now();
-    while (Date.now() - startMs < timeoutMs) {
-      const identity =
-        typeof room?.localParticipant?.identity === "string"
-          ? room.localParticipant.identity.trim()
-          : "";
-      if (identity) {
-        return identity;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    return "";
-  };
-
-  const fallbackAvatarStart = async (instance, agentSession, room, options = {}) => {
-    const livekitUrl = options.livekitUrl || process.env.LIVEKIT_URL;
-    const livekitApiKey = options.livekitApiKey || process.env.LIVEKIT_API_KEY;
-    const livekitApiSecret = options.livekitApiSecret || process.env.LIVEKIT_API_SECRET;
-    if (!livekitUrl || !livekitApiKey || !livekitApiSecret) {
-      throw new Error(
-        "livekitUrl, livekitApiKey, and livekitApiSecret must be set by arguments or environment variables",
-      );
-    }
-
-    const localParticipantIdentity = await waitForLocalParticipantIdentity(room);
-    if (!localParticipantIdentity) {
-      throw new Error("failed to get local participant identity");
-    }
-
-    const accessToken = new AccessToken(livekitApiKey, livekitApiSecret, {
-      identity: instance.avatarParticipantIdentity,
-      name: instance.avatarParticipantName,
-    });
-    accessToken.kind = "agent";
-    accessToken.addGrant({
-      roomJoin: true,
-      room: room.name,
-    });
-    accessToken.attributes = {
-      "lk.publish_on_behalf": localParticipantIdentity,
-    };
-    const livekitToken = await accessToken.toJwt();
-    await instance.startAgent(livekitUrl, livekitToken);
-    agentSession.output.audio = new voice.DataStreamAudioOutput({
-      room,
-      destinationIdentity: instance.avatarParticipantIdentity,
-      sampleRate: 16_000,
-      waitRemoteTrack: TrackKind.KIND_VIDEO,
-    });
-  };
 
   const originalStart = AvatarSession.prototype.start;
   if (typeof originalStart === "function" && !originalStart.__openclawWrapped) {
     const wrappedStart = async function wrappedAvatarStart(...args) {
       const startedAt = Date.now();
+      const maxAttempts = 20;
+      const retryDelayMs = 250;
       console.log("[video-chat-agent] avatar.start begin");
-      try {
-        const result = await originalStart.apply(this, args);
-        const elapsedMs = Date.now() - startedAt;
-        console.log(`[video-chat-agent] avatar.start success (${elapsedMs}ms)`);
-        return result;
-      } catch (error) {
-        const elapsedMs = Date.now() - startedAt;
-        const message = error instanceof Error ? error.stack ?? error.message : String(error);
-        const fallbackEligible =
-          typeof message === "string" && message.includes("failed to get local participant identity");
-        if (!fallbackEligible) {
-          console.error(`[video-chat-agent] avatar.start failed (${elapsedMs}ms): ${message}`);
-          throw error;
-        }
 
-        console.warn(
-          `[video-chat-agent] avatar.start missing local participant identity (${elapsedMs}ms); attempting fallback`,
-        );
-        const [agentSession, room, options] = args;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          await fallbackAvatarStart(this, agentSession, room, options);
-          const totalElapsedMs = Date.now() - startedAt;
-          console.log(`[video-chat-agent] avatar.start fallback success (${totalElapsedMs}ms)`);
-        } catch (fallbackError) {
-          const totalElapsedMs = Date.now() - startedAt;
-          const fallbackMessage =
-            fallbackError instanceof Error
-              ? fallbackError.stack ?? fallbackError.message
-              : String(fallbackError);
-          console.error(
-            `[video-chat-agent] avatar.start fallback failed (${totalElapsedMs}ms): ${fallbackMessage}`,
+          const result = await originalStart.apply(this, args);
+          const elapsedMs = Date.now() - startedAt;
+          const suffix = attempt > 1 ? ` after retry ${attempt}/${maxAttempts}` : "";
+          console.log(`[video-chat-agent] avatar.start success (${elapsedMs}ms)${suffix}`);
+          return result;
+        } catch (error) {
+          const elapsedMs = Date.now() - startedAt;
+          const message = error instanceof Error ? error.stack ?? error.message : String(error);
+          const retryable = message.includes("failed to get local participant identity");
+          if (!retryable || attempt >= maxAttempts) {
+            console.error(`[video-chat-agent] avatar.start failed (${elapsedMs}ms): ${message}`);
+            throw error;
+          }
+          console.warn(
+            `[video-chat-agent] avatar.start retry ${attempt}/${maxAttempts} waiting for local participant identity`,
           );
-          throw fallbackError;
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
       }
     };
