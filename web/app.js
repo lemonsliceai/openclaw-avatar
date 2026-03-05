@@ -1,6 +1,9 @@
 const statusEl = document.getElementById("status");
 const outputEl = document.getElementById("output");
 const setupForm = document.getElementById("setup-form");
+const setupRawForm = document.getElementById("setup-raw-form");
+const setupRawInput = document.getElementById("setup-raw-input");
+const setupRawErrorEl = document.getElementById("setup-raw-error");
 const sessionForm = document.getElementById("session-form");
 const ttsForm = document.getElementById("tts-form");
 const reloadButton = document.getElementById("reload-status");
@@ -32,6 +35,8 @@ const chatSendButton = document.getElementById("chat-send");
 const OPENCLAW_SETTINGS_STORAGE_KEY = "openclaw.control.settings.v1";
 const LEGACY_TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
 const THEME_STORAGE_KEY = "videoChat.themePreference";
+const REDACTED_SECRET_VALUE = "_REDACTED_";
+const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_WS_CLIENT = {
@@ -55,6 +60,7 @@ const sensitiveFieldReplaceButtons = Array.from(document.querySelectorAll("[data
 const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
 const configSectionFilterButtons = Array.from(document.querySelectorAll("[data-section-filter]"));
 const configSectionCards = Array.from(document.querySelectorAll("[data-config-section]"));
+const configModeButtons = Array.from(document.querySelectorAll("[data-config-mode]"));
 const secretEditState = new Set();
 const systemThemeMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
@@ -62,10 +68,12 @@ let activeThemePreference = "system";
 let tokenEditMode = false;
 let latestSetupStatus = null;
 let activeConfigSectionFilter = "all";
+let activeConfigMode = "form";
 let setupFormBaseline = {
   lemonSliceImageUrl: "",
   livekitUrl: "",
 };
+let setupRawBaseline = "";
 
 function escapeSelectorValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -207,7 +215,7 @@ function maskSensitiveField(input, isMasked) {
   }
   if (isMasked) {
     input.value = "";
-    input.placeholder = "******** (configured)";
+    input.placeholder = REDACTED_SECRET_VALUE;
     input.disabled = true;
   } else {
     input.disabled = false;
@@ -258,6 +266,168 @@ function getSetupFieldValue(name) {
   return normalizeOptionalInputValue(field?.value);
 }
 
+const setupPayloadFieldNames = [
+  "lemonSliceApiKey",
+  "lemonSliceImageUrl",
+  "livekitUrl",
+  "livekitApiKey",
+  "livekitApiSecret",
+  "elevenLabsApiKey",
+];
+const setupSecretFieldNames = [
+  "lemonSliceApiKey",
+  "livekitApiKey",
+  "livekitApiSecret",
+  "elevenLabsApiKey",
+];
+
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function isSetupSecretFieldName(name) {
+  return setupSecretFieldNames.includes(name);
+}
+
+function isRedactedSecretValue(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = value.trim();
+  return normalized === REDACTED_SECRET_VALUE || normalized === OPENCLAW_REDACTED_SECRET_VALUE;
+}
+
+function buildSetupPayloadFromForm() {
+  const payload = {};
+  if (!setupForm) {
+    return payload;
+  }
+  for (const name of setupPayloadFieldNames) {
+    const field = setupForm.elements.namedItem(name);
+    if (!field || typeof field.value !== "string") {
+      continue;
+    }
+    const isSecretField = isSetupSecretFieldName(name);
+    payload[name] = field.disabled && isSecretField ? REDACTED_SECRET_VALUE : field.value;
+  }
+  return payload;
+}
+
+function applySetupPayloadToForm(payload) {
+  if (!setupForm || !payload || typeof payload !== "object") {
+    return;
+  }
+
+  secretEditState.clear();
+  for (const name of setupSecretFieldNames) {
+    if (!hasOwn(payload, name)) {
+      continue;
+    }
+    const value = payload[name];
+    if (typeof value === "string" && normalizeOptionalInputValue(value).length > 0) {
+      secretEditState.add(name);
+    }
+  }
+  updateSensitiveFieldMasking(latestSetupStatus);
+
+  for (const name of setupPayloadFieldNames) {
+    if (!hasOwn(payload, name)) {
+      continue;
+    }
+    const field = setupForm.elements.namedItem(name);
+    if (!field || field.disabled || typeof field.value !== "string") {
+      continue;
+    }
+    const value = payload[name];
+    if (typeof value === "string") {
+      field.value = value;
+    }
+  }
+
+  updateSensitiveFieldMasking(latestSetupStatus);
+}
+
+function parseSetupPayloadFromRaw(rawText) {
+  const trimmed = typeof rawText === "string" ? rawText.trim() : "";
+  if (!trimmed) {
+    return {};
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error("Raw payload must be valid JSON.");
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Raw payload must be a JSON object.");
+  }
+
+  const payload = {};
+  for (const name of setupPayloadFieldNames) {
+    if (!hasOwn(parsed, name)) {
+      continue;
+    }
+    const value = parsed[name];
+    if (typeof value !== "string") {
+      throw new Error(`"${name}" must be a string.`);
+    }
+    if (isSetupSecretFieldName(name) && isRedactedSecretValue(value)) {
+      continue;
+    }
+    payload[name] = value;
+  }
+  return payload;
+}
+
+function serializeSetupPayload(payload) {
+  return `${JSON.stringify(payload, null, 2)}\n`;
+}
+
+function setSetupRawError(message) {
+  if (!setupRawErrorEl) {
+    return;
+  }
+  const next = typeof message === "string" ? message.trim() : "";
+  if (!next) {
+    setupRawErrorEl.textContent = "";
+    setupRawErrorEl.classList.add("is-mode-hidden");
+    return;
+  }
+  setupRawErrorEl.textContent = next;
+  setupRawErrorEl.classList.remove("is-mode-hidden");
+}
+
+function syncRawFromForm() {
+  if (!setupRawInput) {
+    return;
+  }
+  setupRawInput.value = serializeSetupPayload(buildSetupPayloadFromForm());
+  setSetupRawError("");
+}
+
+function syncFormFromRaw() {
+  if (!setupRawInput) {
+    return { ok: true };
+  }
+  try {
+    const payload = parseSetupPayloadFromRaw(setupRawInput.value);
+    applySetupPayloadToForm(payload);
+    setSetupRawError("");
+    return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Raw payload is invalid.";
+    setSetupRawError(message);
+    setOutput({ action: "setup-raw-parse-failed", error: message });
+    return { ok: false, error: message };
+  }
+}
+
+function snapshotSetupRawBaseline() {
+  setupRawBaseline = setupRawInput?.value ?? "";
+}
+
 function snapshotSetupFormBaseline() {
   setupFormBaseline = {
     lemonSliceImageUrl: getSetupFieldValue("lemonSliceImageUrl"),
@@ -294,11 +464,47 @@ function isSetupFormDirty() {
   return urlsDirty || secretsDirty;
 }
 
+function isSetupRawDirty() {
+  if (!setupRawInput) {
+    return false;
+  }
+  return setupRawInput.value !== setupRawBaseline;
+}
+
+function setConfigMode(nextMode, options = {}) {
+  const mode = nextMode === "raw" ? "raw" : "form";
+  const shouldSync = options.sync !== false;
+  activeConfigMode = mode;
+
+  if (mode === "raw" && shouldSync) {
+    syncRawFromForm();
+  }
+  if (mode === "form" && shouldSync) {
+    syncFormFromRaw();
+  }
+
+  if (setupForm) {
+    setupForm.classList.toggle("is-mode-hidden", mode !== "form");
+  }
+  if (setupRawForm) {
+    setupRawForm.classList.toggle("is-mode-hidden", mode !== "raw");
+  }
+  for (const button of configModeButtons) {
+    const buttonMode = button.getAttribute("data-config-mode");
+    button.classList.toggle("active", buttonMode === mode);
+    button.setAttribute("aria-pressed", buttonMode === mode ? "true" : "false");
+  }
+  if (setupSaveButton) {
+    setupSaveButton.setAttribute("form", mode === "raw" ? "setup-raw-form" : "setup-form");
+  }
+  updateSetupSaveButtonState();
+}
+
 function updateSetupSaveButtonState() {
   if (!setupSaveButton) {
     return;
   }
-  setupSaveButton.disabled = !isSetupFormDirty();
+  setupSaveButton.disabled = activeConfigMode === "raw" ? !isSetupRawDirty() : !isSetupFormDirty();
 }
 
 function updateTokenFieldMasking() {
@@ -1019,13 +1225,51 @@ function setupStatusLabel(setup) {
   return `Missing: ${setup.missing.join(", ")}`;
 }
 
+function populateSetupFormFromSetupStatus(setup) {
+  if (!setupForm) {
+    return;
+  }
+  const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
+  const imageUrlField = setupForm.elements.namedItem("lemonSliceImageUrl");
+  if (livekitUrlField && typeof livekitUrlField.value === "string") {
+    livekitUrlField.value = normalizeOptionalInputValue(setup?.livekit?.url);
+  }
+  if (imageUrlField && typeof imageUrlField.value === "string") {
+    imageUrlField.value = normalizeOptionalInputValue(setup?.lemonSlice?.imageUrl);
+  }
+}
+
+function syncSetupEditorsFromCurrentForm() {
+  updateSensitiveFieldMasking(latestSetupStatus);
+  syncRawFromForm();
+  snapshotSetupFormBaseline();
+  snapshotSetupRawBaseline();
+  updateSetupSaveButtonState();
+}
+
+async function saveSetupPayload(body) {
+  const payload = await requestJson("/plugins/video-chat/api/setup", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (statusEl) {
+    statusEl.textContent = setupStatusLabel(payload.setup);
+  }
+  latestSetupStatus = payload.setup ?? null;
+  setGatewayHealthStatus("ok", "OK");
+  updateKeysHealthFromSetup(payload.setup);
+  populateSetupFormFromSetupStatus(payload.setup);
+  secretEditState.clear();
+  syncSetupEditorsFromCurrentForm();
+  setOutput({ action: "setup-saved", setup: payload.setup });
+  return payload;
+}
+
 async function refreshSetupStatus() {
   if (!hasGatewayToken()) {
     latestSetupStatus = null;
     secretEditState.clear();
-    updateSensitiveFieldMasking(latestSetupStatus);
-    snapshotSetupFormBaseline();
-    updateSetupSaveButtonState();
+    syncSetupEditorsFromCurrentForm();
     if (statusEl) {
       statusEl.textContent = "Enter a gateway token above, then click Use Token.";
     }
@@ -1046,23 +1290,11 @@ async function refreshSetupStatus() {
     }
     setGatewayHealthStatus("ok", "OK");
     updateKeysHealthFromSetup(payload.setup);
-    if (setupForm) {
-      const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
-      const imageUrlField = setupForm.elements.namedItem("lemonSliceImageUrl");
-      if (livekitUrlField) {
-        livekitUrlField.value = normalizeOptionalInputValue(payload.setup?.livekit?.url);
-      }
-      if (imageUrlField) {
-        imageUrlField.value = normalizeOptionalInputValue(payload.setup?.lemonSlice?.imageUrl);
-      }
-      updateSensitiveFieldMasking(latestSetupStatus);
-      snapshotSetupFormBaseline();
-      updateSetupSaveButtonState();
-    }
+    populateSetupFormFromSetupStatus(payload.setup);
+    syncSetupEditorsFromCurrentForm();
   } catch (error) {
     latestSetupStatus = null;
-    updateSensitiveFieldMasking(latestSetupStatus);
-    updateSetupSaveButtonState();
+    syncSetupEditorsFromCurrentForm();
     const message = error instanceof Error ? error.message : "Failed to load status";
     if (statusEl) {
       statusEl.textContent = message;
@@ -1115,22 +1347,7 @@ if (setupForm) {
     const formData = new FormData(setupForm);
     const body = Object.fromEntries(formData.entries());
     try {
-      const payload = await requestJson("/plugins/video-chat/api/setup", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-      if (statusEl) {
-        statusEl.textContent = setupStatusLabel(payload.setup);
-      }
-      latestSetupStatus = payload.setup ?? null;
-      setGatewayHealthStatus("ok", "OK");
-      updateKeysHealthFromSetup(payload.setup);
-      secretEditState.clear();
-      updateSensitiveFieldMasking(latestSetupStatus);
-      setOutput({ action: "setup-saved", setup: payload.setup });
-      setupForm.reset();
-      snapshotSetupFormBaseline();
-      updateSetupSaveButtonState();
+      await saveSetupPayload(body);
     } catch (error) {
       setGatewayHealthStatus("danger", "Error");
       setOutput({ action: "setup-save-failed", error: String(error) });
@@ -1138,7 +1355,41 @@ if (setupForm) {
   });
 
   snapshotSetupFormBaseline();
+  syncRawFromForm();
+  snapshotSetupRawBaseline();
   updateSetupSaveButtonState();
+}
+
+if (setupRawInput) {
+  setupRawInput.addEventListener("input", () => {
+    setSetupRawError("");
+    updateSetupSaveButtonState();
+  });
+}
+
+if (setupRawForm) {
+  setupRawForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const body = parseSetupPayloadFromRaw(setupRawInput?.value ?? "");
+      await saveSetupPayload(body);
+    } catch (error) {
+      setGatewayHealthStatus("danger", "Error");
+      const message = error instanceof Error ? error.message : String(error);
+      setSetupRawError(message);
+      setOutput({ action: "setup-save-failed", error: message });
+    }
+  });
+}
+
+if (configModeButtons.length) {
+  for (const button of configModeButtons) {
+    button.addEventListener("click", () => {
+      const nextMode = button.getAttribute("data-config-mode") || "form";
+      setConfigMode(nextMode);
+    });
+  }
+  setConfigMode("form", { sync: false });
 }
 
 if (sessionForm) {

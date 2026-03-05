@@ -109,6 +109,16 @@
         display: none !important;
       }
 
+      .is-mode-hidden {
+        display: none !important;
+      }
+
+      .setup-raw-help {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
       .video-chat-status {
         margin: 0 0 16px;
       }
@@ -252,8 +262,8 @@
             </nav>
             <div class="config-sidebar__footer">
               <div class="config-mode-toggle">
-                <button class="config-mode-toggle__btn active" type="button" disabled>Form</button>
-                <button class="config-mode-toggle__btn" type="button" disabled>Raw</button>
+                <button class="config-mode-toggle__btn active" type="button" data-config-mode="form">Form</button>
+                <button class="config-mode-toggle__btn" type="button" data-config-mode="raw">Raw</button>
               </div>
             </div>
           </aside>
@@ -405,6 +415,27 @@
                         </label>
                       </div>
                     </div>
+                  </div>
+                </section>
+              </form>
+
+              <form id="setup-raw-form" class="video-chat-form is-mode-hidden" novalidate>
+                <section class="config-section-card stack" id="setup-raw-section">
+                  <header class="config-section-card__header video-chat-head">
+                    <h2 class="card-title">Raw Setup Payload</h2>
+                    <p class="card-sub">Edit the setup payload as JSON and save directly.</p>
+                  </header>
+                  <div class="config-section-card__content">
+                    <label class="field full config-raw-field">
+                      <span>JSON body</span>
+                      <textarea id="setup-raw-input" spellcheck="false" autocomplete="off"></textarea>
+                    </label>
+                    <p id="setup-raw-error" class="callout danger is-mode-hidden"></p>
+                    <p class="setup-raw-help">
+                      Supported keys: lemonSliceApiKey, lemonSliceImageUrl, livekitUrl, livekitApiKey,
+                      livekitApiSecret, elevenLabsApiKey. Use <code>_REDACTED_</code> for secret keys to keep
+                      existing values.
+                    </p>
                   </div>
                 </section>
               </form>
