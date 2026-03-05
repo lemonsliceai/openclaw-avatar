@@ -1,0 +1,10 @@
+{
+  "id": "video-chat",
+  "name": "Video Chat",
+  "description": "Video chat gateway methods and sidecar worker",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw Video Chat Setup</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        background: linear-gradient(160deg, #f6f8fb, #e8eef8 65%, #dceef9);
+        color: #17212b;
+      }
+      main {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 24px 16px 40px;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 1.8rem;
+      }
+      p {
+        margin: 0 0 16px;
+      }
+      section {
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid #cfdae6;
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 14px;
+      }
+      h2 {
+        margin: 0 0 10px;
+        font-size: 1.05rem;
+      }
+      form {
+        display: grid;
+        gap: 10px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        font-size: 0.92rem;
+      }
+      input,
+      textarea,
+      button {
+        font: inherit;
+      }
+      input,
+      textarea {
+        border: 1px solid #bec9d8;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: #fff;
+      }
+      textarea {
+        min-height: 72px;
+        resize: vertical;
+      }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 16px;
+        background: #1e5aa8;
+        color: white;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #64748b;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      code,
+      pre {
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+      }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #0f172a;
+        color: #dbeafe;
+        padding: 12px;
+        border-radius: 10px;
+      }
+      #status {
+        font-weight: 600;
+      }
+      .room-shell {
+        display: grid;
+        gap: 12px;
+      }
+      .room-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .tile {
+        border: 1px solid #c9d6e8;
+        border-radius: 12px;
+        padding: 10px;
+        background: #f8fbff;
+      }
+      .tile h3 {
+        margin: 0 0 8px;
+        font-size: 0.95rem;
+      }
+      .media {
+        min-height: 140px;
+        border-radius: 10px;
+        overflow: hidden;
+        background: #0b1220;
+        display: grid;
+        place-items: center;
+      }
+      .media:empty::before {
+        content: "No media";
+        color: #8ea2bc;
+        font-size: 0.86rem;
+      }
+      .media video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .media audio {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Video Chat Plugin</h1>
+      <p id="status">Loading setup status...</p>
+
+      <section>
+        <h2>Gateway Token</h2>
+        <p>Enter your gateway token once to authorize API calls from this page.</p>
+        <form id="token-form">
+          <label>
+            Gateway token
+            <input type="password" id="gateway-token" autocomplete="off" />
+          </label>
+          <div class="row">
+            <button type="submit">Use Token</button>
+            <button class="secondary" type="button" id="clear-token">Clear Token</button>
+          </div>
+        </form>
+      </section>
+
+      <section>
+        <h2>Setup</h2>
+        <form id="setup-form">
+          <label>
+            LemonSlice API key
+            <input type="password" name="lemonSliceApiKey" autocomplete="off" />
+          </label>
+          <label>
+            LemonSlice image URL
+            <input type="url" name="lemonSliceImageUrl" placeholder="https://..." />
+          </label>
+          <label>
+            LiveKit URL
+            <input type="url" name="livekitUrl" placeholder="wss://..." />
+          </label>
+          <label>
+            LiveKit API key
+            <input type="password" name="livekitApiKey" autocomplete="off" />
+          </label>
+          <label>
+            LiveKit API secret
+            <input type="password" name="livekitApiSecret" autocomplete="off" />
+          </label>
+          <label>
+            ElevenLabs API key
+            <input type="password" name="elevenLabsApiKey" autocomplete="off" />
+          </label>
+          <div class="row">
+            <button type="submit">Save Setup</button>
+            <button class="secondary" type="button" id="reload-status">Reload Status</button>
+          </div>
+        </form>
+      </section>
+
+      <section>
+        <h2>Session</h2>
+        <form id="session-form">
+          <label>
+            Session key
+            <input type="text" name="sessionKey" placeholder="agent:main/main" />
+          </label>
+          <div class="row">
+            <button type="submit">Start Session</button>
+            <button class="secondary" type="button" id="stop-session">Stop Session</button>
+          </div>
+        </form>
+      </section>
+
+      <section>
+        <h2>LiveKit Room</h2>
+        <div class="room-shell">
+          <p id="room-status">No active room connection.</p>
+          <div class="row">
+            <button type="button" id="connect-room">Join Room</button>
+            <button class="secondary" type="button" id="leave-room">Leave Room</button>
+            <button class="secondary" type="button" id="toggle-mic">Mute Mic</button>
+            <button class="secondary" type="button" id="toggle-camera">Disable Camera</button>
+          </div>
+          <div class="room-grid">
+            <article class="tile">
+              <h3>Local Preview</h3>
+              <div class="media" id="local-preview"></div>
+            </article>
+            <article class="tile">
+              <h3>Remote Participants</h3>
+              <div class="room-grid" id="remote-grid"></div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Audio Helpers</h2>
+        <form id="tts-form">
+          <label>
+            Generate speech from text
+            <textarea name="text" placeholder="Say something..."></textarea>
+          </label>
+          <button type="submit">Generate TTS</button>
+        </form>
+      </section>
+
+      <section>
+        <h2>Output</h2>
+        <pre id="output">No events yet.</pre>
+      </section>
+    </main>
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <script type="module" src="/plugins/video-chat/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["video-chat/**/*.ts", "test-utils/**/*.ts", "types/**/*.d.ts", "vitest.config.ts"]
+}
