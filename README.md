@@ -83,6 +83,8 @@ The page supports:
 - Reading setup status.
 - Saving keys/settings.
 - Starting/stopping sessions.
+- Joining/leaving the LiveKit room with local preview + remote participant media tiles.
+- Mic and camera toggles for the local participant.
 - Calling TTS helper endpoint for browser-side validation.
 
 ## Gateway Methods

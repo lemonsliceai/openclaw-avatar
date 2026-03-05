@@ -73,6 +73,9 @@ type SidecarLogger = {
 };
 
 type GatewayRuntime = NonNullable<OpenClawPluginServiceContext["gateway"]>;
+type SidecarGatewayRuntime =
+  | GatewayRuntime
+  | { port: number; auth: { mode: "none" } };
 
 type LiveKitAgentDispatch = {
   agentName: string;
@@ -141,6 +144,48 @@ function resolveEffectiveVideoChatConfig(config: OpenClawConfig): OpenClawConfig
     effective.messages = pluginConfig.messages as OpenClawConfig["messages"];
   }
   return effective;
+}
+
+function resolveGatewayRuntimeFromConfig(config: OpenClawConfig): SidecarGatewayRuntime | null {
+  const root = asObjectRecord(config);
+  const gateway = asObjectRecord(root.gateway);
+  const auth = asObjectRecord(gateway.auth);
+
+  const envPort = Number(process.env.OPENCLAW_GATEWAY_PORT ?? "");
+  const configPort = gateway.port;
+  const resolvedPort =
+    typeof configPort === "number" && Number.isFinite(configPort)
+      ? configPort
+      : Number.isFinite(envPort)
+        ? envPort
+        : 18789;
+  const port = Math.max(1, Math.floor(resolvedPort));
+
+  const mode = typeof auth.mode === "string" ? auth.mode.trim() : "";
+  if (mode === "password") {
+    const password =
+      typeof auth.password === "string" && auth.password.trim()
+        ? auth.password
+        : typeof process.env.OPENCLAW_GATEWAY_PASSWORD === "string" &&
+            process.env.OPENCLAW_GATEWAY_PASSWORD.trim()
+          ? process.env.OPENCLAW_GATEWAY_PASSWORD
+          : undefined;
+    return { port, auth: { mode: "password", password } };
+  }
+  if (mode === "trusted-proxy") {
+    return { port, auth: { mode: "trusted-proxy" } };
+  }
+  if (mode === "none") {
+    return { port, auth: { mode: "none" } };
+  }
+  const token =
+    typeof auth.token === "string" && auth.token.trim()
+      ? auth.token
+      : typeof process.env.OPENCLAW_GATEWAY_TOKEN === "string" &&
+          process.env.OPENCLAW_GATEWAY_TOKEN.trim()
+        ? process.env.OPENCLAW_GATEWAY_TOKEN
+        : undefined;
+  return { port, auth: { mode: "token", token } };
 }
 
 function respondGatewayError(
@@ -810,6 +855,26 @@ async function resolveExistingDirectory(candidates: string[]): Promise<string | 
   return null;
 }
 
+async function resolveExistingFile(candidates: string[]): Promise<string | null> {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = candidate.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    try {
+      const entry = await stat(normalized);
+      if (entry.isFile()) {
+        return normalized;
+      }
+    } catch {
+      // Keep scanning fallback files.
+    }
+  }
+  return null;
+}
+
 function moduleWebRootCandidates(): string[] {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return [
@@ -1048,6 +1113,79 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
   });
 }
 
+type SidecarLaunchCommand = {
+  executable: string;
+  args: string[];
+  description: string;
+};
+
+function resolveSidecarBridgeScriptPath(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return path.join(moduleDir, "video-chat-agent-bridge.mjs");
+}
+
+function collectRunnerCandidates(params: { entryScript?: string }): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const pushCandidate = (candidate: string) => {
+    const normalized = candidate.trim();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    candidates.push(normalized);
+  };
+
+  const addAncestorCandidates = (startPath: string, depth: number) => {
+    let current = path.resolve(startPath);
+    for (let index = 0; index < depth; index += 1) {
+      pushCandidate(path.join(current, "video-chat-agent-runner.js"));
+      pushCandidate(path.join(current, "dist", "video-chat-agent-runner.js"));
+      pushCandidate(path.join(current, "openclaw", "dist", "video-chat-agent-runner.js"));
+      pushCandidate(path.join(current, "node_modules", "openclaw", "dist", "video-chat-agent-runner.js"));
+      const parent = path.dirname(current);
+      if (parent === current) {
+        break;
+      }
+      current = parent;
+    }
+  };
+
+  const envRunnerPath = normalizeOptionalString(process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER);
+  if (envRunnerPath) {
+    pushCandidate(path.resolve(envRunnerPath));
+  }
+
+  if (params.entryScript) {
+    addAncestorCandidates(path.dirname(path.resolve(params.entryScript)), 6);
+  }
+  addAncestorCandidates(path.dirname(fileURLToPath(import.meta.url)), 6);
+  addAncestorCandidates(process.cwd(), 4);
+  return candidates;
+}
+
+async function resolveSidecarLaunchCommand(
+  entryScript: string | undefined,
+): Promise<SidecarLaunchCommand | null> {
+  const runnerPath = await resolveExistingFile(collectRunnerCandidates({ entryScript }));
+  if (runnerPath) {
+    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
+    return {
+      executable: process.execPath,
+      args: [bridgeScriptPath, runnerPath],
+      description: `node ${bridgeScriptPath} ${runnerPath}`,
+    };
+  }
+  if (entryScript) {
+    return {
+      executable: process.execPath,
+      args: [entryScript, "gateway", "video-chat-agent"],
+      description: `node ${entryScript} gateway video-chat-agent`,
+    };
+  }
+  return null;
+}
+
 async function createVideoChatSession(params: {
   config: OpenClawConfig;
   sessionKey: string;
@@ -1192,7 +1330,7 @@ function attachLineLogger(
 }
 
 function buildWorkerEnv(params: {
-  gateway: GatewayRuntime;
+  gateway: SidecarGatewayRuntime;
   credentials: SidecarCredentials;
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -1241,12 +1379,12 @@ async function stopChild(child: ChildProcess | null): Promise<void> {
 
 async function startVideoChatAgentSidecar(params: {
   config: OpenClawConfig;
-  gateway: GatewayRuntime;
+  gateway: SidecarGatewayRuntime;
   log: SidecarLogger;
 }): Promise<VideoChatAgentSidecar | null> {
-  if (params.gateway.auth.mode === "trusted-proxy") {
+  if (params.gateway.auth.mode === "trusted-proxy" || params.gateway.auth.mode === "none") {
     params.log.warn(
-      "video chat agent sidecar disabled: gateway auth mode=trusted-proxy is not supported for the local worker bridge",
+      `video chat agent sidecar disabled: gateway auth mode=${params.gateway.auth.mode} is not supported for the local worker bridge`,
     );
     return null;
   }
@@ -1260,18 +1398,24 @@ async function startVideoChatAgentSidecar(params: {
   }
 
   const entryScript = process.argv[1];
-  if (!entryScript) {
-    params.log.warn("video chat agent sidecar disabled: current CLI entrypoint is unavailable");
+  const launchCommand = await resolveSidecarLaunchCommand(entryScript);
+  if (!launchCommand) {
+    params.log.warn(
+      "video chat agent sidecar disabled: unable to resolve worker entrypoint (set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to override)",
+    );
     return null;
   }
+  params.log.info(`video chat agent sidecar launch command: ${launchCommand.description}`);
 
   let child: ChildProcess | null = null;
   let respawnTimer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
   const recentExits: number[] = [];
+  let unsupportedLegacyCommand = false;
 
   const spawnChild = () => {
-    const next = spawn(process.execPath, [entryScript, "gateway", "video-chat-agent"], {
+    unsupportedLegacyCommand = false;
+    const next = spawn(launchCommand.executable, launchCommand.args, {
       env: buildWorkerEnv({
         gateway: params.gateway,
         credentials,
@@ -1280,10 +1424,24 @@ async function startVideoChatAgentSidecar(params: {
     });
     child = next;
     attachLineLogger(next.stdout, (message) => params.log.info(`[video-chat-agent] ${message}`));
-    attachLineLogger(next.stderr, (message) => params.log.warn(`[video-chat-agent] ${message}`));
+    attachLineLogger(next.stderr, (message) => {
+      if (
+        launchCommand.args[1] === "gateway" &&
+        message.includes("too many arguments for 'gateway'")
+      ) {
+        unsupportedLegacyCommand = true;
+      }
+      params.log.warn(`[video-chat-agent] ${message}`);
+    });
     next.once("exit", (code, signal) => {
       child = null;
       if (stopping) {
+        return;
+      }
+      if (unsupportedLegacyCommand) {
+        params.log.error(
+          "video chat agent sidecar launch command is unsupported by this OpenClaw CLI build; set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to a video-chat-agent-runner.js path",
+        );
         return;
       }
       const now = Date.now();
@@ -1341,6 +1499,28 @@ const videoChatPlugin = {
   description: "Video chat gateway methods and sidecar worker",
   register(api: OpenClawPluginApi) {
     let sidecar: VideoChatAgentSidecar | null = null;
+
+    const ensureSidecarRunning = async (
+      config: OpenClawConfig,
+      gateway?: OpenClawPluginServiceContext["gateway"],
+    ): Promise<void> => {
+      if (sidecar) {
+        return;
+      }
+      const runtimeGateway = gateway ?? resolveGatewayRuntimeFromConfig(config);
+      if (!runtimeGateway) {
+        api.logger.warn(
+          "video chat agent sidecar disabled: gateway runtime details are unavailable",
+        );
+        return;
+      }
+      sidecar = await startVideoChatAgentSidecar({
+        config,
+        gateway: runtimeGateway,
+        log: api.logger,
+      });
+    };
+
     registerVideoChatSetupCli(api);
     registerVideoChatHttpRoutes(api);
 
@@ -1424,6 +1604,7 @@ const videoChatPlugin = {
             cfg.session?.mainKey ||
             "main";
 
+          await ensureSidecarRunning(cfg);
           const payload = await createVideoChatSession({
             config: cfg,
             sessionKey,
@@ -1538,17 +1719,7 @@ const videoChatPlugin = {
         if (sidecar) {
           return;
         }
-        if (!ctx.gateway) {
-          api.logger.warn(
-            "video chat agent sidecar disabled: gateway runtime details are unavailable in plugin service context",
-          );
-          return;
-        }
-        sidecar = await startVideoChatAgentSidecar({
-          config: ctx.config,
-          gateway: ctx.gateway,
-          log: api.logger,
-        });
+        await ensureSidecarRunning(ctx.config, ctx.gateway);
       },
       stop: async () => {
         if (!sidecar) {
