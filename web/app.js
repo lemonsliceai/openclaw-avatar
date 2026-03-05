@@ -15,6 +15,9 @@ const tokenForm = document.getElementById("token-form");
 const tokenInput = document.getElementById("gateway-token");
 const clearTokenButton = document.getElementById("clear-token");
 const replaceTokenButton = document.getElementById("replace-token");
+const navCollapseButton = document.getElementById("nav-collapse-toggle");
+const shellEl = document.querySelector(".shell");
+const navEl = document.getElementById("plugin-nav") || document.querySelector(".nav");
 const themeToggleEl = document.getElementById("theme-toggle");
 const themeToggleButtons = Array.from(document.querySelectorAll("[data-theme-value]"));
 const gatewayHealthDotEl = document.getElementById("gateway-health-dot");
@@ -37,6 +40,7 @@ const chatSendButton = document.getElementById("chat-send");
 const OPENCLAW_SETTINGS_STORAGE_KEY = "openclaw.control.settings.v1";
 const LEGACY_TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
 const THEME_STORAGE_KEY = "videoChat.themePreference";
+const NAV_COLLAPSE_STORAGE_KEY = "videoChat.navCollapsed";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -608,6 +612,61 @@ function initThemeToggle() {
       }
     });
   }
+}
+
+function updateNavCollapseButtonState(isCollapsed) {
+  if (!navCollapseButton) {
+    return;
+  }
+  const collapsed = Boolean(isCollapsed);
+  navCollapseButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  navCollapseButton.setAttribute(
+    "aria-label",
+    collapsed ? "Expand navigation menu" : "Collapse navigation menu",
+  );
+  navCollapseButton.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+}
+
+function setNavCollapsed(isCollapsed, options = {}) {
+  const collapsed = Boolean(isCollapsed);
+  const shouldPersist = options.persist !== false;
+
+  if (shellEl) {
+    shellEl.classList.toggle("shell--nav-collapsed", collapsed);
+  }
+  if (navEl) {
+    navEl.classList.toggle("nav--collapsed", collapsed);
+  }
+  updateNavCollapseButtonState(collapsed);
+
+  if (!shouldPersist) {
+    return;
+  }
+  try {
+    localStorage.setItem(NAV_COLLAPSE_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function initNavCollapseToggle() {
+  if (!navCollapseButton) {
+    return;
+  }
+
+  let storedCollapsed = false;
+  try {
+    storedCollapsed = localStorage.getItem(NAV_COLLAPSE_STORAGE_KEY) === "1";
+  } catch {
+    storedCollapsed = false;
+  }
+  setNavCollapsed(storedCollapsed, { persist: false });
+
+  navCollapseButton.addEventListener("click", () => {
+    const isCollapsed =
+      shellEl?.classList.contains("shell--nav-collapsed") || navEl?.classList.contains("nav--collapsed");
+    setNavCollapsed(!isCollapsed);
+  });
 }
 
 function clearChatLog() {
@@ -1623,6 +1682,7 @@ if (clearTokenButton) {
 }
 
 migrateLegacyGatewayTokenIfNeeded();
+initNavCollapseToggle();
 updateTokenFieldMasking();
 initThemeToggle();
 initConfigSectionFiltering();

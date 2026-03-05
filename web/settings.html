@@ -138,6 +138,23 @@
     <div class="shell">
       <header class="topbar">
         <div class="topbar-left">
+          <button
+            class="nav-collapse-toggle"
+            id="nav-collapse-toggle"
+            type="button"
+            aria-controls="plugin-nav"
+            aria-expanded="true"
+            aria-label="Collapse navigation menu"
+            title="Collapse sidebar"
+          >
+            <span class="nav-collapse-toggle__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M4 7h16"></path>
+                <path d="M4 12h16"></path>
+                <path d="M4 17h16"></path>
+              </svg>
+            </span>
+          </button>
           <div class="brand">
             <div class="brand-text">
               <span class="brand-title">Video Chat Plugin</span>
@@ -199,7 +216,7 @@
         </div>
       </header>
 
-      <nav class="nav">
+      <nav class="nav" id="plugin-nav">
         <div class="nav-group">
           <div class="nav-label nav-label--static">
             <span class="nav-label__text">Plugin</span>
