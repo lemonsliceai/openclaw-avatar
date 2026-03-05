@@ -8,6 +8,8 @@ const stopSessionButton = document.getElementById("stop-session");
 const tokenForm = document.getElementById("token-form");
 const tokenInput = document.getElementById("gateway-token");
 const clearTokenButton = document.getElementById("clear-token");
+const themeToggleEl = document.getElementById("theme-toggle");
+const themeToggleButtons = Array.from(document.querySelectorAll("[data-theme-value]"));
 const roomStatusEl = document.getElementById("room-status");
 const localPreviewEl = document.getElementById("local-preview");
 const remoteGridEl = document.getElementById("remote-grid");
@@ -22,6 +24,7 @@ const chatInput = document.getElementById("chat-input");
 const chatSendButton = document.getElementById("chat-send");
 
 const TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
+const THEME_STORAGE_KEY = "videoChat.themePreference";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_WS_CLIENT = {
@@ -41,6 +44,9 @@ let gatewayHandshakePromise = null;
 let gatewayConnectRequestId = null;
 let gatewayRequestCounter = 0;
 const gatewayPendingRequests = new Map();
+const systemThemeMedia =
+  typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
+let activeThemePreference = "system";
 
 function escapeSelectorValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -74,6 +80,69 @@ function getAuthHeaders() {
 
 function setChatStatus(text) {
   chatStatusEl.textContent = text;
+}
+
+function resolveThemePreference(value) {
+  if (value === "dark" || value === "light" || value === "system") {
+    return value;
+  }
+  return "system";
+}
+
+function resolveAppliedTheme(preference) {
+  if (preference === "light") {
+    return "light";
+  }
+  if (preference === "dark") {
+    return "dark";
+  }
+  return systemThemeMedia?.matches ? "light" : "dark";
+}
+
+function renderThemeToggle(preference) {
+  const indexByTheme = { system: 0, light: 1, dark: 2 };
+  if (themeToggleEl) {
+    themeToggleEl.style.setProperty("--theme-index", String(indexByTheme[preference] ?? 2));
+  }
+  for (const button of themeToggleButtons) {
+    const value = resolveThemePreference(button.dataset.themeValue);
+    const active = value === preference;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
+function applyTheme(preference) {
+  const nextPreference = resolveThemePreference(preference);
+  activeThemePreference = nextPreference;
+  const applied = resolveAppliedTheme(nextPreference);
+  if (applied === "light") {
+    document.documentElement.setAttribute("data-theme", "light");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  renderThemeToggle(nextPreference);
+}
+
+function initThemeToggle() {
+  const stored = resolveThemePreference(localStorage.getItem(THEME_STORAGE_KEY));
+  applyTheme(stored);
+
+  for (const button of themeToggleButtons) {
+    button.addEventListener("click", () => {
+      const nextPreference = resolveThemePreference(button.dataset.themeValue);
+      localStorage.setItem(THEME_STORAGE_KEY, nextPreference);
+      applyTheme(nextPreference);
+    });
+  }
+
+  if (systemThemeMedia) {
+    systemThemeMedia.addEventListener("change", () => {
+      if (activeThemePreference === "system") {
+        applyTheme("system");
+      }
+    });
+  }
 }
 
 function clearChatLog() {
@@ -840,6 +909,7 @@ clearTokenButton.addEventListener("click", () => {
 });
 
 tokenInput.value = getGatewayToken();
+initThemeToggle();
 updateRoomButtons();
 updateChatControls();
 clearChatLog();
