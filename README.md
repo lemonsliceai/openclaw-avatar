@@ -24,6 +24,7 @@ External OpenClaw plugin that adds a LiveKit + LemonSlice video chat experience 
   - `plugins.entries.video-chat.config.videoChat.livekit.apiKey`
   - `plugins.entries.video-chat.config.videoChat.livekit.apiSecret`
   - `plugins.entries.video-chat.config.messages.tts.elevenlabs.apiKey`
+  - `plugins.entries.video-chat.config.messages.tts.elevenlabs.voiceId`
 - OpenClaw config file location is typically `~/.openclaw/openclaw.json`.
 - Gateway token entered in the web UI is stored in browser `localStorage` using the same OpenClaw Control UI settings key:
   - `openclaw.control.settings.v1` (`token` field)

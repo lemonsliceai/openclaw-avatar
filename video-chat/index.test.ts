@@ -233,6 +233,7 @@ describe("video-chat plugin", () => {
       livekitApiKey: "",
       livekitApiSecret: "",
       elevenLabsApiKey: "",
+      elevenLabsVoiceId: "voice-1234",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -248,7 +249,7 @@ describe("video-chat plugin", () => {
                     lemonSlice?: { apiKey?: string; imageUrl?: string };
                     livekit?: { url?: string; apiKey?: string; apiSecret?: string };
                   };
-                  messages?: { tts?: { elevenlabs?: { apiKey?: string } } };
+                  messages?: { tts?: { elevenlabs?: { apiKey?: string; voiceId?: string } } };
                 };
               };
             };
@@ -262,6 +263,7 @@ describe("video-chat plugin", () => {
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
     expect(pluginConfig?.messages?.tts?.elevenlabs?.apiKey).toBe("eleven-key");
+    expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
   });
 
   it("rejects invalid setup save params", async () => {

@@ -6,6 +6,8 @@ const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
 const sessionForm = document.getElementById("session-form");
 const ttsForm = document.getElementById("tts-form");
+const ttsTextInput = document.getElementById("tts-text");
+const ttsGenerateButton = document.getElementById("tts-generate");
 const reloadButton = document.getElementById("reload-status");
 const setupSaveButton = document.querySelector('button[form="setup-form"][type="submit"]');
 const stopSessionButton = document.getElementById("stop-session");
@@ -72,6 +74,7 @@ let activeConfigMode = "form";
 let setupFormBaseline = {
   lemonSliceImageUrl: "",
   livekitUrl: "",
+  elevenLabsVoiceId: "",
 };
 let setupRawBaseline = "";
 
@@ -273,6 +276,7 @@ const setupPayloadFieldNames = [
   "livekitApiKey",
   "livekitApiSecret",
   "elevenLabsApiKey",
+  "elevenLabsVoiceId",
 ];
 const setupSecretFieldNames = [
   "lemonSliceApiKey",
@@ -432,6 +436,7 @@ function snapshotSetupFormBaseline() {
   setupFormBaseline = {
     lemonSliceImageUrl: getSetupFieldValue("lemonSliceImageUrl"),
     livekitUrl: getSetupFieldValue("livekitUrl"),
+    elevenLabsVoiceId: getSetupFieldValue("elevenLabsVoiceId"),
   };
 }
 
@@ -454,6 +459,8 @@ function isSetupFormDirty() {
   const urlsDirty =
     getSetupFieldValue("lemonSliceImageUrl") !== setupFormBaseline.lemonSliceImageUrl ||
     getSetupFieldValue("livekitUrl") !== setupFormBaseline.livekitUrl;
+  const voiceIdDirty =
+    getSetupFieldValue("elevenLabsVoiceId") !== setupFormBaseline.elevenLabsVoiceId;
 
   const secretsDirty =
     isSecretFieldDirty("lemonSliceApiKey") ||
@@ -461,7 +468,7 @@ function isSetupFormDirty() {
     isSecretFieldDirty("livekitApiSecret") ||
     isSecretFieldDirty("elevenLabsApiKey");
 
-  return urlsDirty || secretsDirty;
+  return urlsDirty || voiceIdDirty || secretsDirty;
 }
 
 function isSetupRawDirty() {
@@ -1231,11 +1238,15 @@ function populateSetupFormFromSetupStatus(setup) {
   }
   const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
   const imageUrlField = setupForm.elements.namedItem("lemonSliceImageUrl");
+  const elevenLabsVoiceIdField = setupForm.elements.namedItem("elevenLabsVoiceId");
   if (livekitUrlField && typeof livekitUrlField.value === "string") {
     livekitUrlField.value = normalizeOptionalInputValue(setup?.livekit?.url);
   }
   if (imageUrlField && typeof imageUrlField.value === "string") {
     imageUrlField.value = normalizeOptionalInputValue(setup?.lemonSlice?.imageUrl);
+  }
+  if (elevenLabsVoiceIdField && typeof elevenLabsVoiceIdField.value === "string") {
+    elevenLabsVoiceIdField.value = normalizeOptionalInputValue(setup?.tts?.elevenLabsVoiceId);
   }
 }
 
@@ -1488,10 +1499,7 @@ if (toggleCameraButton) {
 }
 
 if (ttsForm) {
-  ttsForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const formData = new FormData(ttsForm);
-  const text = String(formData.get("text") || "");
+  const requestTts = async (text) => {
   try {
     const payload = await requestJson("/plugins/video-chat/api/tts", {
       method: "POST",
@@ -1505,7 +1513,22 @@ if (ttsForm) {
   } catch (error) {
     setOutput({ action: "tts-failed", error: String(error) });
   }
-  });
+  };
+
+  if (ttsForm instanceof HTMLFormElement) {
+    ttsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(ttsForm);
+      await requestTts(String(formData.get("text") || ""));
+    });
+  }
+
+  if (ttsGenerateButton) {
+    ttsGenerateButton.addEventListener("click", async () => {
+      const text = typeof ttsTextInput?.value === "string" ? ttsTextInput.value : "";
+      await requestTts(text);
+    });
+  }
 }
 
 if (chatForm) {

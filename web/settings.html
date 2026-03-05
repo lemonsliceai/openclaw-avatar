@@ -393,7 +393,7 @@
                 <section class="config-section-card stack" id="elevenlabs-section" data-config-section="elevenlabs">
                   <header class="config-section-card__header video-chat-head">
                     <h2 class="card-title">11Labs</h2>
-                    <p class="card-sub">Configure ElevenLabs API key.</p>
+                    <p class="card-sub">Configure ElevenLabs TTS settings and run a quick test.</p>
                   </header>
                   <div class="config-section-card__content">
                     <div class="provider-group" id="elevenlabs">
@@ -413,6 +413,27 @@
                             </button>
                           </div>
                         </label>
+                        <label class="field">
+                          <span>Voice ID</span>
+                          <input type="text" name="elevenLabsVoiceId" autocomplete="off" />
+                        </label>
+                      </div>
+                    </div>
+                    <div class="provider-group" id="elevenlabs-tts-tool">
+                      <h3>Test TTS</h3>
+                      <div id="tts-form" class="video-chat-form">
+                        <label class="field full">
+                          <span>Generate speech from text</span>
+                          <textarea
+                            class="mono"
+                            id="tts-text"
+                            name="text"
+                            placeholder="Say something..."
+                          ></textarea>
+                        </label>
+                        <div class="row">
+                          <button class="btn primary" type="button" id="tts-generate">Test TTS</button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -433,7 +454,7 @@
                     <p id="setup-raw-error" class="callout danger is-mode-hidden"></p>
                     <p class="setup-raw-help">
                       Supported keys: lemonSliceApiKey, lemonSliceImageUrl, livekitUrl, livekitApiKey,
-                      livekitApiSecret, elevenLabsApiKey. Use <code>_REDACTED_</code> for secret keys to keep
+                      livekitApiSecret, elevenLabsApiKey, elevenLabsVoiceId. Use <code>_REDACTED_</code> for secret keys to keep
                       existing values.
                     </p>
                   </div>

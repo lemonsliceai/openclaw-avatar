@@ -39,6 +39,7 @@ type VideoChatConfigResponse = {
   };
   tts: {
     elevenLabsApiKeyConfigured: boolean;
+    elevenLabsVoiceId: string | null;
   };
 };
 
@@ -100,6 +101,7 @@ type VideoChatSetupInput = {
   livekitApiKey?: string;
   livekitApiSecret?: string;
   elevenLabsApiKey?: string;
+  elevenLabsVoiceId?: string;
 };
 
 type HttpResponsePayload = {
@@ -450,6 +452,7 @@ function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigRe
     },
     tts: {
       elevenLabsApiKeyConfigured: hasConfiguredSecretInput(elevenLabs?.apiKey),
+      elevenLabsVoiceId: normalizeOptionalString(elevenLabs?.voiceId) ?? null,
     },
   };
 }
@@ -476,6 +479,7 @@ function parseVideoChatSetupInput(
     livekitApiKey: readInput("livekitApiKey"),
     livekitApiSecret: readInput("livekitApiSecret"),
     elevenLabsApiKey: readInput("elevenLabsApiKey"),
+    elevenLabsVoiceId: readInput("elevenLabsVoiceId"),
   };
 
   const lemonSliceImageUrl = normalizeOptionalString(parsed.lemonSliceImageUrl);
@@ -510,6 +514,9 @@ function applyVideoChatSetupToConfig(
   const elevenLabsApiKey =
     normalizeOptionalString(setupInput.elevenLabsApiKey) ??
     effective.messages?.tts?.elevenlabs?.apiKey;
+  const elevenLabsVoiceId =
+    normalizeOptionalString(setupInput.elevenLabsVoiceId) ??
+    effective.messages?.tts?.elevenlabs?.voiceId;
 
   const plugins = asObjectRecord(config.plugins);
   const entries = asObjectRecord(plugins.entries);
@@ -555,6 +562,7 @@ function applyVideoChatSetupToConfig(
                 elevenlabs: {
                   ...elevenLabsRecord,
                   apiKey: elevenLabsApiKey,
+                  voiceId: elevenLabsVoiceId,
                 },
               },
             },
@@ -762,6 +770,10 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
       readCliOption(options, "elevenlabsApiKey") ??
       readCliOption(options, "elevenLabsApiKey") ??
       process.env.VIDEO_CHAT_ELEVENLABS_API_KEY,
+    elevenLabsVoiceId:
+      readCliOption(options, "elevenlabsVoiceId") ??
+      readCliOption(options, "elevenLabsVoiceId") ??
+      process.env.VIDEO_CHAT_ELEVENLABS_VOICE_ID,
   };
 
   if (
@@ -788,6 +800,13 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
         livekitApiKey: await promptTerminalField({ rl, label: "LiveKit API key" }),
         livekitApiSecret: await promptTerminalField({ rl, label: "LiveKit API secret" }),
         elevenLabsApiKey: await promptTerminalField({ rl, label: "ElevenLabs API key" }),
+        elevenLabsVoiceId: await promptTerminalField({
+          rl,
+          label: "ElevenLabs voice ID",
+          defaultValue: normalizeOptionalString(
+            effectiveCurrentConfig.messages?.tts?.elevenlabs?.voiceId,
+          ),
+        }),
       };
     } finally {
       rl.close();
@@ -820,6 +839,7 @@ function registerVideoChatSetupCli(api: OpenClawPluginApi): void {
         .option("--livekit-api-key <key>", "LiveKit API key")
         .option("--livekit-api-secret <secret>", "LiveKit API secret")
         .option("--elevenlabs-api-key <key>", "ElevenLabs API key")
+        .option("--elevenlabs-voice-id <id>", "ElevenLabs voice ID")
         .action(async (options: unknown) => {
           await runVideoChatSetupCli(api, options);
         });
