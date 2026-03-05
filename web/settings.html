@@ -15,6 +15,30 @@
         margin: 0;
       }
 
+      @media (min-width: 769px) {
+        .video-chat-shell .content {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          overflow: hidden;
+        }
+
+        .video-chat-shell .content > * + * {
+          margin-top: 0;
+        }
+
+        .config-page-header {
+          margin: 0 -16px;
+          padding: 0 16px 8px;
+          align-items: flex-start;
+          max-height: none;
+        }
+
+        .config-page-header .page-title {
+          margin: 0;
+        }
+      }
+
       .video-chat-shell .nav {
         border-right: 1px solid var(--border);
       }
@@ -182,6 +206,11 @@
       </nav>
 
       <main class="content">
+        <header class="content-header config-page-header">
+          <div>
+            <h1 class="page-title">Config</h1>
+          </div>
+        </header>
         <div class="config-layout">
           <aside class="config-sidebar">
             <div class="config-sidebar__header">
