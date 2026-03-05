@@ -31,12 +31,10 @@ const gatewayHealthValueEl = document.getElementById("gateway-health-value");
 const keysHealthDotEl = document.getElementById("keys-health-dot");
 const keysHealthValueEl = document.getElementById("keys-health-value");
 const roomStatusEl = document.getElementById("room-status");
-const localPreviewEl = document.getElementById("local-preview");
 const remoteGridEl = document.getElementById("remote-grid");
 const connectRoomButton = document.getElementById("connect-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const toggleMicButton = document.getElementById("toggle-mic");
-const toggleCameraButton = document.getElementById("toggle-camera");
 const chatStatusEl = document.getElementById("chat-status");
 const chatLogEl = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
@@ -68,7 +66,6 @@ const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 let activeSession = null;
 let activeRoom = null;
 let localAudioTrack = null;
-let localVideoTrack = null;
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
@@ -1378,21 +1375,11 @@ function releaseLocalTracks() {
       detachTrack(localAudioTrack);
     } catch {}
   }
-  if (localVideoTrack) {
-    try {
-      localVideoTrack.stop();
-      detachTrack(localVideoTrack);
-    } catch {}
-  }
   localAudioTrack = null;
-  localVideoTrack = null;
-  if (localPreviewEl) {
-    localPreviewEl.textContent = "";
-  }
 }
 
 function updateRoomButtons() {
-  if (!connectRoomButton || !leaveRoomButton || !toggleMicButton || !toggleCameraButton) {
+  if (!connectRoomButton || !leaveRoomButton || !toggleMicButton) {
     return;
   }
   const hasSession = Boolean(activeSession);
@@ -1400,9 +1387,7 @@ function updateRoomButtons() {
   connectRoomButton.disabled = !hasSession || hasRoom;
   leaveRoomButton.disabled = !hasRoom;
   toggleMicButton.disabled = !hasRoom || !localAudioTrack;
-  toggleCameraButton.disabled = !hasRoom || !localVideoTrack;
   toggleMicButton.textContent = localAudioTrack?.isMuted ? "Unmute Mic" : "Mute Mic";
-  toggleCameraButton.textContent = localVideoTrack?.isMuted ? "Enable Camera" : "Disable Camera";
 }
 
 function removeParticipantTile(participantIdentity) {
@@ -1423,22 +1408,12 @@ async function publishLocalTracks(room) {
   }
   const tracks = await LIVEKIT.createLocalTracks({
     audio: true,
-    video: true,
+    video: false,
   });
   for (const track of tracks) {
     await room.localParticipant.publishTrack(track);
     if (track.kind === "audio") {
       localAudioTrack = track;
-    } else if (track.kind === "video") {
-      localVideoTrack = track;
-      const localMediaElement = track.attach();
-      localMediaElement.autoplay = true;
-      localMediaElement.playsInline = true;
-      localMediaElement.muted = true;
-      if (localPreviewEl) {
-        localPreviewEl.textContent = "";
-        localPreviewEl.appendChild(localMediaElement);
-      }
     }
   }
 }
@@ -1820,24 +1795,6 @@ if (toggleMicButton) {
       updateRoomButtons();
     } catch (error) {
       setOutput({ action: "mic-toggle-failed", error: String(error) });
-    }
-  });
-}
-
-if (toggleCameraButton) {
-  toggleCameraButton.addEventListener("click", async () => {
-    if (!localVideoTrack) {
-      return;
-    }
-    try {
-      if (localVideoTrack.isMuted) {
-        await localVideoTrack.unmute();
-      } else {
-        await localVideoTrack.mute();
-      }
-      updateRoomButtons();
-    } catch (error) {
-      setOutput({ action: "camera-toggle-failed", error: String(error) });
     }
   });
 }
