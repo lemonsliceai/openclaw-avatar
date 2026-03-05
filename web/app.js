@@ -86,13 +86,18 @@ function appendChatLine(role, text) {
   }
   const line = document.createElement("article");
   line.className = `chat-line ${role}`;
+  const message = document.createElement("div");
+  message.className = "chat-msg";
   const heading = document.createElement("strong");
+  heading.className = "muted";
   heading.textContent =
     role === "user" ? "You" : role === "assistant" ? "Agent" : role === "system" ? "System" : role;
   const body = document.createElement("p");
+  body.className = "chat-bubble";
   body.textContent = text;
-  line.appendChild(heading);
-  line.appendChild(body);
+  message.appendChild(heading);
+  message.appendChild(body);
+  line.appendChild(message);
   chatLogEl.appendChild(line);
   chatLogEl.scrollTop = chatLogEl.scrollHeight;
 }
@@ -392,10 +397,11 @@ function clearRemoteTiles() {
 
 function createRemoteTile(participantIdentity) {
   const tile = document.createElement("article");
-  tile.className = "tile";
+  tile.className = "tile list-item";
   tile.dataset.participantIdentity = participantIdentity;
 
   const heading = document.createElement("h3");
+  heading.className = "list-title";
   heading.textContent = participantIdentity;
   tile.appendChild(heading);
 

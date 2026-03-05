@@ -4,301 +4,309 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenClaw Video Chat Setup</title>
+    <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
+    <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
+    <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
+    <link rel="stylesheet" href="/plugins/video-chat/styles/components.css" />
     <style>
-      :root {
-        color-scheme: light;
-        font-family: "Avenir Next", "Segoe UI", sans-serif;
-      }
-      body {
-        margin: 0;
-        background: linear-gradient(160deg, #f6f8fb, #e8eef8 65%, #dceef9);
-        color: #17212b;
-      }
-      main {
-        max-width: 860px;
+      .video-chat-shell .content {
+        max-width: 1080px;
         margin: 0 auto;
-        padding: 24px 16px 40px;
       }
-      h1 {
-        margin: 0 0 6px;
-        font-size: 1.8rem;
+
+      .video-chat-shell .nav {
+        border-right: 1px solid var(--border);
       }
-      p {
-        margin: 0 0 16px;
+
+      .video-chat-shell .nav-item {
+        text-decoration: none;
       }
-      section {
-        background: rgba(255, 255, 255, 0.92);
-        border: 1px solid #cfdae6;
-        border-radius: 14px;
-        padding: 16px;
-        margin-bottom: 14px;
+
+      .video-chat-section {
+        scroll-margin-top: 72px;
       }
-      h2 {
-        margin: 0 0 10px;
-        font-size: 1.05rem;
-      }
-      form {
-        display: grid;
-        gap: 10px;
-      }
-      label {
+
+      .video-chat-head {
         display: grid;
         gap: 6px;
-        font-size: 0.92rem;
       }
-      input,
-      textarea,
-      button {
-        font: inherit;
-      }
-      input,
-      textarea {
-        border: 1px solid #bec9d8;
-        border-radius: 10px;
-        padding: 10px 12px;
-        background: #fff;
-      }
-      textarea {
-        min-height: 72px;
-        resize: vertical;
-      }
-      button {
-        border: 0;
-        border-radius: 999px;
-        padding: 10px 16px;
-        background: #1e5aa8;
-        color: white;
-        cursor: pointer;
-      }
-      button.secondary {
-        background: #64748b;
-      }
-      .row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-      code,
-      pre {
-        font-family: "SF Mono", Menlo, Consolas, monospace;
-      }
-      pre {
+
+      .video-chat-head h2 {
         margin: 0;
-        white-space: pre-wrap;
-        word-break: break-word;
-        background: #0f172a;
-        color: #dbeafe;
-        padding: 12px;
-        border-radius: 10px;
       }
-      #status {
-        font-weight: 600;
+
+      .video-chat-head p {
+        margin: 0;
       }
-      .room-shell {
+
+      .video-chat-form {
         display: grid;
         gap: 12px;
       }
+
+      .video-chat-grid {
+        display: grid;
+        gap: 16px;
+      }
+
+      .video-chat-grid.cols-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       .room-grid {
         display: grid;
         gap: 12px;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       }
+
       .tile {
-        border: 1px solid #c9d6e8;
-        border-radius: 12px;
-        padding: 10px;
-        background: #f8fbff;
+        display: grid;
+        gap: 8px;
       }
-      .tile h3 {
-        margin: 0 0 8px;
-        font-size: 0.95rem;
+
+      .chat-log {
+        min-height: 160px;
+        max-height: 280px;
+        overflow: auto;
+        padding: 12px;
+        display: grid;
+        gap: 8px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--secondary);
       }
+
+      .chat-msg strong {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
       .media {
-        min-height: 140px;
-        border-radius: 10px;
+        min-height: 160px;
+        border-radius: var(--radius-md);
+        border: 1px dashed var(--border);
+        background: var(--bg-accent);
         overflow: hidden;
-        background: #0b1220;
         display: grid;
         place-items: center;
       }
+
       .media:empty::before {
         content: "No media";
-        color: #8ea2bc;
-        font-size: 0.86rem;
+        color: var(--muted);
       }
+
       .media video {
         width: 100%;
         height: 100%;
         object-fit: cover;
         display: block;
       }
+
       .media audio {
         width: 100%;
       }
-      .chat-panel {
-        display: grid;
-        gap: 10px;
-      }
-      .chat-status {
-        font-size: 0.9rem;
-        color: #334155;
-      }
-      .chat-log {
-        border: 1px solid #c9d6e8;
-        border-radius: 10px;
-        background: #f8fbff;
-        min-height: 160px;
-        max-height: 280px;
-        overflow: auto;
-        padding: 10px;
-        display: grid;
-        gap: 8px;
-      }
-      .chat-line {
-        display: grid;
-        gap: 3px;
-      }
-      .chat-line strong {
-        font-size: 0.78rem;
-        color: #334155;
-      }
-      .chat-line p {
-        margin: 0;
-        white-space: pre-wrap;
-        background: #ffffff;
-        border: 1px solid #dbe5f1;
-        border-radius: 10px;
-        padding: 8px 10px;
-      }
-      .chat-line.user p {
-        background: #e7f0ff;
+
+      @media (max-width: 900px) {
+        .video-chat-grid.cols-2 {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
-  <body>
-    <main>
-      <h1>Video Chat Plugin</h1>
-      <p id="status">Loading setup status...</p>
-
-      <section>
-        <h2>Gateway Token</h2>
-        <p>Enter your gateway token once to authorize API calls from this page.</p>
-        <form id="token-form">
-          <label>
-            Gateway token
-            <input type="password" id="gateway-token" autocomplete="off" />
-          </label>
-          <div class="row">
-            <button type="submit">Use Token</button>
-            <button class="secondary" type="button" id="clear-token">Clear Token</button>
+  <body class="video-chat-shell">
+    <div class="shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand">
+            <div class="brand-text">
+              <span class="brand-title">Video Chat Plugin</span>
+              <span class="brand-sub">OpenClaw Gateway Style</span>
+            </div>
           </div>
-        </form>
-      </section>
+        </div>
+        <div class="topbar-status">
+          <span class="pill">
+            <span class="statusDot"></span>
+            Plugin UI
+          </span>
+        </div>
+      </header>
 
-      <section>
-        <h2>Setup</h2>
-        <form id="setup-form">
-          <label>
-            LemonSlice API key
-            <input type="password" name="lemonSliceApiKey" autocomplete="off" />
-          </label>
-          <label>
-            LemonSlice image URL
-            <input type="url" name="lemonSliceImageUrl" placeholder="https://..." />
-          </label>
-          <label>
-            LiveKit URL
-            <input type="url" name="livekitUrl" placeholder="wss://..." />
-          </label>
-          <label>
-            LiveKit API key
-            <input type="password" name="livekitApiKey" autocomplete="off" />
-          </label>
-          <label>
-            LiveKit API secret
-            <input type="password" name="livekitApiSecret" autocomplete="off" />
-          </label>
-          <label>
-            ElevenLabs API key
-            <input type="password" name="elevenLabsApiKey" autocomplete="off" />
-          </label>
-          <div class="row">
-            <button type="submit">Save Setup</button>
-            <button class="secondary" type="button" id="reload-status">Reload Status</button>
+      <nav class="nav">
+        <div class="nav-group">
+          <div class="nav-label nav-label--static">
+            <span class="nav-label__text">Sections</span>
           </div>
-        </form>
-      </section>
-
-      <section>
-        <h2>Session</h2>
-        <form id="session-form">
-          <label>
-            Session key
-            <input type="text" name="sessionKey" placeholder="agent:main/main" />
-          </label>
-          <div class="row">
-            <button type="submit">Start Session</button>
-            <button class="secondary" type="button" id="stop-session">Stop Session</button>
+          <div class="nav-group__items">
+            <a class="nav-item active" href="#gateway-token-card"><span class="nav-item__text">Gateway Token</span></a>
+            <a class="nav-item" href="#setup-card"><span class="nav-item__text">Setup</span></a>
+            <a class="nav-item" href="#session-card"><span class="nav-item__text">Session</span></a>
+            <a class="nav-item" href="#chat-card"><span class="nav-item__text">Text Chat</span></a>
+            <a class="nav-item" href="#room-card"><span class="nav-item__text">LiveKit Room</span></a>
+            <a class="nav-item" href="#audio-card"><span class="nav-item__text">Audio Helpers</span></a>
+            <a class="nav-item" href="#output-card"><span class="nav-item__text">Output</span></a>
           </div>
-        </form>
-      </section>
+        </div>
+      </nav>
 
-      <section>
-        <h2>Text Chat</h2>
-        <div class="chat-panel">
-          <p class="chat-status" id="chat-status">Start a session to use text chat.</p>
+      <main class="content">
+        <div class="content-header">
+          <div>
+            <h1 class="page-title">Video Chat Control</h1>
+            <p class="page-sub">Plugin-owned setup, session controls, room preview, and chat.</p>
+          </div>
+        </div>
+
+        <p id="status" class="callout info">Loading setup status...</p>
+
+        <section class="card stack video-chat-section" id="gateway-token-card">
+          <header class="video-chat-head">
+            <h2 class="card-title">Gateway Token</h2>
+            <p class="card-sub">Enter your gateway token once to authorize API calls from this page.</p>
+          </header>
+          <form id="token-form" class="video-chat-form">
+            <label class="field">
+              <span>Gateway token</span>
+              <input type="password" id="gateway-token" autocomplete="off" />
+            </label>
+            <div class="row">
+              <button class="btn primary" type="submit">Use Token</button>
+              <button class="btn danger" type="button" id="clear-token">Clear Token</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="card stack video-chat-section" id="setup-card">
+          <header class="video-chat-head">
+            <h2 class="card-title">Setup</h2>
+            <p class="card-sub">Configure provider credentials and media/session endpoints.</p>
+          </header>
+          <form id="setup-form" class="video-chat-form">
+            <div class="video-chat-grid cols-2">
+              <label class="field">
+                <span>LemonSlice API key</span>
+                <input type="password" name="lemonSliceApiKey" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>LemonSlice image URL</span>
+                <input type="url" name="lemonSliceImageUrl" placeholder="https://..." />
+              </label>
+              <label class="field">
+                <span>LiveKit URL</span>
+                <input type="url" name="livekitUrl" placeholder="wss://..." />
+              </label>
+              <label class="field">
+                <span>LiveKit API key</span>
+                <input type="password" name="livekitApiKey" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>LiveKit API secret</span>
+                <input type="password" name="livekitApiSecret" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>ElevenLabs API key</span>
+                <input type="password" name="elevenLabsApiKey" autocomplete="off" />
+              </label>
+            </div>
+            <div class="row">
+              <button class="btn primary" type="submit">Save Setup</button>
+              <button class="btn" type="button" id="reload-status">Reload Status</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="card stack video-chat-section" id="session-card">
+          <header class="video-chat-head">
+            <h2 class="card-title">Session</h2>
+            <p class="card-sub">Start or stop the managed video chat session.</p>
+          </header>
+          <form id="session-form" class="video-chat-form">
+            <label class="field full">
+              <span>Session key</span>
+              <input type="text" name="sessionKey" placeholder="agent:main/main" />
+            </label>
+            <div class="row">
+              <button class="btn primary" type="submit">Start Session</button>
+              <button class="btn danger" type="button" id="stop-session">Stop Session</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="card stack video-chat-section" id="chat-card">
+          <header class="video-chat-head">
+            <h2 class="card-title">Text Chat</h2>
+            <p class="card-sub">Send messages to the active agent session.</p>
+          </header>
+          <p class="callout info" id="chat-status">Start a session to use text chat.</p>
           <div class="chat-log" id="chat-log"></div>
-          <form id="chat-form">
-            <label>
-              Message
+          <form id="chat-form" class="video-chat-form">
+            <label class="field full">
+              <span>Message</span>
               <textarea id="chat-input" placeholder="Type a message to the agent..."></textarea>
             </label>
             <div class="row">
-              <button type="submit" id="chat-send">Send Message</button>
+              <button class="btn primary" type="submit" id="chat-send">Send Message</button>
             </div>
           </form>
-        </div>
-      </section>
+        </section>
 
-      <section>
-        <h2>LiveKit Room</h2>
-        <div class="room-shell">
-          <p id="room-status">No active room connection.</p>
+        <section class="card stack video-chat-section" id="room-card">
+          <header class="video-chat-head">
+            <h2 class="card-title">LiveKit Room</h2>
+            <p class="card-sub">Join room, monitor participants, and manage local media tracks.</p>
+          </header>
+          <p id="room-status" class="callout info">No active room connection.</p>
           <div class="row">
-            <button type="button" id="connect-room">Join Room</button>
-            <button class="secondary" type="button" id="leave-room">Leave Room</button>
-            <button class="secondary" type="button" id="toggle-mic">Mute Mic</button>
-            <button class="secondary" type="button" id="toggle-camera">Disable Camera</button>
+            <button class="btn primary" type="button" id="connect-room">Join Room</button>
+            <button class="btn" type="button" id="leave-room">Leave Room</button>
+            <button class="btn" type="button" id="toggle-mic">Mute Mic</button>
+            <button class="btn" type="button" id="toggle-camera">Disable Camera</button>
           </div>
           <div class="room-grid">
-            <article class="tile">
-              <h3>Local Preview</h3>
+            <article class="list-item">
+              <div class="list-main">
+                <h3 class="list-title">Local Preview</h3>
+                <p class="list-sub">Camera and microphone preview before or during room join.</p>
+              </div>
               <div class="media" id="local-preview"></div>
             </article>
-            <article class="tile">
-              <h3>Remote Participants</h3>
+            <article class="list-item">
+              <div class="list-main">
+                <h3 class="list-title">Remote Participants</h3>
+                <p class="list-sub">Live media from connected room participants.</p>
+              </div>
               <div class="room-grid" id="remote-grid"></div>
             </article>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section>
-        <h2>Audio Helpers</h2>
-        <form id="tts-form">
-          <label>
-            Generate speech from text
-            <textarea name="text" placeholder="Say something..."></textarea>
-          </label>
-          <button type="submit">Generate TTS</button>
-        </form>
-      </section>
+        <section class="card stack video-chat-section" id="audio-card">
+          <header class="video-chat-head">
+            <h2 class="card-title">Audio Helpers</h2>
+            <p class="card-sub">Generate TTS output from text for quick validation.</p>
+          </header>
+          <form id="tts-form" class="video-chat-form">
+            <label class="field full">
+              <span>Generate speech from text</span>
+              <textarea class="mono" name="text" placeholder="Say something..."></textarea>
+            </label>
+            <div class="row">
+              <button class="btn primary" type="submit">Generate TTS</button>
+            </div>
+          </form>
+        </section>
 
-      <section>
-        <h2>Output</h2>
-        <pre id="output">No events yet.</pre>
-      </section>
-    </main>
+        <section class="card stack video-chat-section" id="output-card">
+          <header class="video-chat-head">
+            <h2 class="card-title">Output</h2>
+            <p class="card-sub">Recent API responses and plugin events.</p>
+          </header>
+          <pre class="code-block" id="output">No events yet.</pre>
+        </section>
+      </main>
+    </div>
     <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
     <script type="module" src="/plugins/video-chat/app.js"></script>
   </body>

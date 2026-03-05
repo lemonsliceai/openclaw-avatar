@@ -937,8 +937,17 @@ function moduleWebRootCandidates(): string[] {
   ];
 }
 
+function moduleStylesRootCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "styles"),
+    path.resolve(moduleDir, "..", "..", "styles"),
+  ];
+}
+
 function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
   let cachedWebRootPath: string | null | undefined;
+  let cachedStylesRootPath: string | null | undefined;
 
   const resolveWebRootPath = async (): Promise<string> => {
     if (cachedWebRootPath !== undefined) {
@@ -966,6 +975,43 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
   const readWebAsset = async (fileName: "index.html" | "app.js"): Promise<string> => {
     const webRootPath = await resolveWebRootPath();
     return readFile(path.join(webRootPath, fileName), "utf8");
+  };
+
+  const resolveStylesRootPath = async (): Promise<string> => {
+    if (cachedStylesRootPath !== undefined) {
+      if (!cachedStylesRootPath) {
+        throw new Error("unable to locate plugin style assets");
+      }
+      return cachedStylesRootPath;
+    }
+    const configuredCandidates = [
+      api.resolvePath("styles"),
+      api.resolvePath("./styles"),
+      api.resolvePath("../styles"),
+    ];
+    const stylesRootPath = await resolveExistingDirectory([
+      ...configuredCandidates,
+      ...moduleStylesRootCandidates(),
+    ]);
+    cachedStylesRootPath = stylesRootPath;
+    if (!stylesRootPath) {
+      throw new Error("unable to locate plugin style assets");
+    }
+    return stylesRootPath;
+  };
+
+  const readStyleAsset = async (relativePath: string): Promise<string> => {
+    const normalized = path.posix.normalize(`/${relativePath}`).replace(/^\/+/, "");
+    if (!normalized || normalized.startsWith("..") || !normalized.endsWith(".css")) {
+      throw new Error("invalid style asset path");
+    }
+    const stylesRootPath = await resolveStylesRootPath();
+    const resolvedPath = path.resolve(stylesRootPath, normalized);
+    const relative = path.relative(stylesRootPath, resolvedPath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("invalid style asset path");
+    }
+    return readFile(resolvedPath, "utf8");
   };
 
   api.registerHttpRoute({
@@ -1136,6 +1182,14 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
         return false;
       }
       try {
+        if (normalizedPath.startsWith("/plugins/video-chat/styles/")) {
+          const assetPath = decodeURIComponent(
+            normalizedPath.slice("/plugins/video-chat/styles/".length),
+          );
+          const css = await readStyleAsset(assetPath);
+          sendHttpResponse(res, asTextResponse(css, "text/css; charset=utf-8"));
+          return true;
+        }
         if (normalizedPath === "/plugins/video-chat/app.js") {
           const script = await readWebAsset("app.js");
           sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
