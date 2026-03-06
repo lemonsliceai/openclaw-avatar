@@ -49,6 +49,32 @@ function getExport(mod, name) {
   throw new Error(`@livekit/agents export ${name} is unavailable`);
 }
 
+function startParentWatchdog(onOrphaned, intervalMs = 1000) {
+  const initialParentPid = process.ppid;
+  if (!Number.isFinite(initialParentPid) || initialParentPid <= 1) {
+    return () => {};
+  }
+
+  let stopping = false;
+  const timer = setInterval(() => {
+    if (stopping) {
+      return;
+    }
+    const currentParentPid = process.ppid;
+    if (currentParentPid === initialParentPid) {
+      return;
+    }
+    stopping = true;
+    void onOrphaned(currentParentPid, initialParentPid);
+  }, intervalMs);
+  timer.unref();
+
+  return () => {
+    stopping = true;
+    clearInterval(timer);
+  };
+}
+
 async function main() {
   const runnerPath = resolveRunnerPath(process.argv);
   const depsBaseRunnerPath = resolveDepsBaseRunnerPath(process.argv, runnerPath);
@@ -77,18 +103,52 @@ async function main() {
     }),
   );
 
+  let shuttingDown = false;
+  const shutdownWorker = async ({ drain, exitCode, reason }) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.warn(`[video-chat-agent] ${reason}`);
+    try {
+      if (drain) {
+        await worker.drain();
+      }
+      await worker.close();
+    } finally {
+      process.exit(exitCode);
+    }
+  };
+
   process.once("SIGINT", async () => {
-    await worker.close();
-    process.exit(130);
+    await shutdownWorker({
+      drain: false,
+      exitCode: 130,
+      reason: "received SIGINT; shutting down worker",
+    });
   });
   process.once("SIGTERM", async () => {
-    await worker.drain();
-    await worker.close();
-    process.exit(143);
+    await shutdownWorker({
+      drain: true,
+      exitCode: 143,
+      reason: "received SIGTERM; draining worker",
+    });
+  });
+
+  const stopParentWatchdog = startParentWatchdog(async (currentParentPid, initialParentPid) => {
+    await shutdownWorker({
+      drain: true,
+      exitCode: 0,
+      reason: `detected parent gateway exit/reparent (ppid ${initialParentPid} -> ${currentParentPid}); draining worker`,
+    });
   });
 
   console.log("[video-chat-agent] starting LiveKit agent server");
-  await worker.run();
+  try {
+    await worker.run();
+  } finally {
+    stopParentWatchdog();
+  }
 }
 
 main().catch((error) => {

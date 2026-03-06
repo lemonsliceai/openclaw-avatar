@@ -1568,11 +1568,28 @@ async function stopChild(child: ChildProcess | null): Promise<void> {
   if (!child || child.exitCode !== null || child.signalCode !== null) {
     return;
   }
-  child.kill("SIGTERM");
+
+  const childPid = typeof child.pid === "number" ? child.pid : 0;
+  const canSignalProcessGroup = process.platform !== "win32" && childPid > 0;
+  const sendSignal = (signal: NodeJS.Signals): void => {
+    if (canSignalProcessGroup) {
+      try {
+        // When spawned detached, -PID targets the entire process group
+        // (bridge + LiveKit worker descendants).
+        process.kill(-childPid, signal);
+        return;
+      } catch {
+        // Fall back to direct child signaling below.
+      }
+    }
+    child.kill(signal);
+  };
+
+  sendSignal("SIGTERM");
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
+        sendSignal("SIGKILL");
       }
     }, 2_000);
     timer.unref();
@@ -1627,6 +1644,7 @@ async function startVideoChatAgentSidecar(params: {
         credentials,
       }),
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
     child = next;
     attachLineLogger(next.stdout, (message) => params.log.info(`[video-chat-agent] ${message}`));
