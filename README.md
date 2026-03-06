@@ -54,6 +54,7 @@ http://127.0.0.1:18789/plugins/video-chat/
 - Enter gateway token (if gateway auth mode is token) and click `Use Token`.
 - Fill setup values and click `Save Setup`.
 - Click `Start Session`, then `Join Room`.
+- Use the avatar pop-out control to keep the remote avatar visible in browser picture-in-picture while you switch tabs.
 
 4. Verify plugin config/status:
 ```bash

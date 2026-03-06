@@ -40,6 +40,7 @@ const connectRoomButton = document.getElementById("connect-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const toggleMicButton = document.getElementById("toggle-mic");
 const toggleSpeakerButton = document.getElementById("toggle-speaker");
+const togglePictureInPictureButton = document.getElementById("toggle-picture-in-picture");
 const chatStatusEl = document.getElementById("chat-status");
 const chatLogEl = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
@@ -82,6 +83,7 @@ let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let avatarSpeakerMuted = false;
+let avatarPictureInPictureVideo = null;
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
@@ -1006,8 +1008,149 @@ function updateAvatarAspectRatio(videoElement) {
   shellEl.style.setProperty("--avatar-aspect-ratio", `${videoElement.videoWidth} / ${videoElement.videoHeight}`);
 }
 
+function getAvatarVideoElement() {
+  const element = avatarMediaEl?.querySelector("video");
+  return element instanceof HTMLVideoElement ? element : null;
+}
+
+function canUseStandardPictureInPicture(videoElement) {
+  return Boolean(
+    videoElement instanceof HTMLVideoElement &&
+      typeof videoElement.requestPictureInPicture === "function" &&
+      (typeof document.pictureInPictureEnabled !== "boolean" || document.pictureInPictureEnabled),
+  );
+}
+
+function canUseWebkitPictureInPicture(videoElement) {
+  return Boolean(
+    videoElement instanceof HTMLVideoElement &&
+      typeof videoElement.webkitSupportsPresentationMode === "function" &&
+      typeof videoElement.webkitSetPresentationMode === "function" &&
+      videoElement.webkitSupportsPresentationMode("picture-in-picture"),
+  );
+}
+
+function hasPictureInPictureBrowserSupport() {
+  if (typeof HTMLVideoElement === "undefined") {
+    return false;
+  }
+  return Boolean(
+    typeof HTMLVideoElement.prototype.requestPictureInPicture === "function" ||
+      typeof HTMLVideoElement.prototype.webkitSupportsPresentationMode === "function",
+  );
+}
+
+function hasAvatarPictureInPictureSupport(videoElement = getAvatarVideoElement()) {
+  return canUseStandardPictureInPicture(videoElement) || canUseWebkitPictureInPicture(videoElement);
+}
+
+function isAvatarPictureInPictureActive(videoElement = getAvatarVideoElement() ?? avatarPictureInPictureVideo) {
+  if (!(videoElement instanceof HTMLVideoElement)) {
+    return false;
+  }
+  if (document.pictureInPictureElement === videoElement) {
+    return true;
+  }
+  return videoElement.webkitPresentationMode === "picture-in-picture";
+}
+
+function handleAvatarPictureInPictureStateChange() {
+  updatePictureInPictureButtonState();
+}
+
+function bindAvatarPictureInPictureVideo(videoElement) {
+  if (!(videoElement instanceof HTMLVideoElement)) {
+    return;
+  }
+  if (avatarPictureInPictureVideo && avatarPictureInPictureVideo !== videoElement) {
+    unbindAvatarPictureInPictureVideo(avatarPictureInPictureVideo);
+  }
+  avatarPictureInPictureVideo = videoElement;
+  videoElement.addEventListener("enterpictureinpicture", handleAvatarPictureInPictureStateChange);
+  videoElement.addEventListener("leavepictureinpicture", handleAvatarPictureInPictureStateChange);
+  videoElement.addEventListener("webkitpresentationmodechanged", handleAvatarPictureInPictureStateChange);
+  updatePictureInPictureButtonState();
+}
+
+function unbindAvatarPictureInPictureVideo(videoElement = avatarPictureInPictureVideo) {
+  if (videoElement instanceof HTMLVideoElement) {
+    videoElement.removeEventListener("enterpictureinpicture", handleAvatarPictureInPictureStateChange);
+    videoElement.removeEventListener("leavepictureinpicture", handleAvatarPictureInPictureStateChange);
+    videoElement.removeEventListener("webkitpresentationmodechanged", handleAvatarPictureInPictureStateChange);
+  }
+  if (!videoElement || videoElement === avatarPictureInPictureVideo) {
+    avatarPictureInPictureVideo = null;
+  }
+}
+
+async function enterAvatarPictureInPicture() {
+  const videoElement = getAvatarVideoElement();
+  if (!(videoElement instanceof HTMLVideoElement)) {
+    throw new Error("Avatar video is not ready yet.");
+  }
+  if (canUseStandardPictureInPicture(videoElement)) {
+    if (
+      document.pictureInPictureElement &&
+      document.pictureInPictureElement !== videoElement &&
+      typeof document.exitPictureInPicture === "function"
+    ) {
+      await document.exitPictureInPicture();
+    }
+    await videoElement.requestPictureInPicture();
+    return;
+  }
+  if (canUseWebkitPictureInPicture(videoElement)) {
+    videoElement.webkitSetPresentationMode("picture-in-picture");
+    return;
+  }
+  throw new Error("Picture-in-picture is not available in this browser.");
+}
+
+async function exitAvatarPictureInPicture() {
+  const videoElement = getAvatarVideoElement() ?? avatarPictureInPictureVideo;
+  if (document.pictureInPictureElement && typeof document.exitPictureInPicture === "function") {
+    await document.exitPictureInPicture();
+    return;
+  }
+  if (
+    videoElement instanceof HTMLVideoElement &&
+    typeof videoElement.webkitSetPresentationMode === "function" &&
+    videoElement.webkitPresentationMode === "picture-in-picture"
+  ) {
+    videoElement.webkitSetPresentationMode("inline");
+  }
+}
+
+function updatePictureInPictureButtonState() {
+  if (!togglePictureInPictureButton) {
+    return;
+  }
+
+  const activeVideoElement = getAvatarVideoElement() ?? avatarPictureInPictureVideo;
+  const hasVideo = Boolean(getAvatarVideoElement());
+  const isActive = isAvatarPictureInPictureActive(activeVideoElement);
+  const isSupported = hasAvatarPictureInPictureSupport(activeVideoElement);
+
+  togglePictureInPictureButton.disabled = isActive ? !isSupported : !hasVideo || !isSupported;
+  togglePictureInPictureButton.classList.toggle("is-active", isActive);
+
+  let label = "Pop out avatar";
+  if (!hasPictureInPictureBrowserSupport()) {
+    label = "Picture-in-picture is unavailable in this browser";
+  } else if (!hasVideo && !isActive) {
+    label = "Picture-in-picture is available after the avatar video loads";
+  } else if (!isSupported) {
+    label = "Picture-in-picture is unavailable for this stream";
+  } else if (isActive) {
+    label = "Return avatar to the tab";
+  }
+
+  togglePictureInPictureButton.setAttribute("aria-label", label);
+  togglePictureInPictureButton.setAttribute("title", label);
+}
+
 function hasAvatarVideo() {
-  return Boolean(avatarMediaEl?.querySelector("video"));
+  return Boolean(getAvatarVideoElement());
 }
 
 function setAvatarLoadingState(isPending, message = "") {
@@ -1025,6 +1168,7 @@ function updateAvatarUiState() {
   if (!showAvatarPane) {
     updateAvatarAspectRatio(null);
   }
+  updatePictureInPictureButtonState();
   updateRoomStatusState();
 }
 
@@ -1540,7 +1684,11 @@ async function loadChatHistory() {
 }
 
 function clearRemoteTiles() {
+  if (isAvatarPictureInPictureActive()) {
+    void exitAvatarPictureInPicture().catch(() => {});
+  }
   if (!avatarMediaEl) {
+    unbindAvatarPictureInPictureVideo();
     updateAvatarAspectRatio(null);
     updateAvatarUiState();
     return;
@@ -1548,6 +1696,7 @@ function clearRemoteTiles() {
   for (const mediaElement of avatarMediaEl.querySelectorAll("video, audio")) {
     mediaElement.remove();
   }
+  unbindAvatarPictureInPictureVideo();
   updateAvatarAspectRatio(null);
   updateAvatarUiState();
 }
@@ -1569,6 +1718,7 @@ function attachTrackToContainer(track, container) {
   if (track.kind === "video") {
     const priorVideo = container.querySelector("video");
     if (priorVideo) {
+      unbindAvatarPictureInPictureVideo(priorVideo);
       priorVideo.remove();
     }
     if (element instanceof HTMLVideoElement) {
@@ -1577,6 +1727,7 @@ function attachTrackToContainer(track, container) {
       };
       element.addEventListener("loadedmetadata", updateRatio);
       element.addEventListener("resize", updateRatio);
+      bindAvatarPictureInPictureVideo(element);
       updateRatio();
     }
   }
@@ -1630,6 +1781,7 @@ function updateRoomButtons() {
     toggleSpeakerButton.setAttribute("aria-label", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
     toggleSpeakerButton.setAttribute("title", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
   }
+  updatePictureInPictureButtonState();
 }
 
 function removeParticipantTile(participantIdentity) {
@@ -2115,6 +2267,28 @@ if (toggleSpeakerButton) {
     avatarSpeakerMuted = !avatarSpeakerMuted;
     applyAvatarSpeakerMuteState();
     updateRoomButtons();
+  });
+}
+
+if (togglePictureInPictureButton) {
+  togglePictureInPictureButton.addEventListener("click", async () => {
+    try {
+      if (isAvatarPictureInPictureActive()) {
+        await exitAvatarPictureInPicture();
+      } else {
+        await enterAvatarPictureInPicture();
+      }
+      updatePictureInPictureButtonState();
+      setOutput({
+        action: "avatar-picture-in-picture",
+        active: isAvatarPictureInPictureActive(),
+      });
+    } catch (error) {
+      setOutput({
+        action: "avatar-picture-in-picture-failed",
+        error: String(error),
+      });
+    }
   });
 }
 

@@ -333,6 +333,12 @@
         color: #f87171;
       }
 
+      .avatar-control.is-active {
+        color: var(--accent);
+        border-color: rgba(56, 189, 248, 0.55);
+        background: rgba(14, 165, 233, 0.18);
+      }
+
       .avatar-resize-handle {
         position: absolute;
         right: 0;
@@ -649,6 +655,20 @@
                         <polygon points="11 5 6 9 3 9 3 15 6 15 11 19 11 5"></polygon>
                         <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
                         <path d="M18.5 5.5a9 9 0 0 1 0 13"></path>
+                      </svg>
+                    </button>
+                    <button
+                      class="btn avatar-control"
+                      type="button"
+                      id="toggle-picture-in-picture"
+                      aria-label="Pop out avatar"
+                      title="Pop out avatar"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M15 3h6v6"></path>
+                        <path d="M10 14 21 3"></path>
+                        <path d="M21 14v5a2 2 0 0 1-2 2h-5"></path>
+                        <path d="M10 3H5a2 2 0 0 0-2 2v5"></path>
                       </svg>
                     </button>
                   </div>
