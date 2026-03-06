@@ -15,6 +15,7 @@ import type {
   RespondFn,
 } from "openclaw/plugin-sdk";
 import { hasConfiguredSecretInput, normalizeResolvedSecretInputString } from "openclaw/plugin-sdk";
+import { resetProcessGroupChildren, stopChildProcess } from "./sidecar-process-control.js";
 
 const VIDEO_CHAT_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
 const LIVEKIT_TOKEN_TTL_SECONDS = 60 * 60;
@@ -1628,67 +1629,6 @@ function buildWorkerEnv(params: {
   return env;
 }
 
-async function stopChild(params: {
-  child: ChildProcess | null;
-  processGroupId?: number | null;
-}): Promise<void> {
-  const child = params.child;
-  const childPid = typeof child?.pid === "number" ? child.pid : 0;
-  const processGroupId = typeof params.processGroupId === "number" ? params.processGroupId : 0;
-  const signalPid = processGroupId > 0 ? processGroupId : childPid;
-  if (signalPid <= 0 && (!child || child.exitCode !== null || child.signalCode !== null)) {
-    return;
-  }
-
-  const canSignalProcessGroup = process.platform !== "win32" && signalPid > 0;
-  const sendSignal = (signal: NodeJS.Signals): void => {
-    if (canSignalProcessGroup) {
-      try {
-        // When spawned detached, -PID targets the entire process group
-        // (bridge + LiveKit worker descendants).
-        process.kill(-signalPid, signal);
-        return;
-      } catch {
-        // Fall back to direct child signaling below.
-      }
-    }
-    if (!child || child.exitCode !== null || child.signalCode !== null) {
-      return;
-    }
-    try {
-      child.kill(signal);
-    } catch {
-      // Child may already be gone.
-    }
-  };
-
-  sendSignal("SIGTERM");
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
-    await delayMs(200);
-    sendSignal("SIGKILL");
-    return;
-  }
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        sendSignal("SIGKILL");
-      }
-    }, 2_000);
-    timer.unref();
-    child.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
-}
-
-async function delayMs(timeoutMs: number): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, timeoutMs);
-    timer.unref();
-  });
-}
-
 async function startVideoChatAgentSidecar(params: {
   config: OpenClawConfig;
   gateway: SidecarGatewayRuntime;
@@ -1793,13 +1733,7 @@ async function startVideoChatAgentSidecar(params: {
       if (process.platform === "win32" || !processGroupId || processGroupId <= 0) {
         return;
       }
-      try {
-        // Bridge handles SIGUSR2, while child job processes terminate by default.
-        process.kill(-processGroupId, "SIGUSR2");
-        await delayMs(300);
-      } catch {
-        // Best effort cleanup; stop/start path can retry later.
-      }
+      await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
     },
     stop: async () => {
       stopping = true;
@@ -1807,7 +1741,7 @@ async function startVideoChatAgentSidecar(params: {
         clearTimeout(respawnTimer);
         respawnTimer = null;
       }
-      await stopChild({
+      await stopChildProcess({
         child,
         processGroupId: childProcessGroupId,
       });
