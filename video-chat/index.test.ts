@@ -97,6 +97,7 @@ async function invoke(
     | "videoChat.setup.get"
     | "videoChat.setup.save"
     | "videoChat.session.create"
+    | "videoChat.session.stop"
     | "videoChat.audio.transcribe"
     | "videoChat.tts.generate",
   params: Record<string, unknown>,
@@ -123,6 +124,7 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.setup.get")).toBe(true);
     expect(methods.has("videoChat.setup.save")).toBe(true);
     expect(methods.has("videoChat.session.create")).toBe(true);
+    expect(methods.has("videoChat.session.stop")).toBe(true);
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
     expect(methods.has("videoChat.tts.generate")).toBe(true);
     expect(services).toHaveLength(1);
@@ -186,6 +188,47 @@ describe("video-chat plugin", () => {
     });
   });
 
+  it("returns canonical chat session key for default main session", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const payload = call?.[1] as
+      | {
+          sessionKey?: string;
+          chatSessionKey?: string;
+          participantToken?: string;
+        }
+      | undefined;
+    expect(payload?.sessionKey).toBe("main");
+    expect(payload?.chatSessionKey).toBe("agent:main:main");
+    expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
+      roomConfig: {
+        agents: [
+          {
+            metadata:
+              '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png"}',
+          },
+        ],
+      },
+    });
+  });
+
+  it("stops a session", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName: "openclaw-main-12345678",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      stopped: true,
+      roomName: "openclaw-main-12345678",
+    });
+  });
+
   it("returns setup state for plugin-owned setup surfaces", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.setup.get", {});
@@ -206,6 +249,7 @@ describe("video-chat plugin", () => {
       livekitApiKey: "",
       livekitApiSecret: "",
       elevenLabsApiKey: "",
+      elevenLabsVoiceId: "voice-1234",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -221,7 +265,7 @@ describe("video-chat plugin", () => {
                     lemonSlice?: { apiKey?: string; imageUrl?: string };
                     livekit?: { url?: string; apiKey?: string; apiSecret?: string };
                   };
-                  messages?: { tts?: { elevenlabs?: { apiKey?: string } } };
+                  messages?: { tts?: { elevenlabs?: { apiKey?: string; voiceId?: string } } };
                 };
               };
             };
@@ -235,6 +279,7 @@ describe("video-chat plugin", () => {
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
     expect(pluginConfig?.messages?.tts?.elevenlabs?.apiKey).toBe("eleven-key");
+    expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
   });
 
   it("rejects invalid setup save params", async () => {
@@ -248,6 +293,18 @@ describe("video-chat plugin", () => {
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
   });
 
+  it("rejects setup save when LemonSlice image URL is not a direct URL", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.setup.save", {
+      lemonSliceImageUrl: "https://e9riw81orx.ufs.sh/f/",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.code).toBe("INVALID_REQUEST");
+    expect(call?.[2]?.message).toContain("videoChat.lemonSlice.imageUrl");
+  });
+
   it("rejects invalid session params", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.create", {
@@ -258,6 +315,38 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
     expect(call?.[2]?.message).toContain("invalid videoChat.session.create params");
+  });
+
+  it("rejects invalid session stop params", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName: 12,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.code).toBe("INVALID_REQUEST");
+    expect(call?.[2]?.message).toContain("invalid videoChat.session.stop params");
+  });
+
+  it("rejects session create when configured LemonSlice image URL is not direct", async () => {
+    const config = {
+      ...baseConfig,
+      videoChat: {
+        ...baseConfig.videoChat,
+        lemonSlice: {
+          ...baseConfig.videoChat.lemonSlice,
+          imageUrl: "https://e9riw81orx.ufs.sh/f/",
+        },
+      },
+    };
+    const { methods } = setup(config);
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.code).toBe("INVALID_REQUEST");
+    expect(call?.[2]?.message).toContain("videoChat.lemonSlice.imageUrl");
   });
 
   it("returns generated reply audio for browser publishing", async () => {

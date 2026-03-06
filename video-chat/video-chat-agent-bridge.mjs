@@ -18,14 +18,19 @@ function resolveRunnerPath(argv) {
   return path.resolve(candidate);
 }
 
-async function loadAgentsModule(runnerPath) {
-  const resolver = createRequire(path.join(path.dirname(runnerPath), "__openclaw_sidecar__.js"));
+function resolveDepsBaseRunnerPath(argv, runnerPath) {
+  const candidate = argv[3]?.trim();
+  return candidate ? path.resolve(candidate) : runnerPath;
+}
+
+async function loadAgentsModule(baseRunnerPath) {
+  const resolver = createRequire(path.join(path.dirname(baseRunnerPath), "__openclaw_sidecar__.js"));
   let agentsEntryPath;
   try {
     agentsEntryPath = resolver.resolve("@livekit/agents");
   } catch (error) {
     throw new Error(
-      `Unable to resolve @livekit/agents from runner path ${runnerPath}. Ensure LiveKit deps are installed alongside OpenClaw. ${String(error)}`,
+      `Unable to resolve @livekit/agents from runner path ${baseRunnerPath}. Ensure LiveKit deps are installed alongside OpenClaw. ${String(error)}`,
       { cause: error },
     );
   }
@@ -44,20 +49,48 @@ function getExport(mod, name) {
   throw new Error(`@livekit/agents export ${name} is unavailable`);
 }
 
+function startParentWatchdog(onOrphaned, intervalMs = 1000) {
+  const initialParentPid = process.ppid;
+  if (!Number.isFinite(initialParentPid) || initialParentPid <= 1) {
+    return () => {};
+  }
+
+  let stopping = false;
+  const timer = setInterval(() => {
+    if (stopping) {
+      return;
+    }
+    const currentParentPid = process.ppid;
+    if (currentParentPid === initialParentPid) {
+      return;
+    }
+    stopping = true;
+    void onOrphaned(currentParentPid, initialParentPid);
+  }, intervalMs);
+  timer.unref();
+
+  return () => {
+    stopping = true;
+    clearInterval(timer);
+  };
+}
+
 async function main() {
   const runnerPath = resolveRunnerPath(process.argv);
+  const depsBaseRunnerPath = resolveDepsBaseRunnerPath(process.argv, runnerPath);
   const wrapperPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "video-chat-agent-runner-wrapper.mjs",
   );
-  const agentsModule = await loadAgentsModule(runnerPath);
+  const agentsModule = await loadAgentsModule(depsBaseRunnerPath);
   const AgentServer = getExport(agentsModule, "AgentServer");
   const ServerOptions = getExport(agentsModule, "ServerOptions");
   const initializeLogger = getExport(agentsModule, "initializeLogger");
 
   const logLevel = process.env.LOG_LEVEL?.trim() || "info";
   initializeLogger({ pretty: true, level: logLevel });
-  process.env.OPENCLAW_VIDEO_CHAT_BASE_RUNNER = runnerPath;
+  process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH = runnerPath;
+  process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER = depsBaseRunnerPath;
   const worker = new AgentServer(
     new ServerOptions({
       agent: wrapperPath,
@@ -70,18 +103,59 @@ async function main() {
     }),
   );
 
+  let shuttingDown = false;
+  const shutdownWorker = async ({ drain, exitCode, reason }) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.warn(`[video-chat-agent] ${reason}`);
+    try {
+      if (drain) {
+        await worker.drain();
+      }
+      await worker.close();
+    } finally {
+      process.exit(exitCode);
+    }
+  };
+
   process.once("SIGINT", async () => {
-    await worker.close();
-    process.exit(130);
+    await shutdownWorker({
+      drain: false,
+      exitCode: 130,
+      reason: "received SIGINT; shutting down worker",
+    });
   });
   process.once("SIGTERM", async () => {
-    await worker.drain();
-    await worker.close();
-    process.exit(143);
+    await shutdownWorker({
+      drain: true,
+      exitCode: 143,
+      reason: "received SIGTERM; draining worker",
+    });
+  });
+  if (process.platform !== "win32") {
+    process.on("SIGUSR2", () => {
+      console.warn(
+        "[video-chat-agent] received SIGUSR2; preserving bridge while sidecar child jobs reset",
+      );
+    });
+  }
+
+  const stopParentWatchdog = startParentWatchdog(async (currentParentPid, initialParentPid) => {
+    await shutdownWorker({
+      drain: true,
+      exitCode: 0,
+      reason: `detected parent gateway exit/reparent (ppid ${initialParentPid} -> ${currentParentPid}); draining worker`,
+    });
   });
 
   console.log("[video-chat-agent] starting LiveKit agent server");
-  await worker.run();
+  try {
+    await worker.run();
+  } finally {
+    stopParentWatchdog();
+  }
 }
 
 main().catch((error) => {

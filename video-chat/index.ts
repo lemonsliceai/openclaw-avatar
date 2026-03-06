@@ -15,6 +15,7 @@ import type {
   RespondFn,
 } from "openclaw/plugin-sdk";
 import { hasConfiguredSecretInput, normalizeResolvedSecretInputString } from "openclaw/plugin-sdk";
+import { resetProcessGroupChildren, stopChildProcess } from "./sidecar-process-control.js";
 
 const VIDEO_CHAT_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
 const LIVEKIT_TOKEN_TTL_SECONDS = 60 * 60;
@@ -39,17 +40,24 @@ type VideoChatConfigResponse = {
   };
   tts: {
     elevenLabsApiKeyConfigured: boolean;
+    elevenLabsVoiceId: string | null;
   };
 };
 
 type VideoChatSessionResult = {
   provider: "lemonslice";
   sessionKey: string;
+  chatSessionKey: string;
   roomName: string;
   livekitUrl: string;
   participantIdentity: string;
   participantToken: string;
   agentName: string;
+};
+
+type VideoChatSessionStopResult = {
+  stopped: true;
+  roomName: string;
 };
 
 type SidecarCredentials = {
@@ -64,6 +72,7 @@ type SidecarCredentials = {
 
 type VideoChatAgentSidecar = {
   stop: () => Promise<void>;
+  resetJobs: () => Promise<void>;
 };
 
 type SidecarLogger = {
@@ -99,6 +108,7 @@ type VideoChatSetupInput = {
   livekitApiKey?: string;
   livekitApiSecret?: string;
   elevenLabsApiKey?: string;
+  elevenLabsVoiceId?: string;
 };
 
 type HttpResponsePayload = {
@@ -107,12 +117,45 @@ type HttpResponsePayload = {
   body: string;
 };
 
+type VideoChatSessionHandlers = {
+  createSession: (params: {
+    config: OpenClawConfig;
+    sessionKey: string;
+  }) => Promise<VideoChatSessionResult>;
+  stopSession: (params: { roomName: string }) => Promise<VideoChatSessionStopResult>;
+};
+
 function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function validateLemonSliceImageUrl(value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "videoChat.lemonSlice.imageUrl must be a valid URL";
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "videoChat.lemonSlice.imageUrl must use http or https";
+  }
+
+  const trimmedPath = parsed.pathname.replace(/\/+$/g, "");
+  if (!trimmedPath || trimmedPath === "/") {
+    return "videoChat.lemonSlice.imageUrl must be a direct image URL, not a directory";
+  }
+
+  const lastPathSegment = trimmedPath.split("/").at(-1) ?? "";
+  if (!lastPathSegment || lastPathSegment === "f") {
+    return "videoChat.lemonSlice.imageUrl must include an image path after the host";
+  }
+
+  return null;
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -306,6 +349,24 @@ function sanitizeVideoChatRoomPart(value: string): string {
   return normalized.slice(0, VIDEO_CHAT_ROOM_PART_MAX_LENGTH);
 }
 
+function resolveVideoChatChatSessionKey(params: {
+  requestedSessionKey: string;
+  config: OpenClawConfig;
+}): string {
+  const requested = params.requestedSessionKey.trim();
+  if (!requested) {
+    return "agent:main:main";
+  }
+  if (requested.includes(":")) {
+    return requested;
+  }
+  const mainKey = normalizeOptionalString(params.config.session?.mainKey) ?? "main";
+  if (requested.toLowerCase() !== mainKey.toLowerCase()) {
+    return requested;
+  }
+  return `agent:main:${mainKey}`;
+}
+
 function toBase64Url(value: Buffer | string): string {
   return Buffer.from(value)
     .toString("base64")
@@ -406,6 +467,7 @@ function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigRe
     },
     tts: {
       elevenLabsApiKeyConfigured: hasConfiguredSecretInput(elevenLabs?.apiKey),
+      elevenLabsVoiceId: normalizeOptionalString(elevenLabs?.voiceId) ?? null,
     },
   };
 }
@@ -425,14 +487,25 @@ function parseVideoChatSetupInput(
     return value;
   };
 
-  return {
+  const parsed: VideoChatSetupInput = {
     lemonSliceApiKey: readInput("lemonSliceApiKey"),
     lemonSliceImageUrl: readInput("lemonSliceImageUrl"),
     livekitUrl: readInput("livekitUrl"),
     livekitApiKey: readInput("livekitApiKey"),
     livekitApiSecret: readInput("livekitApiSecret"),
     elevenLabsApiKey: readInput("elevenLabsApiKey"),
+    elevenLabsVoiceId: readInput("elevenLabsVoiceId"),
   };
+
+  const lemonSliceImageUrl = normalizeOptionalString(parsed.lemonSliceImageUrl);
+  if (lemonSliceImageUrl) {
+    const validationError = validateLemonSliceImageUrl(lemonSliceImageUrl);
+    if (validationError) {
+      throw new Error(`invalid ${method} params: ${validationError}`);
+    }
+  }
+
+  return parsed;
 }
 
 function applyVideoChatSetupToConfig(
@@ -456,6 +529,9 @@ function applyVideoChatSetupToConfig(
   const elevenLabsApiKey =
     normalizeOptionalString(setupInput.elevenLabsApiKey) ??
     effective.messages?.tts?.elevenlabs?.apiKey;
+  const elevenLabsVoiceId =
+    normalizeOptionalString(setupInput.elevenLabsVoiceId) ??
+    effective.messages?.tts?.elevenlabs?.voiceId;
 
   const plugins = asObjectRecord(config.plugins);
   const entries = asObjectRecord(plugins.entries);
@@ -501,6 +577,7 @@ function applyVideoChatSetupToConfig(
                 elevenlabs: {
                   ...elevenLabsRecord,
                   apiKey: elevenLabsApiKey,
+                  voiceId: elevenLabsVoiceId,
                 },
               },
             },
@@ -708,6 +785,10 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
       readCliOption(options, "elevenlabsApiKey") ??
       readCliOption(options, "elevenLabsApiKey") ??
       process.env.VIDEO_CHAT_ELEVENLABS_API_KEY,
+    elevenLabsVoiceId:
+      readCliOption(options, "elevenlabsVoiceId") ??
+      readCliOption(options, "elevenLabsVoiceId") ??
+      process.env.VIDEO_CHAT_ELEVENLABS_VOICE_ID,
   };
 
   if (
@@ -734,6 +815,13 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
         livekitApiKey: await promptTerminalField({ rl, label: "LiveKit API key" }),
         livekitApiSecret: await promptTerminalField({ rl, label: "LiveKit API secret" }),
         elevenLabsApiKey: await promptTerminalField({ rl, label: "ElevenLabs API key" }),
+        elevenLabsVoiceId: await promptTerminalField({
+          rl,
+          label: "ElevenLabs voice ID",
+          defaultValue: normalizeOptionalString(
+            effectiveCurrentConfig.messages?.tts?.elevenlabs?.voiceId,
+          ),
+        }),
       };
     } finally {
       rl.close();
@@ -766,6 +854,7 @@ function registerVideoChatSetupCli(api: OpenClawPluginApi): void {
         .option("--livekit-api-key <key>", "LiveKit API key")
         .option("--livekit-api-secret <secret>", "LiveKit API secret")
         .option("--elevenlabs-api-key <key>", "ElevenLabs API key")
+        .option("--elevenlabs-voice-id <id>", "ElevenLabs voice ID")
         .action(async (options: unknown) => {
           await runVideoChatSetupCli(api, options);
         });
@@ -883,8 +972,20 @@ function moduleWebRootCandidates(): string[] {
   ];
 }
 
-function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
+function moduleStylesRootCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "styles"),
+    path.resolve(moduleDir, "..", "..", "styles"),
+  ];
+}
+
+function registerVideoChatHttpRoutes(
+  api: OpenClawPluginApi,
+  sessionHandlers: VideoChatSessionHandlers,
+): void {
   let cachedWebRootPath: string | null | undefined;
+  let cachedStylesRootPath: string | null | undefined;
 
   const resolveWebRootPath = async (): Promise<string> => {
     if (cachedWebRootPath !== undefined) {
@@ -909,9 +1010,59 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
     return webRootPath;
   };
 
-  const readWebAsset = async (fileName: "index.html" | "app.js"): Promise<string> => {
+  const readWebAsset = async (relativePath: string): Promise<string> => {
+    const normalized = path.posix.normalize(`/${relativePath}`).replace(/^\/+/, "");
+    if (
+      !normalized ||
+      normalized.startsWith("..") ||
+      (!normalized.endsWith(".html") && !normalized.endsWith(".js"))
+    ) {
+      throw new Error("invalid web asset path");
+    }
     const webRootPath = await resolveWebRootPath();
-    return readFile(path.join(webRootPath, fileName), "utf8");
+    const resolvedPath = path.resolve(webRootPath, normalized);
+    const relative = path.relative(webRootPath, resolvedPath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("invalid web asset path");
+    }
+    return readFile(resolvedPath, "utf8");
+  };
+
+  const resolveStylesRootPath = async (): Promise<string> => {
+    if (cachedStylesRootPath !== undefined) {
+      if (!cachedStylesRootPath) {
+        throw new Error("unable to locate plugin style assets");
+      }
+      return cachedStylesRootPath;
+    }
+    const configuredCandidates = [
+      api.resolvePath("styles"),
+      api.resolvePath("./styles"),
+      api.resolvePath("../styles"),
+    ];
+    const stylesRootPath = await resolveExistingDirectory([
+      ...configuredCandidates,
+      ...moduleStylesRootCandidates(),
+    ]);
+    cachedStylesRootPath = stylesRootPath;
+    if (!stylesRootPath) {
+      throw new Error("unable to locate plugin style assets");
+    }
+    return stylesRootPath;
+  };
+
+  const readStyleAsset = async (relativePath: string): Promise<string> => {
+    const normalized = path.posix.normalize(`/${relativePath}`).replace(/^\/+/, "");
+    if (!normalized || normalized.startsWith("..") || !normalized.endsWith(".css")) {
+      throw new Error("invalid style asset path");
+    }
+    const stylesRootPath = await resolveStylesRootPath();
+    const resolvedPath = path.resolve(stylesRootPath, normalized);
+    const relative = path.relative(stylesRootPath, resolvedPath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("invalid style asset path");
+    }
+    return readFile(resolvedPath, "utf8");
   };
 
   api.registerHttpRoute({
@@ -971,25 +1122,56 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
           return true;
         }
 
-        if (normalizedPath === "/plugins/video-chat/api/session" && method === "POST") {
-          const params = await readRequestJson(req);
-          if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
-            throw new Error("invalid videoChat.session.create params");
+        if (normalizedPath === "/plugins/video-chat/api/session") {
+          if (method === "POST") {
+            const params = await readRequestJson(req);
+            if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
+              throw new Error("invalid videoChat.session.create params");
+            }
+            const cfg = api.runtime.config.loadConfig();
+            const sessionKey =
+              (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
+              cfg.session?.mainKey ||
+              "main";
+            const session = await sessionHandlers.createSession({
+              config: cfg,
+              sessionKey,
+            });
+            sendHttpResponse(
+              res,
+              asJsonResponse({
+                success: true,
+                session,
+              }),
+            );
+            return true;
           }
-          const cfg = api.runtime.config.loadConfig();
-          const sessionKey =
-            (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
-            cfg.session?.mainKey ||
-            "main";
-          const session = await createVideoChatSession({
-            config: cfg,
-            sessionKey,
+          sendHttpResponse(
+            res,
+            asJsonResponse(
+              {
+                success: false,
+                error: { code: "INVALID_REQUEST", message: "method not allowed" },
+              },
+              405,
+            ),
+          );
+          return true;
+        }
+
+        if (normalizedPath === "/plugins/video-chat/api/session/stop" && method === "POST") {
+          const params = await readRequestJson(req);
+          if (typeof params.roomName !== "string") {
+            throw new Error("invalid videoChat.session.stop params");
+          }
+          const result = await sessionHandlers.stopSession({
+            roomName: params.roomName,
           });
           sendHttpResponse(
             res,
             asJsonResponse({
               success: true,
-              session,
+              ...result,
             }),
           );
           return true;
@@ -1082,9 +1264,12 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
         return false;
       }
       try {
-        if (normalizedPath === "/plugins/video-chat/app.js") {
-          const script = await readWebAsset("app.js");
-          sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
+        if (normalizedPath.startsWith("/plugins/video-chat/styles/")) {
+          const assetPath = decodeURIComponent(
+            normalizedPath.slice("/plugins/video-chat/styles/".length),
+          );
+          const css = await readStyleAsset(assetPath);
+          sendHttpResponse(res, asTextResponse(css, "text/css; charset=utf-8"));
           return true;
         }
         if (normalizedPath === "/plugins/video-chat") {
@@ -1092,11 +1277,35 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
           sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
           return true;
         }
+        if (
+          normalizedPath === "/plugins/video-chat/settings" ||
+          normalizedPath === "/plugins/video-chat/config"
+        ) {
+          const html = await readWebAsset("settings.html");
+          sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
+          return true;
+        }
+        if (normalizedPath.startsWith("/plugins/video-chat/")) {
+          const assetPath = decodeURIComponent(normalizedPath.slice("/plugins/video-chat/".length));
+          if (assetPath.endsWith(".js")) {
+            const script = await readWebAsset(assetPath);
+            sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
+            return true;
+          }
+          if (assetPath.endsWith(".html")) {
+            const html = await readWebAsset(assetPath);
+            sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
+            return true;
+          }
+        }
         sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
         return true;
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "video chat plugin page request failed";
+        const message = error instanceof Error ? error.message : "video chat plugin page request failed";
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+          sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
+          return true;
+        }
         sendHttpResponse(
           res,
           asJsonResponse(
@@ -1122,6 +1331,11 @@ type SidecarLaunchCommand = {
 function resolveSidecarBridgeScriptPath(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return path.join(moduleDir, "video-chat-agent-bridge.mjs");
+}
+
+function resolveCustomSidecarRunnerPath(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return path.join(moduleDir, "video-chat-agent-runner.js");
 }
 
 function collectRunnerCandidates(params: { entryScript?: string }): string[] {
@@ -1164,16 +1378,48 @@ function collectRunnerCandidates(params: { entryScript?: string }): string[] {
   return candidates;
 }
 
+async function resolveNativeGatewayEntrypoint(runnerPath: string): Promise<string | null> {
+  const runnerDir = path.dirname(path.resolve(runnerPath));
+  return resolveExistingFile([
+    path.join(runnerDir, "index.js"),
+    path.join(path.dirname(runnerDir), "index.js"),
+  ]);
+}
+
 async function resolveSidecarLaunchCommand(
   entryScript: string | undefined,
 ): Promise<SidecarLaunchCommand | null> {
-  const runnerPath = await resolveExistingFile(collectRunnerCandidates({ entryScript }));
-  if (runnerPath) {
+  const customRunnerPath = await resolveExistingFile([resolveCustomSidecarRunnerPath()]);
+  const baseRunnerCandidates = collectRunnerCandidates({ entryScript }).filter((candidate) => {
+    if (!customRunnerPath) {
+      return true;
+    }
+    return path.resolve(candidate) !== path.resolve(customRunnerPath);
+  });
+  const baseRunnerPath = await resolveExistingFile(baseRunnerCandidates);
+  if (customRunnerPath && baseRunnerPath) {
     const bridgeScriptPath = resolveSidecarBridgeScriptPath();
     return {
       executable: process.execPath,
-      args: [bridgeScriptPath, runnerPath],
-      description: `node ${bridgeScriptPath} ${runnerPath}`,
+      args: [bridgeScriptPath, customRunnerPath, baseRunnerPath],
+      description: `node ${bridgeScriptPath} ${customRunnerPath} ${baseRunnerPath}`,
+    };
+  }
+  if (baseRunnerPath) {
+    const nativeGatewayEntrypoint = await resolveNativeGatewayEntrypoint(baseRunnerPath);
+    const forceBridge = normalizeOptionalString(process.env.OPENCLAW_VIDEO_CHAT_FORCE_BRIDGE) === "1";
+    if (nativeGatewayEntrypoint && !forceBridge) {
+      return {
+        executable: process.execPath,
+        args: [nativeGatewayEntrypoint, "gateway", "video-chat-agent"],
+        description: `node ${nativeGatewayEntrypoint} gateway video-chat-agent`,
+      };
+    }
+    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
+    return {
+      executable: process.execPath,
+      args: [bridgeScriptPath, baseRunnerPath],
+      description: `node ${bridgeScriptPath} ${baseRunnerPath}`,
     };
   }
   if (entryScript) {
@@ -1218,8 +1464,16 @@ async function createVideoChatSession(params: {
       "video chat is not configured: missing LemonSlice, LiveKit, or ElevenLabs credentials",
     );
   }
+  const imageUrlValidationError = validateLemonSliceImageUrl(lemonSliceImageUrl);
+  if (imageUrlValidationError) {
+    throw new Error(`video chat is not configured: ${imageUrlValidationError}`);
+  }
 
   const roomName = `${VIDEO_CHAT_ROOM_PREFIX}-${sanitizeVideoChatRoomPart(params.sessionKey)}-${randomUUID().slice(0, 8)}`;
+  const chatSessionKey = resolveVideoChatChatSessionKey({
+    requestedSessionKey: params.sessionKey,
+    config: effectiveConfig,
+  });
   const participantIdentity = `control-ui-${randomUUID().slice(0, 12)}`;
   const participantToken = createLiveKitAccessToken({
     apiKey,
@@ -1235,7 +1489,7 @@ async function createVideoChatSession(params: {
         {
           agentName: VIDEO_CHAT_AGENT_NAME,
           metadata: buildVideoChatDispatchMetadata({
-            sessionKey: params.sessionKey,
+            sessionKey: chatSessionKey,
             imageUrl: lemonSliceImageUrl,
           }),
         },
@@ -1247,11 +1501,28 @@ async function createVideoChatSession(params: {
   return {
     provider: "lemonslice",
     sessionKey: params.sessionKey,
+    chatSessionKey,
     roomName,
     livekitUrl,
     participantIdentity,
     participantToken,
     agentName: VIDEO_CHAT_AGENT_NAME,
+  };
+}
+
+async function stopVideoChatSession(params: {
+  roomName: string;
+}): Promise<VideoChatSessionStopResult> {
+  const roomName = params.roomName.trim();
+  if (!roomName) {
+    throw new Error("roomName is required");
+  }
+  if (!roomName.startsWith(`${VIDEO_CHAT_ROOM_PREFIX}-`)) {
+    throw new Error("invalid video chat room name");
+  }
+  return {
+    stopped: true,
+    roomName,
   };
 }
 
@@ -1358,25 +1629,6 @@ function buildWorkerEnv(params: {
   return env;
 }
 
-async function stopChild(child: ChildProcess | null): Promise<void> {
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-  child.kill("SIGTERM");
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-    }, 2_000);
-    timer.unref();
-    child.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
-}
-
 async function startVideoChatAgentSidecar(params: {
   config: OpenClawConfig;
   gateway: SidecarGatewayRuntime;
@@ -1408,6 +1660,7 @@ async function startVideoChatAgentSidecar(params: {
   params.log.info(`video chat agent sidecar launch command: ${launchCommand.description}`);
 
   let child: ChildProcess | null = null;
+  let childProcessGroupId: number | null = null;
   let respawnTimer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
   const recentExits: number[] = [];
@@ -1421,8 +1674,11 @@ async function startVideoChatAgentSidecar(params: {
         credentials,
       }),
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
     child = next;
+    childProcessGroupId =
+      typeof next.pid === "number" && Number.isInteger(next.pid) && next.pid > 0 ? next.pid : null;
     attachLineLogger(next.stdout, (message) => params.log.info(`[video-chat-agent] ${message}`));
     attachLineLogger(next.stderr, (message) => {
       if (
@@ -1469,14 +1725,28 @@ async function startVideoChatAgentSidecar(params: {
   spawnChild();
 
   return {
+    resetJobs: async () => {
+      if (stopping) {
+        return;
+      }
+      const processGroupId = childProcessGroupId;
+      if (process.platform === "win32" || !processGroupId || processGroupId <= 0) {
+        return;
+      }
+      await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
+    },
     stop: async () => {
       stopping = true;
       if (respawnTimer) {
         clearTimeout(respawnTimer);
         respawnTimer = null;
       }
-      await stopChild(child);
+      await stopChildProcess({
+        child,
+        processGroupId: childProcessGroupId,
+      });
       child = null;
+      childProcessGroupId = null;
     },
   };
 }
@@ -1521,8 +1791,39 @@ const videoChatPlugin = {
       });
     };
 
+    const resetSidecarJobs = async (): Promise<void> => {
+      if (!sidecar) {
+        return;
+      }
+      await sidecar.resetJobs().catch((error) => {
+        api.logger.warn(
+          `[video-chat-agent] failed to reset sidecar jobs: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    };
+
+    const createManagedSession = async (params: {
+      config: OpenClawConfig;
+      sessionKey: string;
+    }): Promise<VideoChatSessionResult> => {
+      await ensureSidecarRunning(params.config);
+      await resetSidecarJobs();
+      return createVideoChatSession(params);
+    };
+
+    const stopManagedSession = async (params: {
+      roomName: string;
+    }): Promise<VideoChatSessionStopResult> => {
+      const result = await stopVideoChatSession({ roomName: params.roomName });
+      await resetSidecarJobs();
+      return result;
+    };
+
     registerVideoChatSetupCli(api);
-    registerVideoChatHttpRoutes(api);
+    registerVideoChatHttpRoutes(api, {
+      createSession: createManagedSession,
+      stopSession: stopManagedSession,
+    });
 
     api.registerGatewayMethod(
       "videoChat.config",
@@ -1604,8 +1905,7 @@ const videoChatPlugin = {
             cfg.session?.mainKey ||
             "main";
 
-          await ensureSidecarRunning(cfg);
-          const payload = await createVideoChatSession({
+          const payload = await createManagedSession({
             config: cfg,
             sessionKey,
           });
@@ -1615,6 +1915,39 @@ const videoChatPlugin = {
             respond,
             "INVALID_REQUEST",
             error instanceof Error ? error.message : "video chat session creation failed",
+          );
+        }
+      },
+    );
+
+    api.registerGatewayMethod(
+      "videoChat.session.stop",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          if (!assertMethodParams(params, "videoChat.session.stop", respond)) {
+            return;
+          }
+          if (typeof params.roomName !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.session.stop params",
+            );
+            return;
+          }
+          const result = await stopManagedSession({
+            roomName: params.roomName,
+          });
+          respond(true, result);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "video chat session stop failed";
+          respondGatewayError(
+            respond,
+            message.includes("invalid ") || message.endsWith(" is required")
+              ? "INVALID_REQUEST"
+              : "UNAVAILABLE",
+            message,
           );
         }
       },
