@@ -1677,6 +1677,35 @@ function disconnectRoom() {
   updateRoomButtons();
 }
 
+async function stopActiveSession() {
+  const session = activeSession;
+  disconnectRoom();
+  activeSession = null;
+  updateRoomButtons();
+  updateChatControls();
+  clearChatLog();
+  setChatStatus("Start a session to use text chat.");
+
+  if (!session?.roomName) {
+    setOutput({ action: "session-stopped" });
+    return;
+  }
+
+  try {
+    await requestJson("/plugins/video-chat/api/session/stop", {
+      method: "POST",
+      body: JSON.stringify({ roomName: session.roomName }),
+    });
+    setOutput({ action: "session-stopped", roomName: session.roomName });
+  } catch (error) {
+    setOutput({
+      action: "session-stop-failed",
+      roomName: session.roomName,
+      error: String(error),
+    });
+  }
+}
+
 async function requestJson(path, options = {}) {
   const hasBody = options.body !== undefined && options.body !== null;
   const response = await fetch(path, {
@@ -1910,14 +1939,8 @@ if (sessionForm) {
 }
 
 if (stopSessionButton) {
-  stopSessionButton.addEventListener("click", () => {
-  disconnectRoom();
-  activeSession = null;
-  updateRoomButtons();
-  updateChatControls();
-  clearChatLog();
-  setChatStatus("Start a session to use text chat.");
-  setOutput({ action: "session-stopped" });
+  stopSessionButton.addEventListener("click", async () => {
+    await stopActiveSession();
   });
 }
 
@@ -2067,26 +2090,25 @@ if (replaceTokenButton) {
 }
 
 if (clearTokenButton) {
-  clearTokenButton.addEventListener("click", () => {
-  disconnectRoom();
-  closeGatewaySocket("Gateway token cleared.");
-  clearGatewayToken();
-  if (tokenInput) {
-    tokenInput.value = "";
-  }
-  tokenEditMode = false;
-  updateTokenFieldMasking();
-  activeSession = null;
-  updateRoomButtons();
-  updateChatControls();
-  clearChatLog();
-  setChatStatus("Enter a gateway token to use text chat.");
-  setGatewayHealthStatus("warn", "Token Missing");
-  setKeysHealthStatus("warn", "Needs Token");
-  if (statusEl) {
-    statusEl.textContent = "Gateway token cleared. Enter a token to continue.";
-  }
-  setOutput({ action: "gateway-token-cleared" });
+  clearTokenButton.addEventListener("click", async () => {
+    await stopActiveSession();
+    closeGatewaySocket("Gateway token cleared.");
+    clearGatewayToken();
+    if (tokenInput) {
+      tokenInput.value = "";
+    }
+    tokenEditMode = false;
+    updateTokenFieldMasking();
+    updateRoomButtons();
+    updateChatControls();
+    clearChatLog();
+    setChatStatus("Enter a gateway token to use text chat.");
+    setGatewayHealthStatus("warn", "Token Missing");
+    setKeysHealthStatus("warn", "Needs Token");
+    if (statusEl) {
+      statusEl.textContent = "Gateway token cleared. Enter a token to continue.";
+    }
+    setOutput({ action: "gateway-token-cleared" });
   });
 }
 

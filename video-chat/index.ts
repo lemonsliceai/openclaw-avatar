@@ -54,6 +54,11 @@ type VideoChatSessionResult = {
   agentName: string;
 };
 
+type VideoChatSessionStopResult = {
+  stopped: true;
+  roomName: string;
+};
+
 type SidecarCredentials = {
   lemonSliceApiKey: string;
   elevenLabsApiKey: string;
@@ -66,6 +71,7 @@ type SidecarCredentials = {
 
 type VideoChatAgentSidecar = {
   stop: () => Promise<void>;
+  resetJobs: () => Promise<void>;
 };
 
 type SidecarLogger = {
@@ -108,6 +114,14 @@ type HttpResponsePayload = {
   status: number;
   headers?: Record<string, string>;
   body: string;
+};
+
+type VideoChatSessionHandlers = {
+  createSession: (params: {
+    config: OpenClawConfig;
+    sessionKey: string;
+  }) => Promise<VideoChatSessionResult>;
+  stopSession: (params: { roomName: string }) => Promise<VideoChatSessionStopResult>;
 };
 
 function normalizeOptionalString(value: unknown): string | undefined {
@@ -965,7 +979,10 @@ function moduleStylesRootCandidates(): string[] {
   ];
 }
 
-function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
+function registerVideoChatHttpRoutes(
+  api: OpenClawPluginApi,
+  sessionHandlers: VideoChatSessionHandlers,
+): void {
   let cachedWebRootPath: string | null | undefined;
   let cachedStylesRootPath: string | null | undefined;
 
@@ -1104,25 +1121,56 @@ function registerVideoChatHttpRoutes(api: OpenClawPluginApi): void {
           return true;
         }
 
-        if (normalizedPath === "/plugins/video-chat/api/session" && method === "POST") {
-          const params = await readRequestJson(req);
-          if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
-            throw new Error("invalid videoChat.session.create params");
+        if (normalizedPath === "/plugins/video-chat/api/session") {
+          if (method === "POST") {
+            const params = await readRequestJson(req);
+            if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
+              throw new Error("invalid videoChat.session.create params");
+            }
+            const cfg = api.runtime.config.loadConfig();
+            const sessionKey =
+              (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
+              cfg.session?.mainKey ||
+              "main";
+            const session = await sessionHandlers.createSession({
+              config: cfg,
+              sessionKey,
+            });
+            sendHttpResponse(
+              res,
+              asJsonResponse({
+                success: true,
+                session,
+              }),
+            );
+            return true;
           }
-          const cfg = api.runtime.config.loadConfig();
-          const sessionKey =
-            (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
-            cfg.session?.mainKey ||
-            "main";
-          const session = await createVideoChatSession({
-            config: cfg,
-            sessionKey,
+          sendHttpResponse(
+            res,
+            asJsonResponse(
+              {
+                success: false,
+                error: { code: "INVALID_REQUEST", message: "method not allowed" },
+              },
+              405,
+            ),
+          );
+          return true;
+        }
+
+        if (normalizedPath === "/plugins/video-chat/api/session/stop" && method === "POST") {
+          const params = await readRequestJson(req);
+          if (typeof params.roomName !== "string") {
+            throw new Error("invalid videoChat.session.stop params");
+          }
+          const result = await sessionHandlers.stopSession({
+            roomName: params.roomName,
           });
           sendHttpResponse(
             res,
             asJsonResponse({
               success: true,
-              session,
+              ...result,
             }),
           );
           return true;
@@ -1461,6 +1509,22 @@ async function createVideoChatSession(params: {
   };
 }
 
+async function stopVideoChatSession(params: {
+  roomName: string;
+}): Promise<VideoChatSessionStopResult> {
+  const roomName = params.roomName.trim();
+  if (!roomName) {
+    throw new Error("roomName is required");
+  }
+  if (!roomName.startsWith(`${VIDEO_CHAT_ROOM_PREFIX}-`)) {
+    throw new Error("invalid video chat room name");
+  }
+  return {
+    stopped: true,
+    roomName,
+  };
+}
+
 function resolveVideoChatAgentCredentials(config: OpenClawConfig): SidecarCredentials | null {
   const effective = resolveEffectiveVideoChatConfig(config);
   if (effective.videoChat?.provider !== "lemonslice") {
@@ -1564,28 +1628,46 @@ function buildWorkerEnv(params: {
   return env;
 }
 
-async function stopChild(child: ChildProcess | null): Promise<void> {
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
+async function stopChild(params: {
+  child: ChildProcess | null;
+  processGroupId?: number | null;
+}): Promise<void> {
+  const child = params.child;
+  const childPid = typeof child?.pid === "number" ? child.pid : 0;
+  const processGroupId = typeof params.processGroupId === "number" ? params.processGroupId : 0;
+  const signalPid = processGroupId > 0 ? processGroupId : childPid;
+  if (signalPid <= 0 && (!child || child.exitCode !== null || child.signalCode !== null)) {
     return;
   }
 
-  const childPid = typeof child.pid === "number" ? child.pid : 0;
-  const canSignalProcessGroup = process.platform !== "win32" && childPid > 0;
+  const canSignalProcessGroup = process.platform !== "win32" && signalPid > 0;
   const sendSignal = (signal: NodeJS.Signals): void => {
     if (canSignalProcessGroup) {
       try {
         // When spawned detached, -PID targets the entire process group
         // (bridge + LiveKit worker descendants).
-        process.kill(-childPid, signal);
+        process.kill(-signalPid, signal);
         return;
       } catch {
         // Fall back to direct child signaling below.
       }
     }
-    child.kill(signal);
+    if (!child || child.exitCode !== null || child.signalCode !== null) {
+      return;
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      // Child may already be gone.
+    }
   };
 
   sendSignal("SIGTERM");
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    await delayMs(200);
+    sendSignal("SIGKILL");
+    return;
+  }
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
@@ -1597,6 +1679,13 @@ async function stopChild(child: ChildProcess | null): Promise<void> {
       clearTimeout(timer);
       resolve();
     });
+  });
+}
+
+async function delayMs(timeoutMs: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref();
   });
 }
 
@@ -1631,6 +1720,7 @@ async function startVideoChatAgentSidecar(params: {
   params.log.info(`video chat agent sidecar launch command: ${launchCommand.description}`);
 
   let child: ChildProcess | null = null;
+  let childProcessGroupId: number | null = null;
   let respawnTimer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
   const recentExits: number[] = [];
@@ -1647,6 +1737,8 @@ async function startVideoChatAgentSidecar(params: {
       detached: process.platform !== "win32",
     });
     child = next;
+    childProcessGroupId =
+      typeof next.pid === "number" && Number.isInteger(next.pid) && next.pid > 0 ? next.pid : null;
     attachLineLogger(next.stdout, (message) => params.log.info(`[video-chat-agent] ${message}`));
     attachLineLogger(next.stderr, (message) => {
       if (
@@ -1693,14 +1785,34 @@ async function startVideoChatAgentSidecar(params: {
   spawnChild();
 
   return {
+    resetJobs: async () => {
+      if (stopping) {
+        return;
+      }
+      const processGroupId = childProcessGroupId;
+      if (process.platform === "win32" || !processGroupId || processGroupId <= 0) {
+        return;
+      }
+      try {
+        // Bridge handles SIGUSR2, while child job processes terminate by default.
+        process.kill(-processGroupId, "SIGUSR2");
+        await delayMs(300);
+      } catch {
+        // Best effort cleanup; stop/start path can retry later.
+      }
+    },
     stop: async () => {
       stopping = true;
       if (respawnTimer) {
         clearTimeout(respawnTimer);
         respawnTimer = null;
       }
-      await stopChild(child);
+      await stopChild({
+        child,
+        processGroupId: childProcessGroupId,
+      });
       child = null;
+      childProcessGroupId = null;
     },
   };
 }
@@ -1745,8 +1857,39 @@ const videoChatPlugin = {
       });
     };
 
+    const resetSidecarJobs = async (): Promise<void> => {
+      if (!sidecar) {
+        return;
+      }
+      await sidecar.resetJobs().catch((error) => {
+        api.logger.warn(
+          `[video-chat-agent] failed to reset sidecar jobs: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    };
+
+    const createManagedSession = async (params: {
+      config: OpenClawConfig;
+      sessionKey: string;
+    }): Promise<VideoChatSessionResult> => {
+      await ensureSidecarRunning(params.config);
+      await resetSidecarJobs();
+      return createVideoChatSession(params);
+    };
+
+    const stopManagedSession = async (params: {
+      roomName: string;
+    }): Promise<VideoChatSessionStopResult> => {
+      const result = await stopVideoChatSession({ roomName: params.roomName });
+      await resetSidecarJobs();
+      return result;
+    };
+
     registerVideoChatSetupCli(api);
-    registerVideoChatHttpRoutes(api);
+    registerVideoChatHttpRoutes(api, {
+      createSession: createManagedSession,
+      stopSession: stopManagedSession,
+    });
 
     api.registerGatewayMethod(
       "videoChat.config",
@@ -1828,8 +1971,7 @@ const videoChatPlugin = {
             cfg.session?.mainKey ||
             "main";
 
-          await ensureSidecarRunning(cfg);
-          const payload = await createVideoChatSession({
+          const payload = await createManagedSession({
             config: cfg,
             sessionKey,
           });
@@ -1839,6 +1981,39 @@ const videoChatPlugin = {
             respond,
             "INVALID_REQUEST",
             error instanceof Error ? error.message : "video chat session creation failed",
+          );
+        }
+      },
+    );
+
+    api.registerGatewayMethod(
+      "videoChat.session.stop",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          if (!assertMethodParams(params, "videoChat.session.stop", respond)) {
+            return;
+          }
+          if (typeof params.roomName !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.session.stop params",
+            );
+            return;
+          }
+          const result = await stopManagedSession({
+            roomName: params.roomName,
+          });
+          respond(true, result);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "video chat session stop failed";
+          respondGatewayError(
+            respond,
+            message.includes("invalid ") || message.endsWith(" is required")
+              ? "INVALID_REQUEST"
+              : "UNAVAILABLE",
+            message,
           );
         }
       },

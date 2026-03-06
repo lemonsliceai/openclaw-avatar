@@ -134,6 +134,13 @@ async function main() {
       reason: "received SIGTERM; draining worker",
     });
   });
+  if (process.platform !== "win32") {
+    process.on("SIGUSR2", () => {
+      console.warn(
+        "[video-chat-agent] received SIGUSR2; preserving bridge while sidecar child jobs reset",
+      );
+    });
+  }
 
   const stopParentWatchdog = startParentWatchdog(async (currentParentPid, initialParentPid) => {
     await shutdownWorker({
