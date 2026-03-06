@@ -74,6 +74,7 @@ const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 let activeSession = null;
 let activeRoom = null;
 let localAudioTrack = null;
+let roomConnectGeneration = 0;
 let avatarSpeakerMuted = false;
 let gatewaySocket = null;
 let gatewaySocketReady = false;
@@ -1606,6 +1607,9 @@ function bindRoomEvents(room) {
     setRoomStatus(`Room state: ${state}`);
   });
   room.on(LIVEKIT.RoomEvent.Disconnected, () => {
+    if (activeRoom !== room) {
+      return;
+    }
     activeRoom = null;
     releaseLocalTracks();
     clearRemoteTiles();
@@ -1627,6 +1631,7 @@ async function connectToRoom() {
     return;
   }
 
+  const connectGeneration = ++roomConnectGeneration;
   setRoomStatus("Connecting to room...");
   const room = new LIVEKIT.Room({
     adaptiveStream: true,
@@ -1637,10 +1642,31 @@ async function connectToRoom() {
 
   try {
     await room.connect(activeSession.livekitUrl, activeSession.participantToken);
+    if (connectGeneration !== roomConnectGeneration || !activeSession) {
+      try {
+        room.disconnect();
+      } catch {}
+      releaseLocalTracks();
+      updateRoomButtons();
+      return;
+    }
     activeRoom = room;
     setRoomStatus(`Connected to ${activeSession.roomName}`);
     clearRemoteTiles();
     await publishLocalTracks(room);
+    if (connectGeneration !== roomConnectGeneration || !activeSession || activeRoom !== room) {
+      try {
+        room.disconnect();
+      } catch {}
+      if (activeRoom === room) {
+        activeRoom = null;
+      }
+      releaseLocalTracks();
+      clearRemoteTiles();
+      setRoomStatus("Disconnected from room.");
+      updateRoomButtons();
+      return;
+    }
 
     for (const participant of room.remoteParticipants.values()) {
       for (const publication of participant.trackPublications.values()) {
@@ -1656,7 +1682,9 @@ async function connectToRoom() {
     try {
       room.disconnect();
     } catch {}
-    activeRoom = null;
+    if (activeRoom === room) {
+      activeRoom = null;
+    }
     releaseLocalTracks();
     updateRoomButtons();
     throw error;
@@ -1664,7 +1692,12 @@ async function connectToRoom() {
 }
 
 function disconnectRoom() {
+  roomConnectGeneration += 1;
   if (!activeRoom) {
+    releaseLocalTracks();
+    clearRemoteTiles();
+    setRoomStatus("Disconnected from room.");
+    updateRoomButtons();
     return;
   }
   try {
