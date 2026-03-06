@@ -31,9 +31,10 @@ const gatewayHealthValueEl = document.getElementById("gateway-health-value");
 const keysHealthDotEl = document.getElementById("keys-health-dot");
 const keysHealthValueEl = document.getElementById("keys-health-value");
 const roomStatusEl = document.getElementById("room-status");
+const roomStatusTextEl = document.getElementById("room-status-text");
+const roomStatusSpinnerEl = document.getElementById("room-status-spinner");
 const avatarPaneEl = document.getElementById("avatar-pane");
 const avatarMediaEl = document.getElementById("avatar-media");
-const avatarPlaceholderEl = document.getElementById("avatar-placeholder");
 const avatarResizeHandleEl = document.getElementById("avatar-resize-handle");
 const connectRoomButton = document.getElementById("connect-room");
 const leaveRoomButton = document.getElementById("leave-room");
@@ -67,6 +68,8 @@ const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
 const AVATAR_PANE_MIN_WIDTH = 320;
 const AVATAR_PANE_MAX_WIDTH = 1200;
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
+const SESSION_STARTING_STATUS = "Starting session...";
+const AVATAR_LOADING_STATUS = "Avatar loading...";
 const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
 const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
@@ -75,6 +78,9 @@ let activeSession = null;
 let activeRoom = null;
 let localAudioTrack = null;
 let roomConnectGeneration = 0;
+let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
+let avatarLoadPending = false;
+let avatarLoadMessage = "";
 let avatarSpeakerMuted = false;
 let gatewaySocket = null;
 let gatewaySocketReady = false;
@@ -112,11 +118,20 @@ function setOutput(value) {
   outputEl.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
-function setRoomStatus(text) {
-  if (!roomStatusEl) {
+function setRoomStatus(text, options = {}) {
+  if (!roomStatusEl && !roomStatusTextEl) {
     return;
   }
-  roomStatusEl.textContent = text;
+  const loading = Boolean(options.loading);
+  if (roomStatusTextEl) {
+    roomStatusTextEl.textContent = text;
+  } else if (roomStatusEl) {
+    roomStatusEl.textContent = text;
+  }
+  roomStatusEl?.classList.toggle("is-loading", loading);
+  if (roomStatusSpinnerEl) {
+    roomStatusSpinnerEl.hidden = !loading;
+  }
 }
 
 function getGatewayToken() {
@@ -891,6 +906,18 @@ function applyAvatarPaneWidth(nextWidth, options = {}) {
   }
 }
 
+function getCurrentAvatarPaneWidth() {
+  const measuredWidth = avatarPaneEl?.hidden ? 0 : avatarPaneEl?.getBoundingClientRect().width;
+  if (Number.isFinite(measuredWidth) && measuredWidth > 0) {
+    return measuredWidth;
+  }
+  const storedWidth = parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "760", 10);
+  if (Number.isFinite(storedWidth) && storedWidth > 0) {
+    return storedWidth;
+  }
+  return 760;
+}
+
 function initAvatarPaneResize() {
   let storedWidth = 760;
   try {
@@ -944,15 +971,8 @@ function initAvatarPaneResize() {
   });
 
   window.addEventListener("resize", () => {
-    applyAvatarPaneWidth(avatarPaneEl.getBoundingClientRect().width, { persist: false });
+    applyAvatarPaneWidth(getCurrentAvatarPaneWidth(), { persist: false });
   });
-}
-
-function setAvatarPlaceholderVisible(isVisible) {
-  if (!avatarPlaceholderEl) {
-    return;
-  }
-  avatarPlaceholderEl.hidden = !isVisible;
 }
 
 function isAvatarParticipantIdentity(participantIdentity) {
@@ -990,12 +1010,73 @@ function hasAvatarVideo() {
   return Boolean(avatarMediaEl?.querySelector("video"));
 }
 
-function updateAvatarPlaceholderState() {
-  const showPlaceholder = !hasAvatarVideo();
-  setAvatarPlaceholderVisible(showPlaceholder);
-  if (showPlaceholder) {
+function setAvatarLoadingState(isPending, message = "") {
+  avatarLoadPending = Boolean(isPending);
+  avatarLoadMessage = avatarLoadPending && typeof message === "string" ? message.trim() : "";
+  updateRoomStatusState();
+}
+
+function updateAvatarUiState() {
+  const showAvatarPane = hasAvatarVideo();
+
+  if (avatarPaneEl) {
+    avatarPaneEl.hidden = !showAvatarPane;
+  }
+  if (!showAvatarPane) {
     updateAvatarAspectRatio(null);
   }
+  updateRoomStatusState();
+}
+
+function updateRoomStatusState() {
+  if (!LIVEKIT) {
+    setRoomStatus("LiveKit client failed to load from CDN.");
+    return;
+  }
+
+  const normalizedConnectionState =
+    typeof roomConnectionState === "string" ? roomConnectionState.trim().toLowerCase() : "";
+
+  if (avatarLoadPending) {
+    setRoomStatus(avatarLoadMessage || SESSION_STARTING_STATUS, { loading: true });
+    return;
+  }
+
+  if (activeRoom) {
+    if (normalizedConnectionState && normalizedConnectionState !== "connected") {
+      const isLoading = normalizedConnectionState !== "disconnected";
+      setRoomStatus(
+        isLoading ? `Room state: ${normalizedConnectionState}` : "Disconnected from room.",
+        { loading: isLoading },
+      );
+      return;
+    }
+    if (!hasAvatarVideo()) {
+      setRoomStatus(AVATAR_LOADING_STATUS, { loading: true });
+      return;
+    }
+    const roomName =
+      typeof activeSession?.roomName === "string" && activeSession.roomName.trim()
+        ? activeSession.roomName.trim()
+        : "room";
+    setRoomStatus(`Connected to ${roomName}`);
+    return;
+  }
+
+  if (activeSession) {
+    if (normalizedConnectionState === "connected") {
+      setRoomStatus(AVATAR_LOADING_STATUS, { loading: true });
+      return;
+    }
+    if (normalizedConnectionState && normalizedConnectionState !== "disconnected") {
+      setRoomStatus(`Room state: ${normalizedConnectionState}`, { loading: true });
+      return;
+    }
+    setRoomStatus("Disconnected from room.");
+    return;
+  }
+
+  setRoomStatus("No active room connection.");
 }
 
 function applyAvatarSpeakerMuteState() {
@@ -1461,14 +1542,14 @@ async function loadChatHistory() {
 function clearRemoteTiles() {
   if (!avatarMediaEl) {
     updateAvatarAspectRatio(null);
-    setAvatarPlaceholderVisible(true);
+    updateAvatarUiState();
     return;
   }
   for (const mediaElement of avatarMediaEl.querySelectorAll("video, audio")) {
     mediaElement.remove();
   }
   updateAvatarAspectRatio(null);
-  updateAvatarPlaceholderState();
+  updateAvatarUiState();
 }
 
 function getRemoteMediaContainer(participantIdentity) {
@@ -1507,7 +1588,7 @@ function attachTrackToContainer(track, container) {
   }
   container.appendChild(element);
   applyAvatarSpeakerMuteState();
-  updateAvatarPlaceholderState();
+  updateAvatarUiState();
 }
 
 function detachTrack(track) {
@@ -1592,7 +1673,7 @@ function bindRoomEvents(room) {
   room.on(LIVEKIT.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
     void publication;
     detachTrack(track);
-    updateAvatarPlaceholderState();
+    updateAvatarUiState();
     const hasSubscribedTracks = Array.from(participant.trackPublications.values()).some(
       (item) => Boolean(item.track),
     );
@@ -1604,16 +1685,19 @@ function bindRoomEvents(room) {
     removeParticipantTile(participant.identity);
   });
   room.on(LIVEKIT.RoomEvent.ConnectionStateChanged, (state) => {
-    setRoomStatus(`Room state: ${state}`);
+    roomConnectionState =
+      typeof state === "string" && state.trim() ? state.trim().toLowerCase() : "disconnected";
+    updateRoomStatusState();
   });
   room.on(LIVEKIT.RoomEvent.Disconnected, () => {
     if (activeRoom !== room) {
       return;
     }
+    roomConnectionState = "disconnected";
     activeRoom = null;
+    setAvatarLoadingState(false);
     releaseLocalTracks();
     clearRemoteTiles();
-    setRoomStatus("Disconnected from room.");
     updateRoomButtons();
   });
 }
@@ -1632,7 +1716,9 @@ async function connectToRoom() {
   }
 
   const connectGeneration = ++roomConnectGeneration;
-  setRoomStatus("Connecting to room...");
+  roomConnectionState = "connecting";
+  setAvatarLoadingState(false);
+  updateRoomStatusState();
   const room = new LIVEKIT.Room({
     adaptiveStream: true,
     dynacast: true,
@@ -1646,13 +1732,16 @@ async function connectToRoom() {
       try {
         room.disconnect();
       } catch {}
+      roomConnectionState = "disconnected";
       releaseLocalTracks();
       updateRoomButtons();
       return;
     }
     activeRoom = room;
-    setRoomStatus(`Connected to ${activeSession.roomName}`);
+    roomConnectionState = "connected";
     clearRemoteTiles();
+    setAvatarLoadingState(false);
+    updateRoomStatusState();
     await publishLocalTracks(room);
     if (connectGeneration !== roomConnectGeneration || !activeSession || activeRoom !== room) {
       try {
@@ -1661,9 +1750,10 @@ async function connectToRoom() {
       if (activeRoom === room) {
         activeRoom = null;
       }
+      roomConnectionState = "disconnected";
+      setAvatarLoadingState(false);
       releaseLocalTracks();
       clearRemoteTiles();
-      setRoomStatus("Disconnected from room.");
       updateRoomButtons();
       return;
     }
@@ -1679,6 +1769,8 @@ async function connectToRoom() {
     }
     updateRoomButtons();
   } catch (error) {
+    roomConnectionState = "disconnected";
+    setAvatarLoadingState(false);
     try {
       room.disconnect();
     } catch {}
@@ -1693,10 +1785,11 @@ async function connectToRoom() {
 
 function disconnectRoom() {
   roomConnectGeneration += 1;
+  roomConnectionState = "disconnected";
+  setAvatarLoadingState(false);
   if (!activeRoom) {
     releaseLocalTracks();
     clearRemoteTiles();
-    setRoomStatus("Disconnected from room.");
     updateRoomButtons();
     return;
   }
@@ -1706,7 +1799,6 @@ function disconnectRoom() {
   activeRoom = null;
   releaseLocalTracks();
   clearRemoteTiles();
-  setRoomStatus("Disconnected from room.");
   updateRoomButtons();
 }
 
@@ -1714,6 +1806,7 @@ async function stopActiveSession() {
   const session = activeSession;
   disconnectRoom();
   activeSession = null;
+  updateAvatarUiState();
   updateRoomButtons();
   updateChatControls();
   clearChatLog();
@@ -1943,31 +2036,35 @@ if (configModeButtons.length) {
 
 if (sessionForm) {
   sessionForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const formData = new FormData(sessionForm);
-  const sessionKey = String(formData.get("sessionKey") || "").trim();
-  try {
-    const payload = await requestJson("/plugins/video-chat/api/session", {
-      method: "POST",
-      body: JSON.stringify({ sessionKey }),
-    });
-    activeSession = payload.session;
-    setChatPaneOpen(true);
-    setOutput({ action: "session-started", session: activeSession });
-    updateRoomButtons();
-    updateChatControls();
+    event.preventDefault();
+    const formData = new FormData(sessionForm);
+    const sessionKey = String(formData.get("sessionKey") || "").trim();
+    roomConnectionState = "disconnected";
+    clearRemoteTiles();
+    setAvatarLoadingState(true, SESSION_STARTING_STATUS);
     try {
-      await ensureGatewaySocketConnected();
-      await loadChatHistory();
-      setChatStatus(`Text chat ready for ${resolveChatSessionKey()}.`);
-    } catch (chatError) {
-      setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
-      appendChatLine("system", "Text chat initialization failed.");
+      const payload = await requestJson("/plugins/video-chat/api/session", {
+        method: "POST",
+        body: JSON.stringify({ sessionKey }),
+      });
+      activeSession = payload.session;
+      setChatPaneOpen(true);
+      setOutput({ action: "session-started", session: activeSession });
+      updateRoomButtons();
+      updateChatControls();
+      try {
+        await ensureGatewaySocketConnected();
+        await loadChatHistory();
+        setChatStatus(`Text chat ready for ${resolveChatSessionKey()}.`);
+      } catch (chatError) {
+        setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
+        appendChatLine("system", "Text chat initialization failed.");
+      }
+      await connectToRoom();
+    } catch (error) {
+      setAvatarLoadingState(false);
+      setOutput({ action: "session-start-failed", error: String(error) });
     }
-    await connectToRoom();
-  } catch (error) {
-    setOutput({ action: "session-start-failed", error: String(error) });
-  }
   });
 }
 
@@ -2156,6 +2253,7 @@ initConfigSectionFiltering();
 updateRoomButtons();
 updateChatControls();
 clearChatLog();
+updateAvatarUiState();
 
 if (hasGatewayToken()) {
   setGatewayHealthStatus("warn", "Checking");
@@ -2171,8 +2269,4 @@ if (hasGatewayToken()) {
   setChatStatus("Enter a gateway token to use text chat.");
 }
 
-if (LIVEKIT) {
-  setRoomStatus("No active room connection.");
-} else {
-  setRoomStatus("LiveKit client failed to load from CDN.");
-}
+updateRoomStatusState();
