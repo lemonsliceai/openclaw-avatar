@@ -31,10 +31,14 @@ const gatewayHealthValueEl = document.getElementById("gateway-health-value");
 const keysHealthDotEl = document.getElementById("keys-health-dot");
 const keysHealthValueEl = document.getElementById("keys-health-value");
 const roomStatusEl = document.getElementById("room-status");
-const remoteGridEl = document.getElementById("remote-grid");
+const avatarPaneEl = document.getElementById("avatar-pane");
+const avatarMediaEl = document.getElementById("avatar-media");
+const avatarPlaceholderEl = document.getElementById("avatar-placeholder");
+const avatarResizeHandleEl = document.getElementById("avatar-resize-handle");
 const connectRoomButton = document.getElementById("connect-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const toggleMicButton = document.getElementById("toggle-mic");
+const toggleSpeakerButton = document.getElementById("toggle-speaker");
 const chatStatusEl = document.getElementById("chat-status");
 const chatLogEl = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
@@ -59,6 +63,10 @@ const GATEWAY_WS_CLIENT = {
 };
 const CHAT_PANE_MIN_WIDTH = 300;
 const CHAT_PANE_MAX_WIDTH = 640;
+const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
+const AVATAR_PANE_MIN_WIDTH = 320;
+const AVATAR_PANE_MAX_WIDTH = 1200;
+const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
 const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
@@ -66,6 +74,7 @@ const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 let activeSession = null;
 let activeRoom = null;
 let localAudioTrack = null;
+let avatarSpeakerMuted = false;
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
@@ -94,10 +103,6 @@ let setupFormBaseline = {
 };
 let setupRawBaseline = "";
 const renderedVoiceUserRuns = new Set();
-
-function escapeSelectorValue(value) {
-  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
 
 function setOutput(value) {
   if (!outputEl) {
@@ -852,6 +857,161 @@ function initChatPane() {
   });
 }
 
+function getAvatarPaneWidthBounds() {
+  const availableWidth =
+    avatarPaneEl?.parentElement?.getBoundingClientRect().width ??
+    contentEl?.getBoundingClientRect().width ??
+    window.innerWidth;
+  const maxWidth = Math.max(
+    AVATAR_PANE_MIN_WIDTH,
+    Math.min(AVATAR_PANE_MAX_WIDTH, Math.floor(availableWidth)),
+  );
+  return {
+    min: AVATAR_PANE_MIN_WIDTH,
+    max: maxWidth,
+  };
+}
+
+function applyAvatarPaneWidth(nextWidth, options = {}) {
+  if (!shellEl || !Number.isFinite(nextWidth)) {
+    return;
+  }
+  const shouldPersist = options.persist !== false;
+  const { min, max } = getAvatarPaneWidthBounds();
+  const clamped = Math.min(max, Math.max(min, Math.round(nextWidth)));
+  shellEl.style.setProperty("--avatar-pane-width", `${clamped}px`);
+  if (!shouldPersist) {
+    return;
+  }
+  try {
+    localStorage.setItem(AVATAR_PANE_WIDTH_STORAGE_KEY, String(clamped));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function initAvatarPaneResize() {
+  let storedWidth = 760;
+  try {
+    const parsed = Number(localStorage.getItem(AVATAR_PANE_WIDTH_STORAGE_KEY));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      storedWidth = parsed;
+    }
+  } catch {
+    storedWidth = 760;
+  }
+  applyAvatarPaneWidth(storedWidth, { persist: false });
+
+  if (!avatarResizeHandleEl || !avatarPaneEl) {
+    return;
+  }
+
+  avatarResizeHandleEl.addEventListener("pointerdown", (event) => {
+    if (isMobileChatPane()) {
+      return;
+    }
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = avatarPaneEl.getBoundingClientRect().width;
+    shellEl?.classList.add("shell--avatar-resizing");
+
+    const onPointerMove = (moveEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      applyAvatarPaneWidth(startWidth + deltaX);
+    };
+    const onPointerUp = () => {
+      shellEl?.classList.remove("shell--avatar-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  });
+
+  avatarResizeHandleEl.addEventListener("keydown", (event) => {
+    if (isMobileChatPane()) {
+      return;
+    }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    event.preventDefault();
+    const currentWidth = avatarPaneEl.getBoundingClientRect().width;
+    const delta = event.key === "ArrowLeft" ? -24 : 24;
+    applyAvatarPaneWidth(currentWidth + delta);
+  });
+
+  window.addEventListener("resize", () => {
+    applyAvatarPaneWidth(avatarPaneEl.getBoundingClientRect().width, { persist: false });
+  });
+}
+
+function setAvatarPlaceholderVisible(isVisible) {
+  if (!avatarPlaceholderEl) {
+    return;
+  }
+  avatarPlaceholderEl.hidden = !isVisible;
+}
+
+function isAvatarParticipantIdentity(participantIdentity) {
+  const normalized = typeof participantIdentity === "string" ? participantIdentity.trim() : "";
+  if (!normalized) {
+    return false;
+  }
+  if (normalized === AVATAR_PARTICIPANT_IDENTITY) {
+    return true;
+  }
+  if (normalized.toLowerCase().includes("agent")) {
+    return false;
+  }
+  return false;
+}
+
+function updateAvatarAspectRatio(videoElement) {
+  if (!shellEl) {
+    return;
+  }
+  if (
+    !(videoElement instanceof HTMLVideoElement) ||
+    !Number.isFinite(videoElement.videoWidth) ||
+    !Number.isFinite(videoElement.videoHeight) ||
+    videoElement.videoWidth <= 0 ||
+    videoElement.videoHeight <= 0
+  ) {
+    shellEl.style.setProperty("--avatar-aspect-ratio", "16 / 9");
+    return;
+  }
+  shellEl.style.setProperty("--avatar-aspect-ratio", `${videoElement.videoWidth} / ${videoElement.videoHeight}`);
+}
+
+function hasAvatarVideo() {
+  return Boolean(avatarMediaEl?.querySelector("video"));
+}
+
+function updateAvatarPlaceholderState() {
+  const showPlaceholder = !hasAvatarVideo();
+  setAvatarPlaceholderVisible(showPlaceholder);
+  if (showPlaceholder) {
+    updateAvatarAspectRatio(null);
+  }
+}
+
+function applyAvatarSpeakerMuteState() {
+  if (avatarMediaEl) {
+    const mediaElements = avatarMediaEl.querySelectorAll("audio, video");
+    for (const element of mediaElements) {
+      element.muted = avatarSpeakerMuted;
+    }
+  }
+  if (!toggleSpeakerButton) {
+    return;
+  }
+  toggleSpeakerButton.classList.toggle("is-muted", avatarSpeakerMuted);
+  toggleSpeakerButton.setAttribute("aria-label", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
+  toggleSpeakerButton.setAttribute("title", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
+}
+
 function clearChatLog() {
   renderedVoiceUserRuns.clear();
   if (!chatLogEl) {
@@ -1298,45 +1458,23 @@ async function loadChatHistory() {
 }
 
 function clearRemoteTiles() {
-  if (!remoteGridEl) {
+  if (!avatarMediaEl) {
+    updateAvatarAspectRatio(null);
+    setAvatarPlaceholderVisible(true);
     return;
   }
-  remoteGridEl.textContent = "";
-}
-
-function createRemoteTile(participantIdentity) {
-  if (!remoteGridEl) {
-    return null;
+  for (const mediaElement of avatarMediaEl.querySelectorAll("video, audio")) {
+    mediaElement.remove();
   }
-  const tile = document.createElement("article");
-  tile.className = "tile list-item";
-  tile.dataset.participantIdentity = participantIdentity;
-
-  const heading = document.createElement("h3");
-  heading.className = "list-title";
-  heading.textContent = participantIdentity;
-  tile.appendChild(heading);
-
-  const media = document.createElement("div");
-  media.className = "media";
-  media.dataset.mediaOwner = participantIdentity;
-  tile.appendChild(media);
-
-  remoteGridEl.appendChild(tile);
-  return media;
+  updateAvatarAspectRatio(null);
+  updateAvatarPlaceholderState();
 }
 
 function getRemoteMediaContainer(participantIdentity) {
-  if (!remoteGridEl) {
+  if (!avatarMediaEl || !isAvatarParticipantIdentity(participantIdentity)) {
     return null;
   }
-  const existing = remoteGridEl.querySelector(
-    `[data-media-owner="${escapeSelectorValue(participantIdentity)}"]`,
-  );
-  if (existing) {
-    return existing;
-  }
-  return createRemoteTile(participantIdentity);
+  return avatarMediaEl;
 }
 
 function attachTrackToContainer(track, container) {
@@ -1351,6 +1489,14 @@ function attachTrackToContainer(track, container) {
     if (priorVideo) {
       priorVideo.remove();
     }
+    if (element instanceof HTMLVideoElement) {
+      const updateRatio = () => {
+        updateAvatarAspectRatio(element);
+      };
+      element.addEventListener("loadedmetadata", updateRatio);
+      element.addEventListener("resize", updateRatio);
+      updateRatio();
+    }
   }
   if (track.kind === "audio") {
     const priorAudio = container.querySelector("audio");
@@ -1359,6 +1505,8 @@ function attachTrackToContainer(track, container) {
     }
   }
   container.appendChild(element);
+  applyAvatarSpeakerMuteState();
+  updateAvatarPlaceholderState();
 }
 
 function detachTrack(track) {
@@ -1379,27 +1527,34 @@ function releaseLocalTracks() {
 }
 
 function updateRoomButtons() {
-  if (!connectRoomButton || !leaveRoomButton || !toggleMicButton) {
-    return;
-  }
   const hasSession = Boolean(activeSession);
   const hasRoom = Boolean(activeRoom);
-  connectRoomButton.disabled = !hasSession || hasRoom;
-  leaveRoomButton.disabled = !hasRoom;
-  toggleMicButton.disabled = !hasRoom || !localAudioTrack;
-  toggleMicButton.textContent = localAudioTrack?.isMuted ? "Unmute Mic" : "Mute Mic";
+  if (connectRoomButton) {
+    connectRoomButton.disabled = !hasSession || hasRoom;
+  }
+  if (leaveRoomButton) {
+    leaveRoomButton.disabled = !hasRoom;
+  }
+  if (toggleMicButton) {
+    const micMuted = Boolean(localAudioTrack?.isMuted);
+    toggleMicButton.disabled = !hasRoom || !localAudioTrack;
+    toggleMicButton.classList.toggle("is-muted", micMuted);
+    toggleMicButton.setAttribute("aria-label", micMuted ? "Unmute microphone" : "Mute microphone");
+    toggleMicButton.setAttribute("title", micMuted ? "Unmute microphone" : "Mute microphone");
+  }
+  if (toggleSpeakerButton) {
+    toggleSpeakerButton.disabled = !hasRoom;
+    toggleSpeakerButton.classList.toggle("is-muted", avatarSpeakerMuted);
+    toggleSpeakerButton.setAttribute("aria-label", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
+    toggleSpeakerButton.setAttribute("title", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
+  }
 }
 
 function removeParticipantTile(participantIdentity) {
-  if (!remoteGridEl) {
+  if (!isAvatarParticipantIdentity(participantIdentity)) {
     return;
   }
-  const tile = remoteGridEl.querySelector(
-    `[data-participant-identity="${escapeSelectorValue(participantIdentity)}"]`,
-  );
-  if (tile) {
-    tile.remove();
-  }
+  clearRemoteTiles();
 }
 
 async function publishLocalTracks(room) {
@@ -1428,12 +1583,15 @@ function bindRoomEvents(room) {
     handleLiveKitDataMessage(payload, topic);
   });
   room.on(LIVEKIT.RoomEvent.TrackSubscribed, (track, publication, participant) => {
+    void publication;
     const container = getRemoteMediaContainer(participant.identity);
     attachTrackToContainer(track, container);
     updateRoomButtons();
   });
   room.on(LIVEKIT.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+    void publication;
     detachTrack(track);
+    updateAvatarPlaceholderState();
     const hasSubscribedTracks = Array.from(participant.trackPublications.values()).some(
       (item) => Boolean(item.track),
     );
@@ -1799,6 +1957,14 @@ if (toggleMicButton) {
   });
 }
 
+if (toggleSpeakerButton) {
+  toggleSpeakerButton.addEventListener("click", () => {
+    avatarSpeakerMuted = !avatarSpeakerMuted;
+    applyAvatarSpeakerMuteState();
+    updateRoomButtons();
+  });
+}
+
 if (ttsForm) {
   const requestTts = async (text) => {
   try {
@@ -1927,6 +2093,8 @@ if (clearTokenButton) {
 migrateLegacyGatewayTokenIfNeeded();
 initNavCollapseToggle();
 initChatPane();
+initAvatarPaneResize();
+applyAvatarSpeakerMuteState();
 updateTokenFieldMasking();
 initThemeToggle();
 initConfigSectionFiltering();
