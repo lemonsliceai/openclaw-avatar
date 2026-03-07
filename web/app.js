@@ -72,6 +72,12 @@ const CHAT_PANE_MAX_WIDTH = 640;
 const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
 const AVATAR_PANE_MIN_WIDTH = 320;
 const AVATAR_PANE_MAX_WIDTH = 1200;
+const AVATAR_PIP_DEFAULT_ASPECT_RATIO = 16 / 9;
+const AVATAR_PIP_HORIZONTAL_PADDING = 20;
+const AVATAR_PIP_VERTICAL_PADDING = 20;
+const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
+const AVATAR_PIP_MIN_VIDEO_HEIGHT = 220;
+const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
@@ -90,6 +96,8 @@ let avatarSpeakerMuted = false;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
 let avatarDocumentPictureInPictureElements = null;
+let avatarDocumentPictureInPictureResizeHandler = null;
+let avatarDocumentPictureInPictureIsAdjustingSize = false;
 let avatarPictureInPictureVideo = null;
 let gatewaySocket = null;
 let gatewaySocketReady = false;
@@ -1050,9 +1058,7 @@ function isAvatarDocumentPictureInPictureActive() {
   return Boolean(avatarDocumentPictureInPictureWindow && !avatarDocumentPictureInPictureWindow.closed);
 }
 
-function getAvatarPictureInPictureWindowSize() {
-  const videoElement = getAvatarVideoElement();
-  let aspectRatio = 16 / 9;
+function getAvatarVideoAspectRatio(videoElement = getAvatarVideoElement()) {
   if (
     isVideoElement(videoElement) &&
     Number.isFinite(videoElement.videoWidth) &&
@@ -1060,36 +1066,95 @@ function getAvatarPictureInPictureWindowSize() {
     videoElement.videoWidth > 0 &&
     videoElement.videoHeight > 0
   ) {
-    aspectRatio = videoElement.videoWidth / videoElement.videoHeight;
+    return videoElement.videoWidth / videoElement.videoHeight;
   }
+  return AVATAR_PIP_DEFAULT_ASPECT_RATIO;
+}
 
-  let width = Math.round(
-    Math.min(
-      720,
-      Math.max(380, avatarPaneEl?.getBoundingClientRect().width || 460),
-    ),
-  );
-  const pipHorizontalPadding = 20;
-  const pipVerticalPadding = 20;
-  const pipToolbarHeight = 72;
+function getAvatarPictureInPictureWindowSize(options = {}) {
+  const aspectRatio = getAvatarVideoAspectRatio();
+  const preferredWidth = Number(options.preferredWidth);
+  const preferredHeight = Number(options.preferredHeight);
+  const hasPreferredWidth = Number.isFinite(preferredWidth) && preferredWidth > 0;
+  const hasPreferredHeight = Number.isFinite(preferredHeight) && preferredHeight > 0;
+
+  let width = Math.round(Math.min(720, Math.max(380, avatarPaneEl?.getBoundingClientRect().width || 460)));
   let videoHeight = Math.round(width / aspectRatio);
+
+  if (hasPreferredWidth && hasPreferredHeight) {
+    const contentWidth = Math.max(1, preferredWidth - AVATAR_PIP_HORIZONTAL_PADDING);
+    const contentHeight = Math.max(
+      1,
+      preferredHeight - AVATAR_PIP_TOOLBAR_HEIGHT - AVATAR_PIP_VERTICAL_PADDING,
+    );
+    const heightFromWidth = Math.round(contentWidth / aspectRatio);
+    const widthFromHeight = Math.round(contentHeight * aspectRatio);
+    const heightDelta = Math.abs(contentHeight - heightFromWidth);
+    const widthDelta = Math.abs(contentWidth - widthFromHeight);
+
+    if (heightDelta <= widthDelta) {
+      width = contentWidth;
+      videoHeight = heightFromWidth;
+    } else {
+      width = widthFromHeight;
+      videoHeight = contentHeight;
+    }
+  } else if (hasPreferredWidth) {
+    width = Math.max(1, preferredWidth - AVATAR_PIP_HORIZONTAL_PADDING);
+    videoHeight = Math.round(width / aspectRatio);
+  } else if (hasPreferredHeight) {
+    videoHeight = Math.max(1, preferredHeight - AVATAR_PIP_TOOLBAR_HEIGHT - AVATAR_PIP_VERTICAL_PADDING);
+    width = Math.round(videoHeight * aspectRatio);
+  }
 
   if (!Number.isFinite(videoHeight) || videoHeight <= 0) {
     videoHeight = 280;
   }
-  if (videoHeight < 220) {
-    videoHeight = 220;
+  if (videoHeight < AVATAR_PIP_MIN_VIDEO_HEIGHT) {
+    videoHeight = AVATAR_PIP_MIN_VIDEO_HEIGHT;
     width = Math.round(videoHeight * aspectRatio);
   }
-  if (videoHeight > 560) {
-    videoHeight = 560;
+  if (videoHeight > AVATAR_PIP_MAX_VIDEO_HEIGHT) {
+    videoHeight = AVATAR_PIP_MAX_VIDEO_HEIGHT;
     width = Math.round(videoHeight * aspectRatio);
   }
 
   return {
-    width: width + pipHorizontalPadding,
-    height: videoHeight + pipToolbarHeight + pipVerticalPadding,
+    width: width + AVATAR_PIP_HORIZONTAL_PADDING,
+    height: videoHeight + AVATAR_PIP_TOOLBAR_HEIGHT + AVATAR_PIP_VERTICAL_PADDING,
   };
+}
+
+function syncAvatarDocumentPictureInPictureWindowSize(options = {}) {
+  const pictureInPictureWindow = avatarDocumentPictureInPictureWindow;
+  if (
+    !pictureInPictureWindow ||
+    pictureInPictureWindow.closed ||
+    typeof pictureInPictureWindow.resizeTo !== "function" ||
+    avatarDocumentPictureInPictureIsAdjustingSize
+  ) {
+    return;
+  }
+
+  const nextSize = getAvatarPictureInPictureWindowSize({
+    preferredWidth: options.preferredWidth ?? pictureInPictureWindow.innerWidth,
+    preferredHeight: options.preferredHeight ?? pictureInPictureWindow.innerHeight,
+  });
+  const widthDelta = Math.abs((pictureInPictureWindow.innerWidth || 0) - nextSize.width);
+  const heightDelta = Math.abs((pictureInPictureWindow.innerHeight || 0) - nextSize.height);
+  if (widthDelta < 2 && heightDelta < 2) {
+    return;
+  }
+
+  avatarDocumentPictureInPictureIsAdjustingSize = true;
+  try {
+    pictureInPictureWindow.resizeTo(nextSize.width, nextSize.height);
+  } catch {
+    // Ignore browsers that disallow script-driven resizing.
+  }
+  window.setTimeout(() => {
+    avatarDocumentPictureInPictureIsAdjustingSize = false;
+  }, 0);
 }
 
 function getAvatarDocumentPictureInPictureStyles() {
@@ -1314,6 +1379,9 @@ function cleanupAvatarDocumentPictureInPicture() {
   if (pictureInPictureWindow && avatarDocumentPictureInPictureCleanup) {
     pictureInPictureWindow.removeEventListener("pagehide", avatarDocumentPictureInPictureCleanup);
   }
+  if (pictureInPictureWindow && avatarDocumentPictureInPictureResizeHandler) {
+    pictureInPictureWindow.removeEventListener("resize", avatarDocumentPictureInPictureResizeHandler);
+  }
   if (avatarDocumentPictureInPictureElements?.videoEl) {
     avatarDocumentPictureInPictureElements.videoEl.pause?.();
     avatarDocumentPictureInPictureElements.videoEl.srcObject = null;
@@ -1321,6 +1389,8 @@ function cleanupAvatarDocumentPictureInPicture() {
   avatarDocumentPictureInPictureCleanup = null;
   avatarDocumentPictureInPictureWindow = null;
   avatarDocumentPictureInPictureElements = null;
+  avatarDocumentPictureInPictureResizeHandler = null;
+  avatarDocumentPictureInPictureIsAdjustingSize = false;
   updateAvatarUiState();
   updatePictureInPictureButtonState();
 }
@@ -1494,6 +1564,9 @@ async function enterAvatarDocumentPictureInPicture() {
 
   avatarDocumentPictureInPictureWindow = pictureInPictureWindow;
   avatarDocumentPictureInPictureCleanup = cleanupAvatarDocumentPictureInPicture;
+  avatarDocumentPictureInPictureResizeHandler = () => {
+    syncAvatarDocumentPictureInPictureWindowSize();
+  };
 
   pictureInPictureDocument.documentElement.lang = document.documentElement.lang || "en";
   pictureInPictureDocument.title = "Claw Case";
@@ -1506,7 +1579,9 @@ async function enterAvatarDocumentPictureInPicture() {
 
   buildAvatarDocumentPictureInPictureView(pictureInPictureDocument);
   pictureInPictureWindow.addEventListener("pagehide", cleanupAvatarDocumentPictureInPicture);
+  pictureInPictureWindow.addEventListener("resize", avatarDocumentPictureInPictureResizeHandler);
   syncAvatarDocumentPictureInPicture();
+  syncAvatarDocumentPictureInPictureWindowSize();
 
   updateAvatarUiState();
   updatePictureInPictureButtonState();
@@ -2212,6 +2287,7 @@ function attachTrackToContainer(track, container) {
       const updateRatio = () => {
         updateAvatarAspectRatio(element);
         syncAvatarDocumentPictureInPictureMedia();
+        syncAvatarDocumentPictureInPictureWindowSize();
       };
       element.addEventListener("loadedmetadata", updateRatio);
       element.addEventListener("resize", updateRatio);
