@@ -1,13 +1,13 @@
 @ -0,0 +1,246 @@
 ---
-summary: "Handoff guide for moving video chat into a standalone OpenClaw plugin repository"
+summary: "Handoff guide for moving Claw Cast into a standalone OpenClaw plugin repository"
 read_when:
-  - You are implementing video chat as an external plugin repository
+  - You are implementing Claw Cast as an external plugin repository
   - You need parity with the in-tree OpenClaw video-chat plugin without gateway UI changes
-title: "Video Chat Plugin External Handoff"
+title: "Claw Cast Plugin External Handoff"
 ---
 
-# Video Chat plugin external handoff
+# Claw Cast plugin external handoff
 
 ## Goal
 
@@ -15,7 +15,7 @@ Build and publish `video-chat` as a standalone plugin repo (npm + GitHub), with 
 
 Required product behavior:
 
-- No native Gateway `Video Chat` tab.
+- No native Gateway `Claw Cast` tab.
 - No video-chat key editor on the Skills page.
 - Setup is plugin-owned:
   - plugin setup command/wizard
@@ -92,7 +92,7 @@ videoChatPlugin/
 {
   "name": "@your-scope/openclaw-video-chat",
   "version": "0.1.0",
-  "description": "OpenClaw video chat plugin",
+  "description": "OpenClaw Claw Cast plugin",
   "type": "module",
   "openclaw": {
     "extensions": ["./video-chat/index.ts"]
@@ -120,8 +120,8 @@ videoChatPlugin/
 ```json
 {
   "id": "video-chat",
-  "name": "Video Chat",
-  "description": "Video chat gateway methods and sidecar worker",
+  "name": "Claw Cast",
+  "description": "Claw Cast gateway methods and sidecar worker",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

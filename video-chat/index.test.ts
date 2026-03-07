@@ -61,7 +61,7 @@ function setup(config = baseConfig) {
 
   plugin.register({
     id: "video-chat",
-    name: "Video Chat",
+    name: "Claw Cast",
     source: "test",
     config,
     pluginConfig: {},
@@ -118,7 +118,7 @@ describe("video-chat plugin", () => {
     vi.clearAllMocks();
   });
 
-  it("registers video chat gateway methods and sidecar service", () => {
+  it("registers Claw Cast gateway methods and sidecar service", () => {
     const { methods, services, httpRoutes, cliCommands } = setup();
     expect(methods.has("videoChat.config")).toBe(true);
     expect(methods.has("videoChat.setup.get")).toBe(true);
@@ -146,7 +146,7 @@ describe("video-chat plugin", () => {
     expect(cliCommands).toHaveLength(1);
   });
 
-  it("returns redacted video chat config state", async () => {
+  it("returns redacted Claw Cast config state", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.config", {});
 
