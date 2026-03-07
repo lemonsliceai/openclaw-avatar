@@ -1298,6 +1298,26 @@ function getAvatarDocumentPictureInPictureStyles() {
       background: rgba(14, 165, 233, 0.18);
     }
 
+    .avatar-control--danger {
+      width: 44px;
+      min-width: 44px;
+      padding: 0;
+      color: #f87171;
+      border-color: rgba(248, 113, 113, 0.42);
+      background: rgba(127, 29, 29, 0.36);
+    }
+
+    .avatar-control--danger svg {
+      display: block;
+      width: 22px;
+      height: 22px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
     .avatar-resize-handle {
       display: none !important;
     }
@@ -1312,6 +1332,22 @@ function cloneAvatarControlButton(sourceButton, ownerDocument) {
   return button;
 }
 
+function createAvatarDocumentPictureInPictureEndCallButton(ownerDocument) {
+  const button = ownerDocument.createElement("button");
+  button.type = "button";
+  button.className = "btn avatar-control avatar-control--danger";
+  button.setAttribute("aria-label", "End session");
+  button.setAttribute("title", "End session");
+  button.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.75 15.35c2.06-1.9 4.64-2.85 7.25-2.85s5.19.95 7.25 2.85"></path>
+      <path d="M6.5 14.85 5.1 17.35"></path>
+      <path d="M17.5 14.85l1.4 2.5"></path>
+    </svg>
+  `;
+  return button;
+}
+
 function syncAvatarDocumentPictureInPictureButtons() {
   if (!avatarDocumentPictureInPictureElements) {
     return;
@@ -1319,7 +1355,6 @@ function syncAvatarDocumentPictureInPictureButtons() {
   const buttonPairs = [
     [toggleMicButton, avatarDocumentPictureInPictureElements.micButton],
     [toggleSpeakerButton, avatarDocumentPictureInPictureElements.speakerButton],
-    [togglePictureInPictureButton, avatarDocumentPictureInPictureElements.pictureInPictureButton],
   ];
   for (const [sourceButton, targetButton] of buttonPairs) {
     if (!sourceButton || !targetButton) {
@@ -1330,6 +1365,13 @@ function syncAvatarDocumentPictureInPictureButtons() {
     targetButton.setAttribute("aria-label", sourceButton.getAttribute("aria-label") || "");
     targetButton.setAttribute("title", sourceButton.getAttribute("title") || "");
     targetButton.setAttribute("aria-pressed", sourceButton.getAttribute("aria-pressed") || "false");
+  }
+
+  const { endSessionButton } = avatarDocumentPictureInPictureElements;
+  if (endSessionButton) {
+    const hasSession = Boolean(activeSession);
+    const hasRoom = Boolean(activeRoom);
+    endSessionButton.disabled = !hasSession && !hasRoom;
   }
 }
 
@@ -1420,7 +1462,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
 
   const micButton = cloneAvatarControlButton(toggleMicButton, pictureInPictureDocument);
   const speakerButton = cloneAvatarControlButton(toggleSpeakerButton, pictureInPictureDocument);
-  const pictureInPictureButton = cloneAvatarControlButton(togglePictureInPictureButton, pictureInPictureDocument);
+  const endSessionButton = createAvatarDocumentPictureInPictureEndCallButton(pictureInPictureDocument);
 
   micButton.addEventListener("click", () => {
     void toggleMicrophone();
@@ -1428,11 +1470,11 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   speakerButton.addEventListener("click", () => {
     toggleAvatarSpeaker();
   });
-  pictureInPictureButton.addEventListener("click", () => {
-    void handlePictureInPictureToggle();
+  endSessionButton.addEventListener("click", () => {
+    void stopActiveSession();
   });
 
-  controlsEl.append(micButton, speakerButton, pictureInPictureButton);
+  controlsEl.append(micButton, speakerButton, endSessionButton);
   toolbarEl.append(metaEl, controlsEl);
 
   const mediaEl = pictureInPictureDocument.createElement("div");
@@ -1449,10 +1491,10 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
 
   avatarDocumentPictureInPictureElements = {
     captureSourceVideo: null,
+    endSessionButton,
     mediaEl,
     micButton,
     paneEl,
-    pictureInPictureButton,
     speakerButton,
     statusEl,
     videoEl,
