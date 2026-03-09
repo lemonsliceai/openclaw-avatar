@@ -15,7 +15,7 @@ Standalone OpenClaw plugin that adds a LemonSlice + LiveKit + Eleven Labs Avatar
   - `web/settings.html`
   - `web/app.js`
   - `styles/`
-- Plugin manifest: `openclaw.plugin.json`
+- Plugin manifest: [`openclaw.plugin.json`](openclaw.plugin.json)
 
 `package.json` uses a `files` allowlist so `npm pack` only includes the runtime files above and excludes tests, local dependencies, and editor artifacts.
 
