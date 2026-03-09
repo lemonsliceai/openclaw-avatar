@@ -35,6 +35,7 @@ const roomStatusTextEl = document.getElementById("room-status-text");
 const roomStatusSpinnerEl = document.getElementById("room-status-spinner");
 const avatarPaneEl = document.getElementById("avatar-pane");
 const avatarMediaEl = document.getElementById("avatar-media");
+const avatarMessageOverlayEl = document.getElementById("avatar-message-overlay");
 const avatarPlaceholderEl = document.getElementById("avatar-placeholder");
 const avatarPlaceholderStatusEl = document.getElementById("avatar-placeholder-status");
 const avatarPlaceholderStatusDotEl = document.getElementById("avatar-placeholder-status-dot");
@@ -106,6 +107,10 @@ let avatarDocumentPictureInPictureElements = null;
 let avatarDocumentPictureInPictureResizeHandler = null;
 let avatarDocumentPictureInPictureIsAdjustingSize = false;
 let avatarPictureInPictureVideo = null;
+const avatarMessageOverlayState = {
+  fadeFrame: null,
+  hideTimer: null,
+};
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
@@ -134,6 +139,16 @@ let setupFormBaseline = {
 };
 let setupRawBaseline = "";
 const renderedVoiceUserRuns = new Set();
+const chatMessages = [];
+let chatAwaitingReply = false;
+
+function isTextAreaElement(element) {
+  return Boolean(element && typeof element === "object" && element.nodeType === 1 && element.tagName === "TEXTAREA");
+}
+
+function isButtonElement(element) {
+  return Boolean(element && typeof element === "object" && element.nodeType === 1 && element.tagName === "BUTTON");
+}
 
 function setOutput(value) {
   if (!outputEl) {
@@ -319,6 +334,164 @@ function setChatStatus(text) {
     return;
   }
   chatStatusEl.textContent = text;
+  chatStatusEl.title = text;
+}
+
+function applyAvatarMessageOverlayStyles(element) {
+  if (!element) {
+    return;
+  }
+  element.style.position = "absolute";
+  element.style.inset = "0";
+  element.style.zIndex = "2";
+  element.style.pointerEvents = "none";
+  element.style.overflow = "hidden";
+}
+
+function applyAvatarMessageBubbleStyles(element) {
+  if (!element) {
+    return;
+  }
+  element.style.position = "absolute";
+  element.style.left = "24px";
+  element.style.bottom = "16%";
+  element.style.transform = "none";
+  element.style.width = "min(78%, 34rem)";
+  element.style.padding = "12px 16px";
+  element.style.borderRadius = "18px";
+  element.style.border = "1px solid rgba(255, 255, 255, 0.14)";
+  element.style.background = "rgba(15, 23, 42, 0.78)";
+  element.style.backdropFilter = "blur(12px)";
+  element.style.color = "#f8fafc";
+  element.style.fontSize = "clamp(14px, 1.5vw, 17px)";
+  element.style.lineHeight = "1.4";
+  element.style.textAlign = "left";
+  element.style.boxShadow = "0 18px 38px rgba(2, 6, 23, 0.4)";
+  element.style.opacity = "0";
+  element.style.transition = "opacity 260ms ease, transform 260ms ease";
+  element.style.wordBreak = "break-word";
+}
+
+function clearAvatarMessageOverlayState(overlayEl, state = {}) {
+  if (state.hideTimer) {
+    clearTimeout(state.hideTimer);
+    state.hideTimer = null;
+  }
+  if (state.fadeFrame) {
+    state.fadeFrame.cancel();
+    state.fadeFrame = null;
+  }
+  overlayEl?.replaceChildren();
+}
+
+function createAnimationFrameHandle(view, callback) {
+  const frameView = view && typeof view.requestAnimationFrame === "function" ? view : window;
+  const frameId = frameView.requestAnimationFrame(callback);
+  return {
+    cancel() {
+      frameView.cancelAnimationFrame?.(frameId);
+    },
+  };
+}
+
+function animateAvatarSentMessage(message, options = {}) {
+  const normalizedMessage = typeof message === "string" ? message.trim() : "";
+  if (!normalizedMessage) {
+    return;
+  }
+
+  const sourceInput = isTextAreaElement(options.sourceInput) ? options.sourceInput : null;
+  const sourceDocument = sourceInput?.ownerDocument || document;
+  const sourceWindow = sourceDocument.defaultView || window;
+  const shouldTargetPictureInPictureOverlay =
+    sourceDocument === document &&
+    Boolean(avatarDocumentPictureInPictureElements?.messageOverlayEl) &&
+    (avatarPaneEl?.hidden || avatarPaneEl?.classList.contains("avatar-pane--document-picture-in-picture-active"));
+  const overlayEl = shouldTargetPictureInPictureOverlay
+    ? avatarDocumentPictureInPictureElements?.messageOverlayEl
+    : sourceDocument === document
+      ? avatarMessageOverlayEl
+      : avatarDocumentPictureInPictureElements?.messageOverlayEl;
+  const overlayState = overlayEl === avatarMessageOverlayEl
+    ? avatarMessageOverlayState
+    : avatarDocumentPictureInPictureElements?.messageOverlayState;
+  const overlayDocument = overlayEl?.ownerDocument || sourceDocument;
+  const overlayWindow = overlayDocument.defaultView || sourceWindow;
+
+  if (!overlayEl || !overlayState) {
+    return;
+  }
+
+  applyAvatarMessageOverlayStyles(overlayEl);
+  clearAvatarMessageOverlayState(overlayEl, overlayState);
+
+  const bubbleEl = overlayDocument.createElement("div");
+  bubbleEl.className = "avatar-message-overlay__bubble";
+  bubbleEl.textContent = normalizedMessage;
+  applyAvatarMessageBubbleStyles(bubbleEl);
+  overlayEl.appendChild(bubbleEl);
+
+  const revealBubble = () => {
+    bubbleEl.classList.add("is-visible");
+    bubbleEl.style.transition = "opacity 260ms ease, transform 260ms ease";
+    bubbleEl.style.opacity = "1";
+    bubbleEl.style.transform = "none";
+    overlayState.hideTimer = overlayWindow.setTimeout(() => {
+      bubbleEl.classList.add("is-fading");
+      bubbleEl.style.opacity = "0";
+      bubbleEl.style.transform = "translateY(-10px)";
+      overlayState.hideTimer = overlayWindow.setTimeout(() => {
+        if (overlayEl.contains(bubbleEl)) {
+          bubbleEl.remove();
+        }
+        overlayState.hideTimer = null;
+      }, 320);
+    }, 3000);
+  };
+
+  if (!sourceInput || sourceDocument !== overlayDocument) {
+    revealBubble();
+    return;
+  }
+
+  const overlayRect = overlayEl.getBoundingClientRect();
+  const bubbleRect = bubbleEl.getBoundingClientRect();
+  const sourceRect = sourceInput.getBoundingClientRect();
+  if (overlayRect.width <= 0 || overlayRect.height <= 0 || sourceRect.width <= 0 || sourceRect.height <= 0) {
+    revealBubble();
+    return;
+  }
+
+  const targetLeft = bubbleRect.left;
+  const targetTop = bubbleRect.top;
+  const startLeft = sourceRect.left + 9;
+  const startTop = sourceRect.top + Math.max(6, sourceRect.height - bubbleRect.height - 8);
+  const deltaX = startLeft - targetLeft;
+  const deltaY = startTop - targetTop;
+
+  bubbleEl.style.opacity = "0";
+  bubbleEl.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+
+  overlayState.fadeFrame = createAnimationFrameHandle(sourceWindow, () => {
+    bubbleEl.style.transition =
+      "transform 520ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease";
+    bubbleEl.style.opacity = "1";
+    bubbleEl.style.transform = "none";
+    overlayState.fadeFrame = null;
+  });
+
+  overlayState.hideTimer = overlayWindow.setTimeout(() => {
+    bubbleEl.classList.add("is-fading");
+    bubbleEl.style.transition = "opacity 260ms ease, transform 260ms ease";
+    bubbleEl.style.opacity = "0";
+    bubbleEl.style.transform = "translateY(-10px)";
+    overlayState.hideTimer = overlayWindow.setTimeout(() => {
+      if (overlayEl.contains(bubbleEl)) {
+        bubbleEl.remove();
+      }
+      overlayState.hideTimer = null;
+    }, 320);
+  }, 3520);
 }
 
 function setHealthStatus(dotEl, valueEl, tone, text) {
@@ -1327,15 +1500,138 @@ function getAvatarDocumentPictureInPictureStyles() {
       background: #030712;
     }
 
+    .avatar-media::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0 0;
+      height: 120px;
+      background: linear-gradient(180deg, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0.18) 28%, rgba(2, 6, 23, 0.74) 100%);
+      pointer-events: none;
+      z-index: 1;
+    }
+
     .avatar-media video {
       width: 100%;
       height: 100%;
       display: block;
       object-fit: contain;
       background: #000;
+      position: relative;
+      z-index: 0;
     }
 
     .avatar-media audio {
+      display: none;
+    }
+
+    .avatar-pip-chat-compose {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: 14px;
+      z-index: 2;
+      display: block;
+      padding: 0;
+      border: none;
+      background: transparent;
+      backdrop-filter: none;
+      box-shadow: none;
+    }
+
+    .avatar-pip-chat-compose textarea {
+      display: block;
+      width: 100%;
+      min-height: 44px;
+      max-height: 96px;
+      padding: 11px 52px 11px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 20px;
+      background: rgba(2, 6, 23, 0.56);
+      backdrop-filter: blur(18px) saturate(140%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        0 14px 32px rgba(2, 6, 23, 0.42);
+      color: #f8fafc;
+      font: inherit;
+      font-size: 14px;
+      line-height: 1.4;
+      resize: none;
+      overflow-y: auto;
+      box-sizing: border-box;
+    }
+
+    .avatar-pip-chat-compose textarea::placeholder {
+      color: rgba(226, 232, 240, 0.72);
+    }
+
+    .avatar-pip-chat-compose textarea:focus {
+      outline: none;
+      border-color: rgba(59, 130, 246, 0.42);
+      box-shadow:
+        0 0 0 0.5px rgba(59, 130, 246, 0.34),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+
+    .avatar-pip-chat-compose textarea:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .avatar-pip-chat-compose button {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.62);
+      backdrop-filter: blur(5px);
+      color: #e2e8f0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transform: translateY(-50%);
+      transition:
+        opacity 120ms ease,
+        transform 120ms ease,
+        border-color 120ms ease,
+        background 120ms ease;
+    }
+
+    .avatar-pip-chat-compose button:not([hidden]):hover {
+      border-color: rgba(56, 189, 248, 0.55);
+      background: rgba(14, 165, 233, 0.18);
+      color: #38bdf8;
+    }
+
+    .avatar-pip-chat-compose button:not([hidden]):active {
+      transform: translateY(-50%) scale(0.96);
+    }
+
+    .avatar-pip-chat-compose button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .avatar-pip-chat-compose button svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .avatar-pip-chat-compose button[hidden] {
+      display: none;
+    }
+
+    .avatar-pip-chat-compose button.is-hidden {
       display: none;
     }
 
@@ -1461,6 +1757,78 @@ function syncAvatarDocumentPictureInPictureButtons() {
   }
 }
 
+function getAvatarDocumentPictureInPictureChatInput() {
+  const chatInputEl = avatarDocumentPictureInPictureElements?.chatInput;
+  return isTextAreaElement(chatInputEl) ? chatInputEl : null;
+}
+
+function syncTextareaHeight(textarea, options = {}) {
+  if (!isTextAreaElement(textarea)) {
+    return;
+  }
+  const minHeight = Number.isFinite(options.minHeight) ? options.minHeight : 40;
+  const maxHeight = Number.isFinite(options.maxHeight) ? options.maxHeight : 150;
+  textarea.style.height = "auto";
+  const nextHeight = Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight));
+  textarea.style.height = `${nextHeight}px`;
+}
+
+function syncChatInputHeight() {
+  syncTextareaHeight(chatInput);
+}
+
+function setMainChatComposerValue(nextValue) {
+  if (!isTextAreaElement(chatInput)) {
+    return;
+  }
+  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
+  if (chatInput.value !== normalizedValue) {
+    chatInput.value = normalizedValue;
+  }
+  syncChatInputHeight();
+}
+
+function setAvatarDocumentPictureInPictureChatComposerValue(nextValue) {
+  const pipChatInput = getAvatarDocumentPictureInPictureChatInput();
+  if (!pipChatInput) {
+    return;
+  }
+  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
+  if (pipChatInput.value !== normalizedValue) {
+    pipChatInput.value = normalizedValue;
+  }
+  syncTextareaHeight(getAvatarDocumentPictureInPictureChatInput(), {
+    minHeight: 44,
+    maxHeight: 96,
+  });
+}
+
+function syncAvatarDocumentPictureInPictureChatComposer() {
+  if (!avatarDocumentPictureInPictureElements) {
+    return;
+  }
+
+  const { chatInput: pipChatInput, chatSendButton: pipChatSendButton } = avatarDocumentPictureInPictureElements;
+  if (!isTextAreaElement(pipChatInput) || !isButtonElement(pipChatSendButton)) {
+    return;
+  }
+
+  const hasSession = Boolean(activeSession);
+  const disabledTitle = hasSession
+    ? "Send message"
+    : "Start a session before sending chat messages.";
+  const hasDraft = Boolean(String(pipChatInput.value || "").trim());
+  pipChatInput.disabled = !hasSession;
+  pipChatInput.placeholder = hasSession ? "Message" : "Start a session to message";
+  pipChatInput.title = disabledTitle;
+  pipChatSendButton.disabled = !hasSession;
+  pipChatSendButton.hidden = !hasDraft;
+  pipChatSendButton.classList.toggle("is-hidden", !hasDraft);
+  pipChatSendButton.setAttribute("aria-hidden", hasDraft ? "false" : "true");
+  pipChatSendButton.title = hasSession ? "Send message" : disabledTitle;
+  pipChatSendButton.setAttribute("aria-label", hasSession ? "Send message" : disabledTitle);
+}
+
 function syncAvatarDocumentPictureInPictureMedia() {
   if (!avatarDocumentPictureInPictureElements?.videoEl) {
     return;
@@ -1500,6 +1868,7 @@ function syncAvatarDocumentPictureInPictureMedia() {
 function syncAvatarDocumentPictureInPicture() {
   syncAvatarDocumentPictureInPictureButtons();
   syncAvatarDocumentPictureInPictureMedia();
+  syncAvatarDocumentPictureInPictureChatComposer();
 }
 
 function cleanupAvatarDocumentPictureInPicture() {
@@ -1513,6 +1882,12 @@ function cleanupAvatarDocumentPictureInPicture() {
   if (avatarDocumentPictureInPictureElements?.videoEl) {
     avatarDocumentPictureInPictureElements.videoEl.pause?.();
     avatarDocumentPictureInPictureElements.videoEl.srcObject = null;
+  }
+  if (avatarDocumentPictureInPictureElements?.messageOverlayEl) {
+    clearAvatarMessageOverlayState(
+      avatarDocumentPictureInPictureElements.messageOverlayEl,
+      avatarDocumentPictureInPictureElements.messageOverlayState,
+    );
   }
   avatarDocumentPictureInPictureCleanup = null;
   avatarDocumentPictureInPictureWindow = null;
@@ -1576,19 +1951,75 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   const mediaEl = pictureInPictureDocument.createElement("div");
   mediaEl.className = "avatar-media";
 
+  const messageOverlayEl = pictureInPictureDocument.createElement("div");
+  messageOverlayEl.className = "avatar-message-overlay";
+  messageOverlayEl.setAttribute("aria-hidden", "true");
+
   const videoEl = pictureInPictureDocument.createElement("video");
   videoEl.autoplay = true;
   videoEl.playsInline = true;
   videoEl.muted = true;
   mediaEl.appendChild(videoEl);
+  mediaEl.appendChild(messageOverlayEl);
+
+  const chatFormEl = pictureInPictureDocument.createElement("form");
+  chatFormEl.className = "avatar-pip-chat-compose";
+
+  const chatInputEl = pictureInPictureDocument.createElement("textarea");
+  chatInputEl.rows = 1;
+  chatInputEl.placeholder = "Message";
+  chatInputEl.autocomplete = "off";
+  chatInputEl.spellcheck = true;
+  chatInputEl.setAttribute("aria-label", "Message");
+
+  const chatSendButton = pictureInPictureDocument.createElement("button");
+  chatSendButton.type = "submit";
+  chatSendButton.hidden = true;
+  chatSendButton.classList.add("is-hidden");
+  chatSendButton.setAttribute("aria-hidden", "true");
+  chatSendButton.setAttribute("aria-label", "Send message");
+  chatSendButton.setAttribute("title", "Send message");
+  chatSendButton.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M22 2 11 13"></path>
+      <path d="m22 2-7 20-4-9-9-4 20-7Z"></path>
+    </svg>
+  `;
+
+  chatInputEl.addEventListener("input", () => {
+    syncTextareaHeight(chatInputEl, { minHeight: 44, maxHeight: 96 });
+    syncAvatarDocumentPictureInPictureChatComposer();
+  });
+  chatInputEl.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    event.preventDefault();
+    chatFormEl.requestSubmit();
+  });
+  chatFormEl.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await submitChatMessage(chatInputEl.value, { sourceInput: chatInputEl });
+  });
+
+  chatFormEl.append(chatInputEl, chatSendButton);
+  mediaEl.appendChild(chatFormEl);
 
   paneEl.append(toolbarEl, mediaEl);
   pictureInPictureDocument.body.appendChild(paneEl);
 
   avatarDocumentPictureInPictureElements = {
     captureSourceVideo: null,
+    chatForm: chatFormEl,
+    chatInput: chatInputEl,
+    chatSendButton,
     endSessionButton,
     mediaEl,
+    messageOverlayEl,
+    messageOverlayState: {
+      fadeFrame: null,
+      hideTimer: null,
+    },
     micButton,
     paneEl,
     reconnectButton,
@@ -1927,10 +2358,9 @@ function applyAvatarSpeakerMuteState() {
 
 function clearChatLog() {
   renderedVoiceUserRuns.clear();
-  if (!chatLogEl) {
-    return;
-  }
-  chatLogEl.textContent = "";
+  chatMessages.length = 0;
+  chatAwaitingReply = false;
+  renderChatLog({ scrollToBottom: false });
 }
 
 function applyConfigSectionFilter(nextFilter) {
@@ -1964,26 +2394,250 @@ function initConfigSectionFiltering() {
   applyConfigSectionFilter(activeConfigSectionFilter);
 }
 
-function appendChatLine(role, text) {
+function resolveChatTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function resolveMessageTimestamp(message) {
+  if (!message || typeof message !== "object") {
+    return Date.now();
+  }
+  const candidates = [
+    message.timestamp,
+    message.createdAt,
+    message.created_at,
+    message.time,
+  ];
+  for (const candidate of candidates) {
+    const timestamp = resolveChatTimestamp(candidate);
+    if (timestamp !== null) {
+      return timestamp;
+    }
+  }
+  return Date.now();
+}
+
+function getChatRoleClass(role) {
+  const normalized = typeof role === "string" ? role.trim().toLowerCase() : "";
+  if (normalized === "user") {
+    return "user";
+  }
+  if (normalized === "assistant") {
+    return "assistant";
+  }
+  return "other";
+}
+
+function getChatSenderLabel(roleClass) {
+  if (roleClass === "user") {
+    return "You";
+  }
+  if (roleClass === "assistant") {
+    return "Agent";
+  }
+  return "System";
+}
+
+function getChatAvatarLabel(roleClass) {
+  if (roleClass === "user") {
+    return "Y";
+  }
+  if (roleClass === "assistant") {
+    return "A";
+  }
+  return "S";
+}
+
+function formatChatTimestamp(timestamp) {
+  return new Date(resolveChatTimestamp(timestamp) ?? Date.now()).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function buildChatTextContent(text) {
+  const content = document.createElement("div");
+  content.className = "chat-text";
+
+  const normalizedText = String(text || "").replace(/\r\n/g, "\n").trim();
+  const paragraphs = normalizedText ? normalizedText.split(/\n{2,}/) : [];
+
+  if (!paragraphs.length) {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = "";
+    content.appendChild(paragraph);
+    return content;
+  }
+
+  for (const paragraphText of paragraphs) {
+    const paragraph = document.createElement("p");
+    const lines = paragraphText.split("\n");
+    lines.forEach((line, index) => {
+      if (index > 0) {
+        paragraph.appendChild(document.createElement("br"));
+      }
+      paragraph.appendChild(document.createTextNode(line));
+    });
+    content.appendChild(paragraph);
+  }
+
+  return content;
+}
+
+function createChatAvatar(roleClass) {
+  const avatar = document.createElement("div");
+  avatar.className = `chat-avatar ${roleClass}`;
+  avatar.textContent = getChatAvatarLabel(roleClass);
+  return avatar;
+}
+
+function createChatBubble(text) {
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble fade-in";
+  bubble.appendChild(buildChatTextContent(text));
+  return bubble;
+}
+
+function createTypingIndicatorGroup() {
+  const group = document.createElement("article");
+  group.className = "chat-group assistant";
+  group.appendChild(createChatAvatar("assistant"));
+
+  const messages = document.createElement("div");
+  messages.className = "chat-group-messages";
+
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble chat-reading-indicator";
+  bubble.setAttribute("aria-hidden", "true");
+
+  const dots = document.createElement("span");
+  dots.className = "chat-reading-indicator__dots";
+  for (let index = 0; index < 3; index += 1) {
+    dots.appendChild(document.createElement("span"));
+  }
+  bubble.appendChild(dots);
+  messages.appendChild(bubble);
+  group.appendChild(messages);
+
+  return group;
+}
+
+function renderChatLog(options = {}) {
+  if (!chatLogEl) {
+    return;
+  }
+
+  const scrollToBottom = options.scrollToBottom !== false;
+  chatLogEl.textContent = "";
+
+  if (!chatMessages.length && !chatAwaitingReply) {
+    const emptyState = document.createElement("div");
+    emptyState.className = "video-chat-chat-empty";
+    emptyState.textContent = "Chat history will appear here once the active session starts.";
+    chatLogEl.appendChild(emptyState);
+  } else {
+    const groups = [];
+    for (const message of chatMessages) {
+      const roleClass = getChatRoleClass(message.role);
+      const lastGroup = groups[groups.length - 1];
+      if (lastGroup && lastGroup.roleClass === roleClass) {
+        lastGroup.messages.push(message);
+      } else {
+        groups.push({ roleClass, messages: [message] });
+      }
+    }
+
+    for (const group of groups) {
+      const groupEl = document.createElement("article");
+      groupEl.className = `chat-group ${group.roleClass}`;
+      groupEl.appendChild(createChatAvatar(group.roleClass));
+
+      const messagesEl = document.createElement("div");
+      messagesEl.className = "chat-group-messages";
+
+      for (const message of group.messages) {
+        messagesEl.appendChild(createChatBubble(message.text));
+      }
+
+      const footer = document.createElement("div");
+      footer.className = "chat-group-footer";
+
+      const sender = document.createElement("span");
+      sender.className = "chat-sender-name";
+      sender.textContent = getChatSenderLabel(group.roleClass);
+
+      const timestamp = document.createElement("span");
+      timestamp.className = "chat-group-timestamp";
+      timestamp.textContent = formatChatTimestamp(group.messages[group.messages.length - 1].timestamp);
+
+      footer.appendChild(sender);
+      footer.appendChild(timestamp);
+      messagesEl.appendChild(footer);
+      groupEl.appendChild(messagesEl);
+      chatLogEl.appendChild(groupEl);
+    }
+  }
+
+  if (chatAwaitingReply) {
+    chatLogEl.appendChild(createTypingIndicatorGroup());
+  }
+
+  if (scrollToBottom) {
+    requestAnimationFrame(() => {
+      if (chatLogEl) {
+        chatLogEl.scrollTop = chatLogEl.scrollHeight;
+      }
+    });
+  }
+}
+
+function replaceChatLog(entries) {
+  chatMessages.length = 0;
+  for (const entry of entries) {
+    if (!entry || !entry.text) {
+      continue;
+    }
+    chatMessages.push({
+      role: entry.role,
+      text: entry.text,
+      timestamp: resolveChatTimestamp(entry.timestamp) ?? Date.now(),
+    });
+  }
+  chatAwaitingReply = false;
+  renderChatLog({ scrollToBottom: false });
+}
+
+function setChatAwaitingReply(nextValue) {
+  const normalized = Boolean(nextValue);
+  if (chatAwaitingReply === normalized) {
+    return;
+  }
+  chatAwaitingReply = normalized;
+  renderChatLog();
+}
+
+function appendChatLine(role, text, options = {}) {
   if (!chatLogEl || !text) {
     return;
   }
-  const line = document.createElement("article");
-  line.className = `chat-line ${role}`;
-  const message = document.createElement("div");
-  message.className = "chat-msg";
-  const heading = document.createElement("strong");
-  heading.className = "muted";
-  heading.textContent =
-    role === "user" ? "You" : role === "assistant" ? "Agent" : role === "system" ? "System" : role;
-  const body = document.createElement("p");
-  body.className = "chat-bubble";
-  body.textContent = text;
-  message.appendChild(heading);
-  message.appendChild(body);
-  line.appendChild(message);
-  chatLogEl.appendChild(line);
-  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  chatMessages.push({
+    role,
+    text: String(text),
+    timestamp: resolveChatTimestamp(options.timestamp) ?? Date.now(),
+  });
+  if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
+    chatAwaitingReply = Boolean(options.awaitingReply);
+  }
+  renderChatLog();
 }
 
 function extractAssistantText(message) {
@@ -2060,7 +2714,10 @@ function appendVoiceUserTranscript(payload) {
   if (isVoiceRunId(idempotencyKey) && renderedVoiceUserRuns.has(idempotencyKey)) {
     return;
   }
-  appendChatLine("user", text);
+  appendChatLine("user", text, {
+    awaitingReply: true,
+    timestamp: resolveMessageTimestamp(payload),
+  });
   if (isVoiceRunId(idempotencyKey)) {
     renderedVoiceUserRuns.add(idempotencyKey);
   }
@@ -2108,11 +2765,14 @@ function resolveChatSessionKey() {
 
 function updateChatControls() {
   if (!chatInput || !chatSendButton) {
+    syncAvatarDocumentPictureInPictureChatComposer();
     return;
   }
   const hasSession = Boolean(activeSession);
   chatInput.disabled = !hasSession;
   chatSendButton.disabled = !hasSession;
+  syncChatInputHeight();
+  syncAvatarDocumentPictureInPictureChatComposer();
 }
 
 function nextGatewayRequestId() {
@@ -2131,6 +2791,7 @@ function clearGatewayPendingRequests(error) {
 function closeGatewaySocket(reason) {
   gatewaySocketReady = false;
   gatewayConnectRequestId = null;
+  chatAwaitingReply = false;
   if (gatewaySocket) {
     try {
       gatewaySocket.close();
@@ -2139,6 +2800,7 @@ function closeGatewaySocket(reason) {
   gatewaySocket = null;
   gatewayHandshakePromise = null;
   clearGatewayPendingRequests(new Error(reason));
+  renderChatLog({ scrollToBottom: false });
 }
 
 function handleGatewayChatEvent(payload) {
@@ -2150,22 +2812,30 @@ function handleGatewayChatEvent(payload) {
 
   const state = typeof payload.state === "string" ? payload.state : "";
   if (state === "delta") {
+    setChatAwaitingReply(true);
     setChatStatus("Agent is responding...");
     return;
   }
   if (state === "final") {
     const text = extractAssistantText(payload.message) || "[No text in final message]";
-    appendChatLine("assistant", text);
+    appendChatLine("assistant", text, {
+      awaitingReply: false,
+      timestamp: resolveMessageTimestamp(payload.message),
+    });
     setChatStatus("Reply received.");
     return;
   }
   if (state === "error") {
-    appendChatLine("system", payload.errorMessage || "Chat request failed.");
+    appendChatLine("system", payload.errorMessage || "Chat request failed.", {
+      awaitingReply: false,
+    });
     setChatStatus("Chat error.");
     return;
   }
   if (state === "aborted") {
-    appendChatLine("system", "Chat run aborted.");
+    appendChatLine("system", "Chat run aborted.", {
+      awaitingReply: false,
+    });
     setChatStatus("Chat run aborted.");
   }
 }
@@ -2296,7 +2966,9 @@ async function ensureGatewaySocketConnected() {
       }
       gatewaySocketReady = false;
       gatewayConnectRequestId = null;
+      chatAwaitingReply = false;
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
+      renderChatLog({ scrollToBottom: false });
       setChatStatus("Chat disconnected.");
     });
 
@@ -2343,7 +3015,8 @@ async function loadChatHistory() {
     sessionKey,
     limit: 30,
   });
-  clearChatLog();
+  renderedVoiceUserRuns.clear();
+  const entries = [];
   const messages = Array.isArray(history?.messages) ? history.messages : [];
   for (const message of messages) {
     if (!message || typeof message !== "object") {
@@ -2358,7 +3031,11 @@ async function loadChatHistory() {
         ? extractAssistantText(message)
         : extractUserText(message);
     if (text) {
-      appendChatLine(role, text);
+      entries.push({
+        role,
+        text,
+        timestamp: resolveMessageTimestamp(message),
+      });
       if (role === "user") {
         const idempotencyKey =
           typeof message.idempotencyKey === "string" ? message.idempotencyKey.trim() : "";
@@ -2368,6 +3045,7 @@ async function loadChatHistory() {
       }
     }
   }
+  replaceChatLog(entries);
 }
 
 function clearRemoteTiles(options = {}) {
@@ -3158,23 +3836,29 @@ if (ttsForm) {
   }
 }
 
-if (chatForm) {
-  chatForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const message = String(chatInput.value || "").trim();
+async function submitChatMessage(rawMessage, options = {}) {
+  const message = String(rawMessage || "").trim();
   if (!message) {
-    return;
+    return false;
   }
+
   const sessionKey = resolveChatSessionKey();
   if (!sessionKey) {
-    appendChatLine("system", "Start a session before sending chat messages.");
-    return;
+    appendChatLine("system", "Start a session before sending chat messages.", {
+      awaitingReply: false,
+    });
+    return false;
   }
+
   const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   setChatPaneOpen(true);
-  appendChatLine("user", message);
-  chatInput.value = "";
+  appendChatLine("user", message, { awaitingReply: true });
+  animateAvatarSentMessage(message, { sourceInput: options.sourceInput });
+  setMainChatComposerValue("");
+  setAvatarDocumentPictureInPictureChatComposerValue("");
+  syncAvatarDocumentPictureInPictureChatComposer();
   setChatStatus("Sending message...");
+
   try {
     const response = await gatewayRpc("chat.send", {
       sessionKey,
@@ -3183,11 +3867,35 @@ if (chatForm) {
     });
     setOutput({ action: "chat-sent", sessionKey, response });
     setChatStatus("Awaiting agent reply...");
+    return true;
   } catch (error) {
-    appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.");
+    appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.", {
+      awaitingReply: false,
+    });
     setOutput({ action: "chat-send-failed", error: String(error) });
     setChatStatus("Chat send failed.");
+    return false;
   }
+}
+
+if (isTextAreaElement(chatInput)) {
+  chatInput.addEventListener("input", () => {
+    syncChatInputHeight();
+  });
+
+  chatInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    event.preventDefault();
+    chatForm?.requestSubmit();
+  });
+}
+
+if (chatForm) {
+  chatForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await submitChatMessage(chatInput?.value, { sourceInput: chatInput });
   });
 }
 

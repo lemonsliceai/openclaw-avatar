@@ -87,7 +87,7 @@
         position: sticky;
         top: 12px;
         display: grid;
-        grid-template-rows: auto auto minmax(0, 1fr) auto;
+        grid-template-rows: auto auto minmax(0, 1fr);
         gap: 16px;
         overflow: hidden;
         transition:
@@ -348,6 +348,45 @@
         background: #030712;
       }
 
+      .avatar-message-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        overflow: hidden;
+      }
+
+      .avatar-message-overlay__bubble {
+        position: absolute;
+        left: 24px;
+        bottom: 16%;
+        transform: none;
+        width: min(78%, 34rem);
+        padding: 12px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(15, 23, 42, 0.78);
+        backdrop-filter: blur(12px);
+        color: #f8fafc;
+        font-size: clamp(14px, 1.5vw, 17px);
+        line-height: 1.4;
+        text-align: left;
+        box-shadow: 0 18px 38px rgba(2, 6, 23, 0.4);
+        opacity: 0;
+        transition: opacity 260ms ease, transform 260ms ease;
+        word-break: break-word;
+      }
+
+      .avatar-message-overlay__bubble.is-visible {
+        opacity: 1;
+        transform: none;
+      }
+
+      .avatar-message-overlay__bubble.is-fading {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+
       .avatar-media video {
         width: 100%;
         height: 100%;
@@ -526,22 +565,45 @@
         box-shadow: inset 0 0 0 2px var(--accent);
       }
 
-      .chat-msg strong {
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
+      .video-chat-chatpane .chat {
+        min-height: 0;
       }
 
-      .chat-log {
-        min-height: 240px;
-        max-height: none;
-        overflow: auto;
-        padding: 12px;
-        display: grid;
-        gap: 8px;
+      .video-chat-chatpane .chat-compose {
+        background: transparent;
+      }
+
+      .video-chat-chatpane__meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .video-chat-chat-status {
+        margin: 0;
+        padding: 10px 12px;
         border: 1px solid var(--border);
         border-radius: var(--radius-md);
-        background: var(--secondary);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      :root[data-theme="light"] .video-chat-chat-status {
+        background: rgba(255, 255, 255, 0.9);
+      }
+
+      .video-chat-chat-empty {
+        display: grid;
+        place-items: center;
+        min-height: 100%;
+        padding: 24px 18px;
+        color: var(--muted);
+        text-align: center;
+        font-size: 13px;
+        line-height: 1.5;
       }
 
       .shell--avatar-resizing,
@@ -852,6 +914,7 @@
                     </div>
                   </div>
                   <div class="avatar-media" id="avatar-media"></div>
+                  <div class="avatar-message-overlay" id="avatar-message-overlay" aria-hidden="true"></div>
                   <div class="avatar-placeholder" id="avatar-placeholder" hidden>
                     <div class="avatar-placeholder__content">
                       <div class="avatar-placeholder__icon" aria-hidden="true"></div>
@@ -911,17 +974,23 @@
               </svg>
             </button>
           </div>
-          <p class="callout info" id="chat-status">Start a session to use text chat.</p>
-          <div class="chat-log" id="chat-log"></div>
-          <form id="chat-form" class="video-chat-form">
-            <label class="field full">
-              <span>Message</span>
-              <textarea id="chat-input" placeholder="Type a message to the agent..."></textarea>
-            </label>
-            <div class="row">
-              <button class="btn primary" type="submit" id="chat-send">Send Message</button>
-            </div>
-          </form>
+          <div class="video-chat-chatpane__meta">
+            <p class="video-chat-chat-status" id="chat-status">Start a session to use text chat.</p>
+          </div>
+          <section class="chat" aria-label="Text chat conversation">
+            <div class="chat-thread" id="chat-log" role="log" aria-live="polite"></div>
+            <form id="chat-form" class="chat-compose">
+              <div class="chat-compose__row">
+                <label class="field chat-compose__field">
+                  <span>Message</span>
+                  <textarea id="chat-input" placeholder="Type a message to the agent..."></textarea>
+                </label>
+                <div class="chat-compose__actions">
+                  <button class="btn primary" type="submit" id="chat-send">Send</button>
+                </div>
+              </div>
+            </form>
+          </section>
         </aside>
       </main>
     </div>
