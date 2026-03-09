@@ -1,6 +1,6 @@
-# OpenClaw Video Chat Plugin
+# OpenClaw Claw Cast Plugin
 
-External OpenClaw plugin that adds a LiveKit + LemonSlice video chat experience with setup UI, room controls, text chat, STT, and TTS.
+External OpenClaw plugin that adds a LiveKit + LemonSlice Claw Cast experience with setup UI, room controls, text chat, STT, and TTS.
 
 ## Architecture (Concise)
 
@@ -11,7 +11,7 @@ External OpenClaw plugin that adds a LiveKit + LemonSlice video chat experience 
   - Setup form, session controls, LiveKit room view, and text chat panel.
   - Calls plugin HTTP routes and gateway RPC.
 - Sidecar worker
-  - Runs the video chat agent entrypoint (`gateway video-chat-agent`) as a child process.
+  - Runs the Claw Cast agent entrypoint (`gateway video-chat-agent`) as a child process.
   - Connects to LiveKit and starts the LemonSlice avatar session.
 
 ## Where Keys/Config Are Stored
@@ -54,6 +54,7 @@ http://127.0.0.1:18789/plugins/video-chat/
 - Enter gateway token (if gateway auth mode is token) and click `Use Token`.
 - Fill setup values and click `Save Setup`.
 - Click `Start Session`, then `Join Room`.
+- Use the avatar pop-out control to keep the remote avatar visible in browser picture-in-picture while you switch tabs.
 
 4. Verify plugin config/status:
 ```bash

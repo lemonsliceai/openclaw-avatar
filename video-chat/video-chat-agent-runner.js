@@ -47,7 +47,7 @@ async function loadDeps() {
 
   const WebSocket = wsModule?.WebSocket ?? wsModule?.default ?? wsModule;
   if (!WebSocket) {
-    throw new Error("Failed to load ws dependency for video chat agent");
+    throw new Error("Failed to load ws dependency for Claw Cast agent");
   }
 
   return {
@@ -60,13 +60,13 @@ async function loadDeps() {
 
 function parseJobMetadata(raw) {
   if (typeof raw !== "string" || !raw.trim()) {
-    throw new Error("LiveKit video chat job metadata is missing");
+    throw new Error("LiveKit Claw Cast job metadata is missing");
   }
   const parsed = JSON.parse(raw);
   const sessionKey = typeof parsed.sessionKey === "string" ? parsed.sessionKey.trim() : "";
   const imageUrl = typeof parsed.imageUrl === "string" ? parsed.imageUrl.trim() : "";
   if (!sessionKey || !imageUrl) {
-    throw new Error("LiveKit video chat job metadata is incomplete");
+    throw new Error("LiveKit Claw Cast job metadata is incomplete");
   }
   return { sessionKey, imageUrl };
 }
@@ -189,7 +189,7 @@ class GatewayWsClient {
   stop() {
     this.closed = true;
     if (this.ws && this.ws.readyState === this.WebSocket.OPEN) {
-      this.ws.close(1000, "video chat session closed");
+      this.ws.close(1000, "Claw Cast session closed");
     }
   }
 
@@ -281,7 +281,7 @@ class GatewayWsClient {
           maxProtocol: GATEWAY_PROTOCOL_VERSION,
           client: {
             id: GATEWAY_CLIENT_ID,
-            displayName: "OpenClaw Video Chat Agent",
+            displayName: "OpenClaw Claw Cast Agent",
             version: "video-chat-plugin",
             platform: process.platform,
             mode: "backend",

@@ -128,7 +128,7 @@ const baseEntry =
   baseRunnerModule?.videoChatAgent?.entry ??
   baseRunnerModule?.entry;
 if (typeof baseEntry !== "function") {
-  throw new Error("Base video chat runner entry function not found");
+  throw new Error("Base Claw Cast runner entry function not found");
 }
 
 const wrappedRunner = {

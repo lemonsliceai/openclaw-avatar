@@ -13,7 +13,7 @@ function requireEnv(name) {
 function resolveRunnerPath(argv) {
   const candidate = argv[2]?.trim();
   if (!candidate) {
-    throw new Error("Missing video chat agent runner path");
+    throw new Error("Missing Claw Cast agent runner path");
   }
   return path.resolve(candidate);
 }

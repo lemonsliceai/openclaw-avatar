@@ -31,14 +31,24 @@ const gatewayHealthValueEl = document.getElementById("gateway-health-value");
 const keysHealthDotEl = document.getElementById("keys-health-dot");
 const keysHealthValueEl = document.getElementById("keys-health-value");
 const roomStatusEl = document.getElementById("room-status");
+const roomStatusTextEl = document.getElementById("room-status-text");
+const roomStatusSpinnerEl = document.getElementById("room-status-spinner");
 const avatarPaneEl = document.getElementById("avatar-pane");
 const avatarMediaEl = document.getElementById("avatar-media");
 const avatarPlaceholderEl = document.getElementById("avatar-placeholder");
+const avatarPlaceholderStatusEl = document.getElementById("avatar-placeholder-status");
+const avatarPlaceholderStatusDotEl = document.getElementById("avatar-placeholder-status-dot");
+const avatarPlaceholderStatusTextEl = document.getElementById("avatar-placeholder-status-text");
+const avatarPictureInPictureReturnButton = document.getElementById("avatar-pip-return");
+const avatarToolbarStatusDotEl = document.getElementById("avatar-toolbar-status-dot");
+const avatarToolbarStatusEl = document.getElementById("avatar-toolbar-status");
 const avatarResizeHandleEl = document.getElementById("avatar-resize-handle");
 const connectRoomButton = document.getElementById("connect-room");
+const reconnectRoomButton = document.getElementById("reconnect-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const toggleMicButton = document.getElementById("toggle-mic");
 const toggleSpeakerButton = document.getElementById("toggle-speaker");
+const togglePictureInPictureButton = document.getElementById("toggle-picture-in-picture");
 const chatStatusEl = document.getElementById("chat-status");
 const chatLogEl = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
@@ -66,7 +76,17 @@ const CHAT_PANE_MAX_WIDTH = 640;
 const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
 const AVATAR_PANE_MIN_WIDTH = 320;
 const AVATAR_PANE_MAX_WIDTH = 1200;
+const AVATAR_PIP_DEFAULT_ASPECT_RATIO = 16 / 9;
+const AVATAR_PIP_HORIZONTAL_PADDING = 20;
+const AVATAR_PIP_VERTICAL_PADDING = 20;
+const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
+const AVATAR_PIP_MIN_VIDEO_HEIGHT = 220;
+const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
+const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
+const SESSION_STARTING_STATUS = "Starting session...";
+const AVATAR_LOADING_STATUS = "Avatar loading...";
+const AVATAR_RECONNECTING_STATUS = "Reconnecting avatar...";
 const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
 const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
@@ -74,7 +94,18 @@ const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 let activeSession = null;
 let activeRoom = null;
 let localAudioTrack = null;
+let roomConnectGeneration = 0;
+let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
+let avatarConnectionState = "idle";
+let avatarLoadPending = false;
+let avatarLoadMessage = "";
 let avatarSpeakerMuted = false;
+let avatarDocumentPictureInPictureWindow = null;
+let avatarDocumentPictureInPictureCleanup = null;
+let avatarDocumentPictureInPictureElements = null;
+let avatarDocumentPictureInPictureResizeHandler = null;
+let avatarDocumentPictureInPictureIsAdjustingSize = false;
+let avatarPictureInPictureVideo = null;
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
@@ -111,11 +142,90 @@ function setOutput(value) {
   outputEl.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
-function setRoomStatus(text) {
-  if (!roomStatusEl) {
+function setRoomStatus(text, options = {}) {
+  if (!roomStatusEl && !roomStatusTextEl) {
     return;
   }
-  roomStatusEl.textContent = text;
+  const loading = Boolean(options.loading);
+  const avatarToolbarStatus = getAvatarToolbarStatusState();
+  if (avatarToolbarStatusDotEl) {
+    avatarToolbarStatusDotEl.classList.remove("ok", "warn", "danger");
+    avatarToolbarStatusDotEl.classList.add(avatarToolbarStatus.tone);
+  }
+  if (avatarToolbarStatusEl) {
+    avatarToolbarStatusEl.textContent = avatarToolbarStatus.text;
+    avatarToolbarStatusEl.title = avatarToolbarStatus.text;
+  }
+  if (avatarPlaceholderStatusEl) {
+    avatarPlaceholderStatusEl.title = avatarToolbarStatus.text;
+  }
+  if (avatarPlaceholderStatusTextEl) {
+    avatarPlaceholderStatusTextEl.textContent = avatarToolbarStatus.text;
+    avatarPlaceholderStatusTextEl.title = avatarToolbarStatus.text;
+  }
+  if (avatarPlaceholderStatusDotEl) {
+    avatarPlaceholderStatusDotEl.classList.remove("ok", "warn", "danger");
+    avatarPlaceholderStatusDotEl.classList.add(avatarToolbarStatus.tone);
+  }
+  if (avatarDocumentPictureInPictureElements?.statusEl) {
+    avatarDocumentPictureInPictureElements.statusEl.textContent = avatarToolbarStatus.text;
+    avatarDocumentPictureInPictureElements.statusEl.title = avatarToolbarStatus.text;
+  }
+  if (avatarDocumentPictureInPictureElements?.statusDotEl) {
+    avatarDocumentPictureInPictureElements.statusDotEl.classList.remove("ok", "warn", "danger");
+    avatarDocumentPictureInPictureElements.statusDotEl.classList.add(avatarToolbarStatus.tone);
+  }
+  if (roomStatusTextEl) {
+    roomStatusTextEl.textContent = text;
+  } else if (roomStatusEl) {
+    roomStatusEl.textContent = text;
+  }
+  roomStatusEl?.classList.toggle("is-loading", loading);
+  if (roomStatusSpinnerEl) {
+    roomStatusSpinnerEl.hidden = !loading;
+  }
+}
+
+function setAvatarConnectionState(nextState) {
+  avatarConnectionState =
+    typeof nextState === "string" && nextState.trim() ? nextState.trim().toLowerCase() : "idle";
+}
+
+function hasReconnectableSession() {
+  if (!activeSession || avatarLoadPending) {
+    return false;
+  }
+  const normalizedConnectionState =
+    typeof roomConnectionState === "string" ? roomConnectionState.trim().toLowerCase() : "";
+  return (
+    !activeRoom ||
+    normalizedConnectionState === "disconnected" ||
+    avatarConnectionState === "disconnected"
+  );
+}
+
+function getAvatarToolbarStatusState() {
+  const normalizedConnectionState =
+    typeof roomConnectionState === "string" ? roomConnectionState.trim().toLowerCase() : "";
+
+  if (avatarConnectionState === "disconnected") {
+    return { text: "Disconnected", tone: "danger" };
+  }
+
+  if (activeRoom && normalizedConnectionState === "connected" && hasAvatarVideo()) {
+    return { text: "Connected", tone: "ok" };
+  }
+
+  if (
+    avatarLoadPending ||
+    avatarConnectionState === "connecting" ||
+    activeSession ||
+    (activeRoom && normalizedConnectionState && normalizedConnectionState !== "disconnected")
+  ) {
+    return { text: "Connecting...", tone: "warn" };
+  }
+
+  return { text: "Disconnected", tone: "danger" };
 }
 
 function getGatewayToken() {
@@ -216,7 +326,7 @@ function setHealthStatus(dotEl, valueEl, tone, text) {
     return;
   }
   dotEl.classList.remove("ok", "warn");
-  if (tone === "ok" || tone === "warn") {
+  if (tone === "ok" || tone === "warn" || tone === "danger") {
     dotEl.classList.add(tone);
   }
   valueEl.textContent = text;
@@ -890,6 +1000,18 @@ function applyAvatarPaneWidth(nextWidth, options = {}) {
   }
 }
 
+function getCurrentAvatarPaneWidth() {
+  const measuredWidth = avatarPaneEl?.hidden ? 0 : avatarPaneEl?.getBoundingClientRect().width;
+  if (Number.isFinite(measuredWidth) && measuredWidth > 0) {
+    return measuredWidth;
+  }
+  const storedWidth = parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "760", 10);
+  if (Number.isFinite(storedWidth) && storedWidth > 0) {
+    return storedWidth;
+  }
+  return 760;
+}
+
 function initAvatarPaneResize() {
   let storedWidth = 760;
   try {
@@ -943,15 +1065,8 @@ function initAvatarPaneResize() {
   });
 
   window.addEventListener("resize", () => {
-    applyAvatarPaneWidth(avatarPaneEl.getBoundingClientRect().width, { persist: false });
+    applyAvatarPaneWidth(getCurrentAvatarPaneWidth(), { persist: false });
   });
-}
-
-function setAvatarPlaceholderVisible(isVisible) {
-  if (!avatarPlaceholderEl) {
-    return;
-  }
-  avatarPlaceholderEl.hidden = !isVisible;
 }
 
 function isAvatarParticipantIdentity(participantIdentity) {
@@ -968,12 +1083,24 @@ function isAvatarParticipantIdentity(participantIdentity) {
   return false;
 }
 
+function isVideoElement(value) {
+  return Boolean(value && typeof value === "object" && value.tagName === "VIDEO");
+}
+
+function isMediaElement(value) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value.tagName === "VIDEO" || value.tagName === "AUDIO"),
+  );
+}
+
 function updateAvatarAspectRatio(videoElement) {
   if (!shellEl) {
     return;
   }
   if (
-    !(videoElement instanceof HTMLVideoElement) ||
+    !isVideoElement(videoElement) ||
     !Number.isFinite(videoElement.videoWidth) ||
     !Number.isFinite(videoElement.videoHeight) ||
     videoElement.videoWidth <= 0 ||
@@ -985,16 +1112,801 @@ function updateAvatarAspectRatio(videoElement) {
   shellEl.style.setProperty("--avatar-aspect-ratio", `${videoElement.videoWidth} / ${videoElement.videoHeight}`);
 }
 
-function hasAvatarVideo() {
-  return Boolean(avatarMediaEl?.querySelector("video"));
+function hasDocumentPictureInPictureSupport() {
+  return Boolean(
+    globalThis.documentPictureInPicture &&
+      typeof globalThis.documentPictureInPicture.requestWindow === "function",
+  );
 }
 
-function updateAvatarPlaceholderState() {
-  const showPlaceholder = !hasAvatarVideo();
-  setAvatarPlaceholderVisible(showPlaceholder);
-  if (showPlaceholder) {
+function isAvatarDocumentPictureInPictureActive() {
+  return Boolean(avatarDocumentPictureInPictureWindow && !avatarDocumentPictureInPictureWindow.closed);
+}
+
+function getAvatarVideoAspectRatio(videoElement = getAvatarVideoElement()) {
+  if (
+    isVideoElement(videoElement) &&
+    Number.isFinite(videoElement.videoWidth) &&
+    Number.isFinite(videoElement.videoHeight) &&
+    videoElement.videoWidth > 0 &&
+    videoElement.videoHeight > 0
+  ) {
+    return videoElement.videoWidth / videoElement.videoHeight;
+  }
+  return AVATAR_PIP_DEFAULT_ASPECT_RATIO;
+}
+
+function getAvatarPictureInPictureWindowSize(options = {}) {
+  const aspectRatio = getAvatarVideoAspectRatio();
+  const preferredWidth = Number(options.preferredWidth);
+  const preferredHeight = Number(options.preferredHeight);
+  const hasPreferredWidth = Number.isFinite(preferredWidth) && preferredWidth > 0;
+  const hasPreferredHeight = Number.isFinite(preferredHeight) && preferredHeight > 0;
+
+  let width = Math.round(Math.min(720, Math.max(380, avatarPaneEl?.getBoundingClientRect().width || 460)));
+  let videoHeight = Math.round(width / aspectRatio);
+
+  if (hasPreferredWidth && hasPreferredHeight) {
+    const contentWidth = Math.max(1, preferredWidth - AVATAR_PIP_HORIZONTAL_PADDING);
+    const contentHeight = Math.max(
+      1,
+      preferredHeight - AVATAR_PIP_TOOLBAR_HEIGHT - AVATAR_PIP_VERTICAL_PADDING,
+    );
+    const heightFromWidth = Math.round(contentWidth / aspectRatio);
+    const widthFromHeight = Math.round(contentHeight * aspectRatio);
+    const heightDelta = Math.abs(contentHeight - heightFromWidth);
+    const widthDelta = Math.abs(contentWidth - widthFromHeight);
+
+    if (heightDelta <= widthDelta) {
+      width = contentWidth;
+      videoHeight = heightFromWidth;
+    } else {
+      width = widthFromHeight;
+      videoHeight = contentHeight;
+    }
+  } else if (hasPreferredWidth) {
+    width = Math.max(1, preferredWidth - AVATAR_PIP_HORIZONTAL_PADDING);
+    videoHeight = Math.round(width / aspectRatio);
+  } else if (hasPreferredHeight) {
+    videoHeight = Math.max(1, preferredHeight - AVATAR_PIP_TOOLBAR_HEIGHT - AVATAR_PIP_VERTICAL_PADDING);
+    width = Math.round(videoHeight * aspectRatio);
+  }
+
+  if (!Number.isFinite(videoHeight) || videoHeight <= 0) {
+    videoHeight = 280;
+  }
+  if (videoHeight < AVATAR_PIP_MIN_VIDEO_HEIGHT) {
+    videoHeight = AVATAR_PIP_MIN_VIDEO_HEIGHT;
+    width = Math.round(videoHeight * aspectRatio);
+  }
+  if (videoHeight > AVATAR_PIP_MAX_VIDEO_HEIGHT) {
+    videoHeight = AVATAR_PIP_MAX_VIDEO_HEIGHT;
+    width = Math.round(videoHeight * aspectRatio);
+  }
+
+  return {
+    width: width + AVATAR_PIP_HORIZONTAL_PADDING,
+    height: videoHeight + AVATAR_PIP_TOOLBAR_HEIGHT + AVATAR_PIP_VERTICAL_PADDING,
+  };
+}
+
+function syncAvatarDocumentPictureInPictureWindowSize(options = {}) {
+  const pictureInPictureWindow = avatarDocumentPictureInPictureWindow;
+  if (
+    !pictureInPictureWindow ||
+    pictureInPictureWindow.closed ||
+    typeof pictureInPictureWindow.resizeTo !== "function" ||
+    avatarDocumentPictureInPictureIsAdjustingSize
+  ) {
+    return;
+  }
+
+  const nextSize = getAvatarPictureInPictureWindowSize({
+    preferredWidth: options.preferredWidth ?? pictureInPictureWindow.innerWidth,
+    preferredHeight: options.preferredHeight ?? pictureInPictureWindow.innerHeight,
+  });
+  const widthDelta = Math.abs((pictureInPictureWindow.innerWidth || 0) - nextSize.width);
+  const heightDelta = Math.abs((pictureInPictureWindow.innerHeight || 0) - nextSize.height);
+  if (widthDelta < 2 && heightDelta < 2) {
+    return;
+  }
+
+  avatarDocumentPictureInPictureIsAdjustingSize = true;
+  try {
+    pictureInPictureWindow.resizeTo(nextSize.width, nextSize.height);
+  } catch {
+    // Ignore browsers that disallow script-driven resizing.
+  }
+  window.setTimeout(() => {
+    avatarDocumentPictureInPictureIsAdjustingSize = false;
+  }, 0);
+}
+
+function getAvatarDocumentPictureInPictureStyles() {
+  return `
+    :root {
+      color-scheme: dark;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #020617;
+    }
+
+    body {
+      box-sizing: border-box;
+      padding: 10px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #e2e8f0;
+    }
+
+    .avatar-pane {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 20px;
+      overflow: hidden;
+      background: #030712;
+      isolation: isolate;
+      box-shadow: 0 18px 40px rgba(2, 6, 23, 0.36);
+    }
+
+    .avatar-toolbar {
+      position: relative;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(2, 6, 23, 0.94) 0%, rgba(2, 6, 23, 0.88) 100%);
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .avatar-toolbar__meta {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .avatar-toolbar__status-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .avatar-toolbar__status-dot {
+      flex-shrink: 0;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #f59e0b;
+      box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
+    }
+
+    .avatar-toolbar__status-dot.ok {
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.45);
+    }
+
+    .avatar-toolbar__status-dot.warn {
+      background: #f59e0b;
+      box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
+    }
+
+    .avatar-toolbar__status-dot.danger {
+      background: #ef4444;
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+    }
+
+    .avatar-toolbar__status {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 600;
+      color: #f8fafc;
+      text-shadow: 0 1px 2px rgba(2, 6, 23, 0.5);
+    }
+
+    .avatar-media {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      background: #030712;
+    }
+
+    .avatar-media video {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: contain;
+      background: #000;
+    }
+
+    .avatar-media audio {
+      display: none;
+    }
+
+    .avatar-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .avatar-control {
+      appearance: none;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(15, 23, 42, 0.62);
+      backdrop-filter: blur(5px);
+      color: #e2e8f0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .avatar-control:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    .avatar-control svg {
+      width: 20px;
+      height: 20px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .avatar-control.is-muted {
+      color: #f87171;
+    }
+
+    .avatar-control.is-active {
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.55);
+      background: rgba(14, 165, 233, 0.18);
+    }
+
+    .avatar-control--danger {
+      width: 44px;
+      min-width: 44px;
+      padding: 0;
+      color: #f87171;
+      border-color: rgba(248, 113, 113, 0.42);
+      background: rgba(127, 29, 29, 0.36);
+    }
+
+    .avatar-control--danger svg {
+      display: none;
+    }
+
+    .avatar-control--danger::before {
+      content: "";
+      width: 22px;
+      height: 22px;
+      display: block;
+      background: currentColor;
+      -webkit-mask: url("${AVATAR_PIP_END_CALL_ICON_URL}") center / contain no-repeat;
+      mask: url("${AVATAR_PIP_END_CALL_ICON_URL}") center / contain no-repeat;
+    }
+
+    .avatar-resize-handle {
+      display: none !important;
+    }
+  `;
+}
+
+function cloneAvatarControlButton(sourceButton, ownerDocument) {
+  const button = ownerDocument.createElement("button");
+  button.type = "button";
+  button.className = sourceButton?.className || "btn avatar-control";
+  button.innerHTML = sourceButton?.innerHTML || "";
+  return button;
+}
+
+function createAvatarDocumentPictureInPictureEndCallButton(ownerDocument) {
+  const button = ownerDocument.createElement("button");
+  button.type = "button";
+  button.className = "btn avatar-control avatar-control--danger";
+  button.setAttribute("aria-label", "End session");
+  button.setAttribute("title", "End session");
+  button.innerHTML = "<svg aria-hidden=\"true\"></svg>";
+  return button;
+}
+
+function syncAvatarDocumentPictureInPictureButtons() {
+  if (!avatarDocumentPictureInPictureElements) {
+    return;
+  }
+  const buttonPairs = [
+    [reconnectRoomButton, avatarDocumentPictureInPictureElements.reconnectButton],
+    [toggleMicButton, avatarDocumentPictureInPictureElements.micButton],
+    [toggleSpeakerButton, avatarDocumentPictureInPictureElements.speakerButton],
+  ];
+  for (const [sourceButton, targetButton] of buttonPairs) {
+    if (!sourceButton || !targetButton) {
+      continue;
+    }
+    targetButton.className = sourceButton.className;
+    targetButton.disabled = sourceButton.disabled;
+    targetButton.setAttribute("aria-label", sourceButton.getAttribute("aria-label") || "");
+    targetButton.setAttribute("title", sourceButton.getAttribute("title") || "");
+    targetButton.setAttribute("aria-pressed", sourceButton.getAttribute("aria-pressed") || "false");
+  }
+
+  const { endSessionButton } = avatarDocumentPictureInPictureElements;
+  if (endSessionButton) {
+    const hasSession = Boolean(activeSession);
+    const hasRoom = Boolean(activeRoom);
+    endSessionButton.disabled = !hasSession && !hasRoom;
+  }
+}
+
+function syncAvatarDocumentPictureInPictureMedia() {
+  if (!avatarDocumentPictureInPictureElements?.videoEl) {
+    return;
+  }
+  const { videoEl } = avatarDocumentPictureInPictureElements;
+  const sourceVideo = getAvatarVideoElement();
+  if (!isVideoElement(sourceVideo)) {
+    videoEl.pause?.();
+    videoEl.srcObject = null;
+    avatarDocumentPictureInPictureElements.captureSourceVideo = null;
+    return;
+  }
+
+  if (avatarDocumentPictureInPictureElements.captureSourceVideo === sourceVideo && videoEl.srcObject) {
+    videoEl.muted = true;
+    return;
+  }
+
+  let stream = null;
+  if (typeof sourceVideo.captureStream === "function") {
+    try {
+      stream = sourceVideo.captureStream();
+    } catch {
+      stream = null;
+    }
+  }
+  if (!stream && sourceVideo.srcObject) {
+    stream = sourceVideo.srcObject;
+  }
+
+  videoEl.srcObject = stream || null;
+  videoEl.muted = true;
+  avatarDocumentPictureInPictureElements.captureSourceVideo = sourceVideo;
+  void videoEl.play?.().catch(() => {});
+}
+
+function syncAvatarDocumentPictureInPicture() {
+  syncAvatarDocumentPictureInPictureButtons();
+  syncAvatarDocumentPictureInPictureMedia();
+}
+
+function cleanupAvatarDocumentPictureInPicture() {
+  const pictureInPictureWindow = avatarDocumentPictureInPictureWindow;
+  if (pictureInPictureWindow && avatarDocumentPictureInPictureCleanup) {
+    pictureInPictureWindow.removeEventListener("pagehide", avatarDocumentPictureInPictureCleanup);
+  }
+  if (pictureInPictureWindow && avatarDocumentPictureInPictureResizeHandler) {
+    pictureInPictureWindow.removeEventListener("resize", avatarDocumentPictureInPictureResizeHandler);
+  }
+  if (avatarDocumentPictureInPictureElements?.videoEl) {
+    avatarDocumentPictureInPictureElements.videoEl.pause?.();
+    avatarDocumentPictureInPictureElements.videoEl.srcObject = null;
+  }
+  avatarDocumentPictureInPictureCleanup = null;
+  avatarDocumentPictureInPictureWindow = null;
+  avatarDocumentPictureInPictureElements = null;
+  avatarDocumentPictureInPictureResizeHandler = null;
+  avatarDocumentPictureInPictureIsAdjustingSize = false;
+  updateAvatarUiState();
+  updatePictureInPictureButtonState();
+}
+
+function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
+  const paneEl = pictureInPictureDocument.createElement("div");
+  paneEl.className = "avatar-pane avatar-pane--picture-in-picture";
+
+  const toolbarEl = pictureInPictureDocument.createElement("div");
+  toolbarEl.className = "avatar-toolbar";
+
+  const metaEl = pictureInPictureDocument.createElement("div");
+  metaEl.className = "avatar-toolbar__meta";
+
+  const statusIndicatorEl = pictureInPictureDocument.createElement("span");
+  statusIndicatorEl.className = "avatar-toolbar__status-indicator";
+
+  const statusDotEl = pictureInPictureDocument.createElement("span");
+  statusDotEl.className = "avatar-toolbar__status-dot warn";
+  statusDotEl.setAttribute("aria-hidden", "true");
+
+  const statusEl = pictureInPictureDocument.createElement("span");
+  statusEl.className = "avatar-toolbar__status";
+  statusEl.textContent = getAvatarToolbarStatusState().text;
+
+  statusIndicatorEl.append(statusDotEl, statusEl);
+  metaEl.append(statusIndicatorEl);
+
+  const controlsEl = pictureInPictureDocument.createElement("div");
+  controlsEl.className = "avatar-controls";
+
+  const reconnectButton = cloneAvatarControlButton(reconnectRoomButton, pictureInPictureDocument);
+  const micButton = cloneAvatarControlButton(toggleMicButton, pictureInPictureDocument);
+  const speakerButton = cloneAvatarControlButton(toggleSpeakerButton, pictureInPictureDocument);
+  const endSessionButton = createAvatarDocumentPictureInPictureEndCallButton(pictureInPictureDocument);
+
+  reconnectButton.addEventListener("click", () => {
+    void reconnectAvatarSession().catch((error) => {
+      setOutput({ action: "avatar-reconnect-failed", error: String(error) });
+    });
+  });
+  micButton.addEventListener("click", () => {
+    void toggleMicrophone();
+  });
+  speakerButton.addEventListener("click", () => {
+    toggleAvatarSpeaker();
+  });
+  endSessionButton.addEventListener("click", () => {
+    void stopActiveSession();
+  });
+
+  controlsEl.append(reconnectButton, micButton, speakerButton, endSessionButton);
+  toolbarEl.append(metaEl, controlsEl);
+
+  const mediaEl = pictureInPictureDocument.createElement("div");
+  mediaEl.className = "avatar-media";
+
+  const videoEl = pictureInPictureDocument.createElement("video");
+  videoEl.autoplay = true;
+  videoEl.playsInline = true;
+  videoEl.muted = true;
+  mediaEl.appendChild(videoEl);
+
+  paneEl.append(toolbarEl, mediaEl);
+  pictureInPictureDocument.body.appendChild(paneEl);
+
+  avatarDocumentPictureInPictureElements = {
+    captureSourceVideo: null,
+    endSessionButton,
+    mediaEl,
+    micButton,
+    paneEl,
+    reconnectButton,
+    speakerButton,
+    statusDotEl,
+    statusEl,
+    videoEl,
+  };
+}
+
+function getAvatarVideoElement() {
+  const element = avatarMediaEl?.querySelector("video");
+  return isVideoElement(element) ? element : null;
+}
+
+function canUseStandardPictureInPicture(videoElement) {
+  return Boolean(
+    isVideoElement(videoElement) &&
+      typeof videoElement.requestPictureInPicture === "function" &&
+      (typeof document.pictureInPictureEnabled !== "boolean" || document.pictureInPictureEnabled),
+  );
+}
+
+function canUseWebkitPictureInPicture(videoElement) {
+  return Boolean(
+    isVideoElement(videoElement) &&
+      typeof videoElement.webkitSupportsPresentationMode === "function" &&
+      typeof videoElement.webkitSetPresentationMode === "function" &&
+      videoElement.webkitSupportsPresentationMode("picture-in-picture"),
+  );
+}
+
+function hasPictureInPictureBrowserSupport() {
+  if (hasDocumentPictureInPictureSupport()) {
+    return true;
+  }
+  if (typeof HTMLVideoElement === "undefined") {
+    return false;
+  }
+  return Boolean(
+    typeof HTMLVideoElement.prototype.requestPictureInPicture === "function" ||
+      typeof HTMLVideoElement.prototype.webkitSupportsPresentationMode === "function",
+  );
+}
+
+function hasAvatarPictureInPictureSupport(videoElement = getAvatarVideoElement()) {
+  return (
+    hasDocumentPictureInPictureSupport() ||
+    canUseStandardPictureInPicture(videoElement) ||
+    canUseWebkitPictureInPicture(videoElement)
+  );
+}
+
+function isAvatarVideoPictureInPictureActive(videoElement = getAvatarVideoElement() ?? avatarPictureInPictureVideo) {
+  if (!isVideoElement(videoElement)) {
+    return false;
+  }
+  if (document.pictureInPictureElement === videoElement) {
+    return true;
+  }
+  return videoElement.webkitPresentationMode === "picture-in-picture";
+}
+
+function isAvatarPictureInPictureActive(videoElement = getAvatarVideoElement() ?? avatarPictureInPictureVideo) {
+  return isAvatarDocumentPictureInPictureActive() || isAvatarVideoPictureInPictureActive(videoElement);
+}
+
+function handleAvatarPictureInPictureStateChange() {
+  updatePictureInPictureButtonState();
+}
+
+function bindAvatarPictureInPictureVideo(videoElement) {
+  if (!isVideoElement(videoElement)) {
+    return;
+  }
+  if (avatarPictureInPictureVideo && avatarPictureInPictureVideo !== videoElement) {
+    unbindAvatarPictureInPictureVideo(avatarPictureInPictureVideo);
+  }
+  avatarPictureInPictureVideo = videoElement;
+  videoElement.addEventListener("enterpictureinpicture", handleAvatarPictureInPictureStateChange);
+  videoElement.addEventListener("leavepictureinpicture", handleAvatarPictureInPictureStateChange);
+  videoElement.addEventListener("webkitpresentationmodechanged", handleAvatarPictureInPictureStateChange);
+  updatePictureInPictureButtonState();
+}
+
+function unbindAvatarPictureInPictureVideo(videoElement = avatarPictureInPictureVideo) {
+  if (isVideoElement(videoElement)) {
+    videoElement.removeEventListener("enterpictureinpicture", handleAvatarPictureInPictureStateChange);
+    videoElement.removeEventListener("leavepictureinpicture", handleAvatarPictureInPictureStateChange);
+    videoElement.removeEventListener("webkitpresentationmodechanged", handleAvatarPictureInPictureStateChange);
+  }
+  if (!videoElement || videoElement === avatarPictureInPictureVideo) {
+    avatarPictureInPictureVideo = null;
+  }
+}
+
+async function enterAvatarDocumentPictureInPicture() {
+  if (!hasDocumentPictureInPictureSupport()) {
+    throw new Error("Document picture-in-picture is not available in this browser.");
+  }
+  if (isAvatarDocumentPictureInPictureActive()) {
+    return;
+  }
+
+  if (isAvatarVideoPictureInPictureActive()) {
+    await exitAvatarVideoPictureInPicture();
+  }
+
+  const pictureInPictureWindow = await globalThis.documentPictureInPicture.requestWindow(
+    getAvatarPictureInPictureWindowSize(),
+  );
+  const pictureInPictureDocument = pictureInPictureWindow.document;
+
+  avatarDocumentPictureInPictureWindow = pictureInPictureWindow;
+  avatarDocumentPictureInPictureCleanup = cleanupAvatarDocumentPictureInPicture;
+  avatarDocumentPictureInPictureResizeHandler = () => {
+    syncAvatarDocumentPictureInPictureWindowSize();
+  };
+
+  pictureInPictureDocument.documentElement.lang = document.documentElement.lang || "en";
+  pictureInPictureDocument.title = "Claw Cast";
+  pictureInPictureDocument.body.className = "video-chat-pip";
+  pictureInPictureDocument.body.textContent = "";
+
+  const styleEl = pictureInPictureDocument.createElement("style");
+  styleEl.textContent = getAvatarDocumentPictureInPictureStyles();
+  pictureInPictureDocument.head.appendChild(styleEl);
+
+  buildAvatarDocumentPictureInPictureView(pictureInPictureDocument);
+  pictureInPictureWindow.addEventListener("pagehide", cleanupAvatarDocumentPictureInPicture);
+  pictureInPictureWindow.addEventListener("resize", avatarDocumentPictureInPictureResizeHandler);
+  syncAvatarDocumentPictureInPicture();
+  syncAvatarDocumentPictureInPictureWindowSize();
+
+  updateAvatarUiState();
+  updatePictureInPictureButtonState();
+}
+
+async function enterAvatarVideoPictureInPicture() {
+  const videoElement = getAvatarVideoElement();
+  if (!isVideoElement(videoElement)) {
+    throw new Error("Avatar video is not ready yet.");
+  }
+  if (canUseStandardPictureInPicture(videoElement)) {
+    if (
+      document.pictureInPictureElement &&
+      document.pictureInPictureElement !== videoElement &&
+      typeof document.exitPictureInPicture === "function"
+    ) {
+      await document.exitPictureInPicture();
+    }
+    await videoElement.requestPictureInPicture();
+    return;
+  }
+  if (canUseWebkitPictureInPicture(videoElement)) {
+    videoElement.webkitSetPresentationMode("picture-in-picture");
+    return;
+  }
+  throw new Error("Picture-in-picture is not available in this browser.");
+}
+
+async function enterAvatarPictureInPicture() {
+  if (hasDocumentPictureInPictureSupport()) {
+    await enterAvatarDocumentPictureInPicture();
+    return;
+  }
+  await enterAvatarVideoPictureInPicture();
+}
+
+async function exitAvatarDocumentPictureInPicture() {
+  const cleanup = avatarDocumentPictureInPictureCleanup;
+  const pictureInPictureWindow = avatarDocumentPictureInPictureWindow;
+  cleanup?.();
+  if (pictureInPictureWindow && !pictureInPictureWindow.closed) {
+    pictureInPictureWindow.close();
+  }
+}
+
+async function exitAvatarVideoPictureInPicture() {
+  const videoElement = getAvatarVideoElement() ?? avatarPictureInPictureVideo;
+  if (document.pictureInPictureElement && typeof document.exitPictureInPicture === "function") {
+    await document.exitPictureInPicture();
+    return;
+  }
+  if (
+    isVideoElement(videoElement) &&
+    typeof videoElement.webkitSetPresentationMode === "function" &&
+    videoElement.webkitPresentationMode === "picture-in-picture"
+  ) {
+    videoElement.webkitSetPresentationMode("inline");
+  }
+}
+
+async function exitAvatarPictureInPicture() {
+  if (isAvatarDocumentPictureInPictureActive()) {
+    await exitAvatarDocumentPictureInPicture();
+    return;
+  }
+  await exitAvatarVideoPictureInPicture();
+}
+
+function updatePictureInPictureButtonState() {
+  if (!togglePictureInPictureButton) {
+    return;
+  }
+
+  const activeVideoElement = getAvatarVideoElement() ?? avatarPictureInPictureVideo;
+  const hasVideo = Boolean(getAvatarVideoElement());
+  const isActive = isAvatarPictureInPictureActive(activeVideoElement);
+  const hasDocumentSupport = hasDocumentPictureInPictureSupport();
+  const isSupported = hasAvatarPictureInPictureSupport(activeVideoElement);
+
+  togglePictureInPictureButton.disabled = isActive ? false : hasDocumentSupport ? !isSupported : !hasVideo || !isSupported;
+  togglePictureInPictureButton.classList.toggle("is-active", isActive);
+
+  let label = "Pop out avatar";
+  if (!hasPictureInPictureBrowserSupport()) {
+    label = "Picture-in-picture is unavailable in this browser";
+  } else if (!hasDocumentSupport && !hasVideo && !isActive) {
+    label = "Picture-in-picture is available after the avatar video loads";
+  } else if (!isSupported) {
+    label = "Picture-in-picture is unavailable for this stream";
+  } else if (isActive) {
+    label = "Return avatar to the tab";
+  } else if (hasDocumentSupport) {
+    label = hasVideo ? "Open avatar in picture-in-picture" : "Open picture-in-picture for the avatar";
+  }
+
+  togglePictureInPictureButton.setAttribute("aria-label", label);
+  togglePictureInPictureButton.setAttribute("title", label);
+  syncAvatarDocumentPictureInPictureButtons();
+}
+
+function hasAvatarVideo() {
+  return Boolean(getAvatarVideoElement());
+}
+
+function setAvatarLoadingState(isPending, message = "") {
+  avatarLoadPending = Boolean(isPending);
+  avatarLoadMessage = avatarLoadPending && typeof message === "string" ? message.trim() : "";
+  updateRoomStatusState();
+}
+
+function updateAvatarUiState() {
+  const showAvatarPane = hasAvatarVideo();
+  const isDocumentPictureInPicture = isAvatarDocumentPictureInPictureActive();
+
+  if (avatarPaneEl) {
+    avatarPaneEl.hidden = !showAvatarPane;
+    avatarPaneEl.classList.toggle(
+      "avatar-pane--document-picture-in-picture-active",
+      showAvatarPane && isDocumentPictureInPicture,
+    );
+  }
+  if (avatarPlaceholderEl) {
+    avatarPlaceholderEl.hidden = !(showAvatarPane && isDocumentPictureInPicture);
+  }
+  if (!showAvatarPane) {
     updateAvatarAspectRatio(null);
   }
+  syncAvatarDocumentPictureInPictureMedia();
+  updatePictureInPictureButtonState();
+  updateRoomStatusState();
+}
+
+function updateRoomStatusState() {
+  if (!LIVEKIT) {
+    setRoomStatus("LiveKit client failed to load from CDN.");
+    return;
+  }
+
+  const normalizedConnectionState =
+    typeof roomConnectionState === "string" ? roomConnectionState.trim().toLowerCase() : "";
+
+  if (avatarLoadPending) {
+    setRoomStatus(avatarLoadMessage || SESSION_STARTING_STATUS, { loading: true });
+    return;
+  }
+
+  if (activeRoom) {
+    if (normalizedConnectionState && normalizedConnectionState !== "connected") {
+      const isLoading = normalizedConnectionState !== "disconnected";
+      setRoomStatus(
+        isLoading ? `Room state: ${normalizedConnectionState}` : "Disconnected from room. Reconnect to resume.",
+        { loading: isLoading },
+      );
+      return;
+    }
+    if (avatarConnectionState === "disconnected") {
+      setRoomStatus("Avatar disconnected. Reconnect to resume.");
+      return;
+    }
+    if (!hasAvatarVideo()) {
+      setRoomStatus(AVATAR_LOADING_STATUS, { loading: true });
+      return;
+    }
+    setRoomStatus("Connected");
+    return;
+  }
+
+  if (activeSession) {
+    if (avatarConnectionState === "disconnected") {
+      setRoomStatus("Avatar disconnected. Reconnect to resume.");
+      return;
+    }
+    if (normalizedConnectionState === "connected" || avatarConnectionState === "connecting") {
+      setRoomStatus(AVATAR_LOADING_STATUS, { loading: true });
+      return;
+    }
+    if (normalizedConnectionState && normalizedConnectionState !== "disconnected") {
+      setRoomStatus(`Room state: ${normalizedConnectionState}`, { loading: true });
+      return;
+    }
+    setRoomStatus("Disconnected from room. Reconnect to resume.");
+    return;
+  }
+
+  setRoomStatus("Disconnected");
 }
 
 function applyAvatarSpeakerMuteState() {
@@ -1004,6 +1916,7 @@ function applyAvatarSpeakerMuteState() {
       element.muted = avatarSpeakerMuted;
     }
   }
+  syncAvatarDocumentPictureInPicture();
   if (!toggleSpeakerButton) {
     return;
   }
@@ -1457,17 +2370,41 @@ async function loadChatHistory() {
   }
 }
 
-function clearRemoteTiles() {
+function clearRemoteTiles(options = {}) {
+  const keepDocumentPictureInPicture = options.keepDocumentPictureInPicture === true;
+  if (isAvatarVideoPictureInPictureActive()) {
+    void exitAvatarVideoPictureInPicture().catch(() => {});
+  }
+  if (!keepDocumentPictureInPicture && isAvatarDocumentPictureInPictureActive()) {
+    void exitAvatarDocumentPictureInPicture().catch(() => {});
+  }
   if (!avatarMediaEl) {
+    unbindAvatarPictureInPictureVideo();
     updateAvatarAspectRatio(null);
-    setAvatarPlaceholderVisible(true);
+    updateAvatarUiState();
     return;
   }
   for (const mediaElement of avatarMediaEl.querySelectorAll("video, audio")) {
+    if (isVideoElement(mediaElement)) {
+      unbindAvatarPictureInPictureVideo(mediaElement);
+    }
     mediaElement.remove();
   }
+  unbindAvatarPictureInPictureVideo();
   updateAvatarAspectRatio(null);
-  updateAvatarPlaceholderState();
+  updateAvatarUiState();
+}
+
+async function maybeStartAvatarPictureInPicture() {
+  if (!hasDocumentPictureInPictureSupport() || isAvatarPictureInPictureActive()) {
+    return false;
+  }
+  try {
+    await enterAvatarPictureInPicture();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getRemoteMediaContainer(participantIdentity) {
@@ -1487,14 +2424,18 @@ function attachTrackToContainer(track, container) {
   if (track.kind === "video") {
     const priorVideo = container.querySelector("video");
     if (priorVideo) {
+      unbindAvatarPictureInPictureVideo(priorVideo);
       priorVideo.remove();
     }
-    if (element instanceof HTMLVideoElement) {
+    if (isVideoElement(element)) {
       const updateRatio = () => {
         updateAvatarAspectRatio(element);
+        syncAvatarDocumentPictureInPictureMedia();
+        syncAvatarDocumentPictureInPictureWindowSize();
       };
       element.addEventListener("loadedmetadata", updateRatio);
       element.addEventListener("resize", updateRatio);
+      bindAvatarPictureInPictureVideo(element);
       updateRatio();
     }
   }
@@ -1506,7 +2447,10 @@ function attachTrackToContainer(track, container) {
   }
   container.appendChild(element);
   applyAvatarSpeakerMuteState();
-  updateAvatarPlaceholderState();
+  if (track.kind === "video") {
+    markAvatarConnected();
+  }
+  updateAvatarUiState();
 }
 
 function detachTrack(track) {
@@ -1514,6 +2458,7 @@ function detachTrack(track) {
   for (const element of elements) {
     element.remove();
   }
+  syncAvatarDocumentPictureInPictureMedia();
 }
 
 function releaseLocalTracks() {
@@ -1526,11 +2471,26 @@ function releaseLocalTracks() {
   localAudioTrack = null;
 }
 
+function markAvatarConnected() {
+  setAvatarConnectionState("connected");
+  updateRoomStatusState();
+  updateRoomButtons();
+}
+
+function markAvatarDisconnected() {
+  setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+  updateRoomStatusState();
+  updateRoomButtons();
+}
+
 function updateRoomButtons() {
   const hasSession = Boolean(activeSession);
   const hasRoom = Boolean(activeRoom);
   if (connectRoomButton) {
     connectRoomButton.disabled = !hasSession || hasRoom;
+  }
+  if (reconnectRoomButton) {
+    reconnectRoomButton.disabled = !hasReconnectableSession();
   }
   if (leaveRoomButton) {
     leaveRoomButton.disabled = !hasRoom;
@@ -1548,13 +2508,16 @@ function updateRoomButtons() {
     toggleSpeakerButton.setAttribute("aria-label", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
     toggleSpeakerButton.setAttribute("title", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
   }
+  updatePictureInPictureButtonState();
+  syncAvatarDocumentPictureInPictureButtons();
 }
 
 function removeParticipantTile(participantIdentity) {
   if (!isAvatarParticipantIdentity(participantIdentity)) {
     return;
   }
-  clearRemoteTiles();
+  markAvatarDisconnected();
+  clearRemoteTiles({ keepDocumentPictureInPicture: Boolean(activeRoom || activeSession) });
 }
 
 async function publishLocalTracks(room) {
@@ -1591,30 +2554,43 @@ function bindRoomEvents(room) {
   room.on(LIVEKIT.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
     void publication;
     detachTrack(track);
-    updateAvatarPlaceholderState();
+    updateAvatarUiState();
     const hasSubscribedTracks = Array.from(participant.trackPublications.values()).some(
       (item) => Boolean(item.track),
     );
     if (!hasSubscribedTracks) {
       removeParticipantTile(participant.identity);
+    } else if (isAvatarParticipantIdentity(participant.identity) && !hasAvatarVideo()) {
+      markAvatarDisconnected();
     }
   });
   room.on(LIVEKIT.RoomEvent.ParticipantDisconnected, (participant) => {
     removeParticipantTile(participant.identity);
   });
   room.on(LIVEKIT.RoomEvent.ConnectionStateChanged, (state) => {
-    setRoomStatus(`Room state: ${state}`);
+    roomConnectionState =
+      typeof state === "string" && state.trim() ? state.trim().toLowerCase() : "disconnected";
+    if (roomConnectionState !== "connected") {
+      setAvatarConnectionState(activeSession ? "connecting" : "idle");
+    }
+    updateRoomStatusState();
+    updateRoomButtons();
   });
   room.on(LIVEKIT.RoomEvent.Disconnected, () => {
+    if (activeRoom !== room) {
+      return;
+    }
+    roomConnectionState = "disconnected";
+    setAvatarConnectionState(activeSession ? "disconnected" : "idle");
     activeRoom = null;
+    setAvatarLoadingState(false);
     releaseLocalTracks();
     clearRemoteTiles();
-    setRoomStatus("Disconnected from room.");
     updateRoomButtons();
   });
 }
 
-async function connectToRoom() {
+async function connectToRoom(options = {}) {
   if (!activeSession) {
     throw new Error("Start a session first.");
   }
@@ -1627,7 +2603,15 @@ async function connectToRoom() {
     return;
   }
 
-  setRoomStatus("Connecting to room...");
+  const connectGeneration = ++roomConnectGeneration;
+  roomConnectionState = "connecting";
+  setAvatarConnectionState("connecting");
+  const loadingMessage =
+    typeof options.loadingMessage === "string" && options.loadingMessage.trim()
+      ? options.loadingMessage.trim()
+      : "";
+  setAvatarLoadingState(Boolean(loadingMessage), loadingMessage);
+  updateRoomStatusState();
   const room = new LIVEKIT.Room({
     adaptiveStream: true,
     dynacast: true,
@@ -1637,10 +2621,38 @@ async function connectToRoom() {
 
   try {
     await room.connect(activeSession.livekitUrl, activeSession.participantToken);
+    if (connectGeneration !== roomConnectGeneration || !activeSession) {
+      try {
+        room.disconnect();
+      } catch {}
+      roomConnectionState = "disconnected";
+      setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+      setAvatarLoadingState(false);
+      releaseLocalTracks();
+      updateRoomButtons();
+      return;
+    }
     activeRoom = room;
-    setRoomStatus(`Connected to ${activeSession.roomName}`);
-    clearRemoteTiles();
+    roomConnectionState = "connected";
+    clearRemoteTiles({ keepDocumentPictureInPicture: true });
+    setAvatarLoadingState(false);
+    updateRoomStatusState();
     await publishLocalTracks(room);
+    if (connectGeneration !== roomConnectGeneration || !activeSession || activeRoom !== room) {
+      try {
+        room.disconnect();
+      } catch {}
+      if (activeRoom === room) {
+        activeRoom = null;
+      }
+      roomConnectionState = "disconnected";
+      setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+      setAvatarLoadingState(false);
+      releaseLocalTracks();
+      clearRemoteTiles();
+      updateRoomButtons();
+      return;
+    }
 
     for (const participant of room.remoteParticipants.values()) {
       for (const publication of participant.trackPublications.values()) {
@@ -1653,18 +2665,31 @@ async function connectToRoom() {
     }
     updateRoomButtons();
   } catch (error) {
+    roomConnectionState = "disconnected";
+    setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+    setAvatarLoadingState(false);
     try {
       room.disconnect();
     } catch {}
-    activeRoom = null;
+    if (activeRoom === room) {
+      activeRoom = null;
+    }
     releaseLocalTracks();
     updateRoomButtons();
     throw error;
   }
 }
 
-function disconnectRoom() {
+function disconnectRoom(options = {}) {
+  const keepDocumentPictureInPicture = options.keepDocumentPictureInPicture === true;
+  roomConnectGeneration += 1;
+  roomConnectionState = "disconnected";
+  setAvatarLoadingState(false);
+  setAvatarConnectionState(activeSession ? "disconnected" : "idle");
   if (!activeRoom) {
+    releaseLocalTracks();
+    clearRemoteTiles({ keepDocumentPictureInPicture });
+    updateRoomButtons();
     return;
   }
   try {
@@ -1672,15 +2697,64 @@ function disconnectRoom() {
   } catch {}
   activeRoom = null;
   releaseLocalTracks();
-  clearRemoteTiles();
-  setRoomStatus("Disconnected from room.");
+  clearRemoteTiles({ keepDocumentPictureInPicture });
   updateRoomButtons();
+}
+
+async function reconnectAvatarSession() {
+  if (!activeSession?.sessionKey || !activeSession?.roomName) {
+    throw new Error("Start a session first.");
+  }
+
+  const priorSessionKey = activeSession.sessionKey;
+  const priorRoomName = activeSession.roomName;
+  const keepDocumentPictureInPicture = isAvatarDocumentPictureInPictureActive();
+
+  setAvatarConnectionState("connecting");
+  setAvatarLoadingState(true, AVATAR_RECONNECTING_STATUS);
+  updateRoomButtons();
+  try {
+    disconnectRoom({
+      keepDocumentPictureInPicture,
+    });
+    await requestJson("/plugins/video-chat/api/session/stop", {
+      method: "POST",
+      body: JSON.stringify({
+        roomName: priorRoomName,
+      }),
+    });
+    const payload = await requestJson("/plugins/video-chat/api/session", {
+      method: "POST",
+      body: JSON.stringify({ sessionKey: priorSessionKey }),
+    });
+    activeSession = payload.session;
+    setChatPaneOpen(true);
+    updateRoomButtons();
+    updateChatControls();
+    try {
+      await ensureGatewaySocketConnected();
+      await loadChatHistory();
+      setChatStatus(`Text chat ready for ${resolveChatSessionKey()}.`);
+    } catch (chatError) {
+      setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
+      appendChatLine("system", "Text chat initialization failed.");
+    }
+    await connectToRoom({ loadingMessage: AVATAR_RECONNECTING_STATUS });
+    setOutput({ action: "avatar-reconnected", roomName: activeSession?.roomName ?? null });
+  } catch (error) {
+    setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+    setAvatarLoadingState(false);
+    updateRoomButtons();
+    throw error;
+  }
 }
 
 async function stopActiveSession() {
   const session = activeSession;
   disconnectRoom();
   activeSession = null;
+  setAvatarConnectionState("idle");
+  updateAvatarUiState();
   updateRoomButtons();
   updateChatControls();
   clearChatLog();
@@ -1910,31 +2984,42 @@ if (configModeButtons.length) {
 
 if (sessionForm) {
   sessionForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const formData = new FormData(sessionForm);
-  const sessionKey = String(formData.get("sessionKey") || "").trim();
-  try {
-    const payload = await requestJson("/plugins/video-chat/api/session", {
-      method: "POST",
-      body: JSON.stringify({ sessionKey }),
+    event.preventDefault();
+    const autoPictureInPictureOpened = await maybeStartAvatarPictureInPicture();
+    const formData = new FormData(sessionForm);
+    const sessionKey = String(formData.get("sessionKey") || "").trim();
+    roomConnectionState = "disconnected";
+    setAvatarConnectionState("connecting");
+    clearRemoteTiles({
+      keepDocumentPictureInPicture: autoPictureInPictureOpened || isAvatarDocumentPictureInPictureActive(),
     });
-    activeSession = payload.session;
-    setChatPaneOpen(true);
-    setOutput({ action: "session-started", session: activeSession });
-    updateRoomButtons();
-    updateChatControls();
+    setAvatarLoadingState(true, SESSION_STARTING_STATUS);
     try {
-      await ensureGatewaySocketConnected();
-      await loadChatHistory();
-      setChatStatus(`Text chat ready for ${resolveChatSessionKey()}.`);
-    } catch (chatError) {
-      setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
-      appendChatLine("system", "Text chat initialization failed.");
+      const payload = await requestJson("/plugins/video-chat/api/session", {
+        method: "POST",
+        body: JSON.stringify({ sessionKey }),
+      });
+      activeSession = payload.session;
+      setChatPaneOpen(true);
+      setOutput({ action: "session-started", session: activeSession });
+      updateRoomButtons();
+      updateChatControls();
+      try {
+        await ensureGatewaySocketConnected();
+        await loadChatHistory();
+        setChatStatus(`Text chat ready for ${resolveChatSessionKey()}.`);
+      } catch (chatError) {
+        setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
+        appendChatLine("system", "Text chat initialization failed.");
+      }
+      await connectToRoom({ loadingMessage: SESSION_STARTING_STATUS });
+    } catch (error) {
+      setAvatarLoadingState(false);
+      if (autoPictureInPictureOpened) {
+        await exitAvatarPictureInPicture().catch(() => {});
+      }
+      setOutput({ action: "session-start-failed", error: String(error) });
     }
-    await connectToRoom();
-  } catch (error) {
-    setOutput({ action: "session-start-failed", error: String(error) });
-  }
   });
 }
 
@@ -1944,14 +3029,68 @@ if (stopSessionButton) {
   });
 }
 
+async function toggleMicrophone() {
+  if (!localAudioTrack) {
+    return;
+  }
+  try {
+    if (localAudioTrack.isMuted) {
+      await localAudioTrack.unmute();
+    } else {
+      await localAudioTrack.mute();
+    }
+    updateRoomButtons();
+  } catch (error) {
+    setOutput({ action: "mic-toggle-failed", error: String(error) });
+  }
+}
+
+function toggleAvatarSpeaker() {
+  avatarSpeakerMuted = !avatarSpeakerMuted;
+  applyAvatarSpeakerMuteState();
+  updateRoomButtons();
+}
+
+async function handlePictureInPictureToggle() {
+  try {
+    if (isAvatarPictureInPictureActive()) {
+      await exitAvatarPictureInPicture();
+    } else {
+      await enterAvatarPictureInPicture();
+    }
+    updatePictureInPictureButtonState();
+    setOutput({
+      action: "avatar-picture-in-picture",
+      active: isAvatarPictureInPictureActive(),
+    });
+  } catch (error) {
+    setOutput({
+      action: "avatar-picture-in-picture-failed",
+      error: String(error),
+    });
+  }
+}
+
 if (connectRoomButton) {
   connectRoomButton.addEventListener("click", async () => {
+    const autoPictureInPictureOpened = await maybeStartAvatarPictureInPicture();
     try {
-      await connectToRoom();
+      await connectToRoom({ loadingMessage: SESSION_STARTING_STATUS });
       setOutput({ action: "room-connected", roomName: activeSession?.roomName ?? null });
     } catch (error) {
+      if (autoPictureInPictureOpened) {
+        await exitAvatarPictureInPicture().catch(() => {});
+      }
       setOutput({ action: "room-connect-failed", error: String(error) });
     }
+  });
+}
+
+if (reconnectRoomButton) {
+  reconnectRoomButton.addEventListener("click", () => {
+    void reconnectAvatarSession().catch((error) => {
+      setOutput({ action: "avatar-reconnect-failed", error: String(error) });
+    });
   });
 }
 
@@ -1962,29 +3101,27 @@ if (leaveRoomButton) {
   });
 }
 
+if (avatarPictureInPictureReturnButton) {
+  avatarPictureInPictureReturnButton.addEventListener("click", () => {
+    void handlePictureInPictureToggle();
+  });
+}
+
 if (toggleMicButton) {
-  toggleMicButton.addEventListener("click", async () => {
-    if (!localAudioTrack) {
-      return;
-    }
-    try {
-      if (localAudioTrack.isMuted) {
-        await localAudioTrack.unmute();
-      } else {
-        await localAudioTrack.mute();
-      }
-      updateRoomButtons();
-    } catch (error) {
-      setOutput({ action: "mic-toggle-failed", error: String(error) });
-    }
+  toggleMicButton.addEventListener("click", () => {
+    void toggleMicrophone();
   });
 }
 
 if (toggleSpeakerButton) {
   toggleSpeakerButton.addEventListener("click", () => {
-    avatarSpeakerMuted = !avatarSpeakerMuted;
-    applyAvatarSpeakerMuteState();
-    updateRoomButtons();
+    toggleAvatarSpeaker();
+  });
+}
+
+if (togglePictureInPictureButton) {
+  togglePictureInPictureButton.addEventListener("click", () => {
+    void handlePictureInPictureToggle();
   });
 }
 
@@ -2123,6 +3260,7 @@ initConfigSectionFiltering();
 updateRoomButtons();
 updateChatControls();
 clearChatLog();
+updateAvatarUiState();
 
 if (hasGatewayToken()) {
   setGatewayHealthStatus("warn", "Checking");
@@ -2138,8 +3276,4 @@ if (hasGatewayToken()) {
   setChatStatus("Enter a gateway token to use text chat.");
 }
 
-if (LIVEKIT) {
-  setRoomStatus("No active room connection.");
-} else {
-  setRoomStatus("LiveKit client failed to load from CDN.");
-}
+updateRoomStatusState();

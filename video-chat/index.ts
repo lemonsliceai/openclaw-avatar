@@ -422,6 +422,17 @@ function createLiveKitAccessToken(params: {
   return `${signingInput}.${toBase64Url(signature)}`;
 }
 
+function validateVideoChatRoomName(roomName: string): string {
+  const normalizedRoomName = roomName.trim();
+  if (!normalizedRoomName) {
+    throw new Error("roomName is required");
+  }
+  if (!normalizedRoomName.startsWith(`${VIDEO_CHAT_ROOM_PREFIX}-`)) {
+    throw new Error("invalid Claw Cast room name");
+  }
+  return normalizedRoomName;
+}
+
 function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigResponse {
   const effective = resolveEffectiveVideoChatConfig(config);
   const provider = effective.videoChat?.provider === "lemonslice" ? "lemonslice" : null;
@@ -591,7 +602,7 @@ function applyVideoChatSetupToConfig(
 async function writeConfigFile(api: OpenClawPluginApi, config: OpenClawConfig): Promise<void> {
   const writer = (api.runtime.config as { writeConfigFile?: unknown }).writeConfigFile;
   if (typeof writer !== "function") {
-    throw new Error("video chat setup is unavailable: runtime config writer is missing");
+    throw new Error("Claw Cast setup is unavailable: runtime config writer is missing");
   }
   await (writer as (nextConfig: OpenClawConfig) => Promise<void>)(config);
 }
@@ -634,7 +645,7 @@ async function transcribeVideoChatAudio(params: {
     });
     const transcript = result.text?.trim();
     if (!transcript) {
-      throw new Error("video chat transcription returned no text");
+      throw new Error("Claw Cast transcription returned no text");
     }
     return { transcript };
   } finally {
@@ -678,7 +689,7 @@ async function generateVideoChatSpeech(params: {
       cfg,
     });
     if (!result.success) {
-      throw new Error(result.error ?? "video chat TTS generation failed");
+      throw new Error(result.error ?? "Claw Cast TTS generation failed");
     }
     if (typeof result.audioPath === "string" && result.audioPath.trim()) {
       const audio = readFileSync(result.audioPath);
@@ -698,7 +709,7 @@ async function generateVideoChatSpeech(params: {
         outputFormat: result.outputFormat,
       };
     }
-    throw new Error("video chat TTS generation failed: runtime returned no audio payload");
+    throw new Error("Claw Cast TTS generation failed: runtime returned no audio payload");
   }
 
   const textToSpeechTelephony = ttsRuntime?.textToSpeechTelephony;
@@ -720,11 +731,11 @@ async function generateVideoChatSpeech(params: {
       cfg,
     });
     if (!result.success) {
-      throw new Error(result.error ?? "video chat TTS generation failed");
+      throw new Error(result.error ?? "Claw Cast TTS generation failed");
     }
     const pcmBuffer = toAudioBuffer(result.audioBuffer);
     if (!pcmBuffer) {
-      throw new Error("video chat TTS generation failed: telephony output missing audio buffer");
+      throw new Error("Claw Cast TTS generation failed: telephony output missing audio buffer");
     }
     const sampleRate =
       typeof result.sampleRate === "number" && Number.isFinite(result.sampleRate)
@@ -739,7 +750,7 @@ async function generateVideoChatSpeech(params: {
     };
   }
 
-  throw new Error("video chat TTS generation failed: runtime TTS API is unavailable");
+  throw new Error("Claw Cast TTS generation failed: runtime TTS API is unavailable");
 }
 
 function readCliOption(options: unknown, key: string): string | undefined {
@@ -831,7 +842,7 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
   const hasAnyInput = Object.values(setupInput).some((value) => value !== undefined);
   if (!hasAnyInput) {
     throw new Error(
-      "video chat setup command requires CLI options, environment variables, or interactive input",
+      "Claw Cast setup command requires CLI options, environment variables, or interactive input",
     );
   }
 
@@ -839,7 +850,7 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
   await writeConfigFile(api, nextConfig);
   const status = buildVideoChatConfigResponse(nextConfig);
   api.logger.info(
-    `video chat setup saved${status.configured ? "" : `; missing ${status.missing.join(", ")}`}`,
+    `Claw Cast setup saved${status.configured ? "" : `; missing ${status.missing.join(", ")}`}`,
   );
 }
 
@@ -847,7 +858,7 @@ function registerVideoChatSetupCli(api: OpenClawPluginApi): void {
   api.registerCli(({ program }: { program: any }) => {
       program
         .command("video-chat-setup")
-        .description("Configure Video Chat provider credentials")
+        .description("Configure Claw Cast provider credentials")
         .option("--lemonslice-api-key <key>", "LemonSlice API key")
         .option("--lemonslice-image-url <url>", "LemonSlice image URL")
         .option("--livekit-url <url>", "LiveKit URL")
@@ -1227,7 +1238,7 @@ function registerVideoChatHttpRoutes(
         return true;
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : "video chat plugin page request failed";
+          error instanceof Error ? error.message : "Claw Cast plugin page request failed";
         const code =
           message.includes("invalid ") || message.endsWith(" is required")
             ? "INVALID_REQUEST"
@@ -1301,7 +1312,7 @@ function registerVideoChatHttpRoutes(
         sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
         return true;
       } catch (error) {
-        const message = error instanceof Error ? error.message : "video chat plugin page request failed";
+        const message = error instanceof Error ? error.message : "Claw Cast plugin page request failed";
         if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
           sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
           return true;
@@ -1440,7 +1451,7 @@ async function createVideoChatSession(params: {
   const effectiveConfig = resolveEffectiveVideoChatConfig(params.config);
   const status = buildVideoChatConfigResponse(params.config);
   if (!status.configured) {
-    throw new Error(`video chat is not configured: missing ${status.missing.join(", ")}`);
+    throw new Error(`Claw Cast is not configured: missing ${status.missing.join(", ")}`);
   }
 
   const lemonSlice = effectiveConfig.videoChat?.lemonSlice;
@@ -1461,12 +1472,12 @@ async function createVideoChatSession(params: {
   });
   if (!lemonSliceImageUrl || !livekitUrl || !apiKey || !apiSecret || !elevenLabsApiKey) {
     throw new Error(
-      "video chat is not configured: missing LemonSlice, LiveKit, or ElevenLabs credentials",
+      "Claw Cast is not configured: missing LemonSlice, LiveKit, or ElevenLabs credentials",
     );
   }
   const imageUrlValidationError = validateLemonSliceImageUrl(lemonSliceImageUrl);
   if (imageUrlValidationError) {
-    throw new Error(`video chat is not configured: ${imageUrlValidationError}`);
+    throw new Error(`Claw Cast is not configured: ${imageUrlValidationError}`);
   }
 
   const roomName = `${VIDEO_CHAT_ROOM_PREFIX}-${sanitizeVideoChatRoomPart(params.sessionKey)}-${randomUUID().slice(0, 8)}`;
@@ -1513,13 +1524,7 @@ async function createVideoChatSession(params: {
 async function stopVideoChatSession(params: {
   roomName: string;
 }): Promise<VideoChatSessionStopResult> {
-  const roomName = params.roomName.trim();
-  if (!roomName) {
-    throw new Error("roomName is required");
-  }
-  if (!roomName.startsWith(`${VIDEO_CHAT_ROOM_PREFIX}-`)) {
-    throw new Error("invalid video chat room name");
-  }
+  const roomName = validateVideoChatRoomName(params.roomName);
   return {
     stopped: true,
     roomName,
@@ -1636,7 +1641,7 @@ async function startVideoChatAgentSidecar(params: {
 }): Promise<VideoChatAgentSidecar | null> {
   if (params.gateway.auth.mode === "trusted-proxy" || params.gateway.auth.mode === "none") {
     params.log.warn(
-      `video chat agent sidecar disabled: gateway auth mode=${params.gateway.auth.mode} is not supported for the local worker bridge`,
+      `Claw Cast agent sidecar disabled: gateway auth mode=${params.gateway.auth.mode} is not supported for the local worker bridge`,
     );
     return null;
   }
@@ -1644,7 +1649,7 @@ async function startVideoChatAgentSidecar(params: {
   const credentials = resolveVideoChatAgentCredentials(params.config);
   if (!credentials) {
     params.log.info(
-      "video chat agent sidecar disabled: missing LiveKit, LemonSlice, or ElevenLabs credentials",
+      "Claw Cast agent sidecar disabled: missing LiveKit, LemonSlice, or ElevenLabs credentials",
     );
     return null;
   }
@@ -1653,11 +1658,11 @@ async function startVideoChatAgentSidecar(params: {
   const launchCommand = await resolveSidecarLaunchCommand(entryScript);
   if (!launchCommand) {
     params.log.warn(
-      "video chat agent sidecar disabled: unable to resolve worker entrypoint (set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to override)",
+      "Claw Cast agent sidecar disabled: unable to resolve worker entrypoint (set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to override)",
     );
     return null;
   }
-  params.log.info(`video chat agent sidecar launch command: ${launchCommand.description}`);
+  params.log.info(`Claw Cast agent sidecar launch command: ${launchCommand.description}`);
 
   let child: ChildProcess | null = null;
   let childProcessGroupId: number | null = null;
@@ -1696,7 +1701,7 @@ async function startVideoChatAgentSidecar(params: {
       }
       if (unsupportedLegacyCommand) {
         params.log.error(
-          "video chat agent sidecar launch command is unsupported by this OpenClaw CLI build; set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to a video-chat-agent-runner.js path",
+          "Claw Cast agent sidecar launch command is unsupported by this OpenClaw CLI build; set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to a video-chat-agent-runner.js path",
         );
         return;
       }
@@ -1707,12 +1712,12 @@ async function startVideoChatAgentSidecar(params: {
       }
       if (recentExits.length >= 5) {
         params.log.error(
-          `video chat agent sidecar exited repeatedly${code !== null ? ` code=${code}` : ""}${signal ? ` signal=${signal}` : ""}; giving up until the gateway restarts`,
+          `Claw Cast agent sidecar exited repeatedly${code !== null ? ` code=${code}` : ""}${signal ? ` signal=${signal}` : ""}; giving up until the gateway restarts`,
         );
         return;
       }
       params.log.warn(
-        `video chat agent sidecar exited${code !== null ? ` code=${code}` : ""}${signal ? ` signal=${signal}` : ""}; restarting`,
+        `Claw Cast agent sidecar exited${code !== null ? ` code=${code}` : ""}${signal ? ` signal=${signal}` : ""}; restarting`,
       );
       respawnTimer = setTimeout(() => {
         respawnTimer = null;
@@ -1765,8 +1770,8 @@ function assertMethodParams(
 
 const videoChatPlugin = {
   id: VIDEO_CHAT_PLUGIN_ID,
-  name: "Video Chat",
-  description: "Video chat gateway methods and sidecar worker",
+  name: "Claw Cast",
+  description: "Claw Cast gateway methods and sidecar worker",
   register(api: OpenClawPluginApi) {
     let sidecar: VideoChatAgentSidecar | null = null;
 
@@ -1780,7 +1785,7 @@ const videoChatPlugin = {
       const runtimeGateway = gateway ?? resolveGatewayRuntimeFromConfig(config);
       if (!runtimeGateway) {
         api.logger.warn(
-          "video chat agent sidecar disabled: gateway runtime details are unavailable",
+          "Claw Cast agent sidecar disabled: gateway runtime details are unavailable",
         );
         return;
       }
@@ -1838,7 +1843,7 @@ const videoChatPlugin = {
           respondGatewayError(
             respond,
             "UNAVAILABLE",
-            error instanceof Error ? error.message : "failed to load video chat config",
+            error instanceof Error ? error.message : "failed to load Claw Cast config",
           );
         }
       },
@@ -1857,7 +1862,7 @@ const videoChatPlugin = {
           respondGatewayError(
             respond,
             "UNAVAILABLE",
-            error instanceof Error ? error.message : "failed to load video chat setup",
+            error instanceof Error ? error.message : "failed to load Claw Cast setup",
           );
         }
       },
@@ -1877,7 +1882,7 @@ const videoChatPlugin = {
           respond(true, { setup: buildVideoChatConfigResponse(nextConfig) });
         } catch (error) {
           const message =
-            error instanceof Error ? error.message : "failed to save video chat setup";
+            error instanceof Error ? error.message : "failed to save Claw Cast setup";
           const isInvalid = message.includes("invalid videoChat.setup.save params");
           respondGatewayError(respond, isInvalid ? "INVALID_REQUEST" : "UNAVAILABLE", message);
         }
@@ -1914,7 +1919,7 @@ const videoChatPlugin = {
           respondGatewayError(
             respond,
             "INVALID_REQUEST",
-            error instanceof Error ? error.message : "video chat session creation failed",
+            error instanceof Error ? error.message : "Claw Cast session creation failed",
           );
         }
       },
@@ -1941,7 +1946,7 @@ const videoChatPlugin = {
           respond(true, result);
         } catch (error) {
           const message =
-            error instanceof Error ? error.message : "video chat session stop failed";
+            error instanceof Error ? error.message : "Claw Cast session stop failed";
           respondGatewayError(
             respond,
             message.includes("invalid ") || message.endsWith(" is required")
@@ -1994,7 +1999,7 @@ const videoChatPlugin = {
           respond(true, result);
         } catch (error) {
           const message =
-            error instanceof Error ? error.message : "video chat transcription failed";
+            error instanceof Error ? error.message : "Claw Cast transcription failed";
           const invalidMessages = new Set([
             "audio data is required",
             "invalid base64 audio payload",
@@ -2036,7 +2041,7 @@ const videoChatPlugin = {
           respond(true, result);
         } catch (error) {
           const message =
-            error instanceof Error ? error.message : "video chat TTS generation failed";
+            error instanceof Error ? error.message : "Claw Cast TTS generation failed";
           respondGatewayError(
             respond,
             message === "text is required" ? "INVALID_REQUEST" : "UNAVAILABLE",

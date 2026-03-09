@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenClaw Video Chat</title>
+    <title>Claw Cast</title>
     <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
@@ -231,7 +231,7 @@
       }
 
       .avatar-shell {
-        display: block;
+        display: grid;
         width: 100%;
         max-width: 100%;
       }
@@ -240,14 +240,107 @@
         position: relative;
         width: min(var(--avatar-pane-width), 100%);
         max-width: 100%;
+      }
+
+      .room-status {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .room-status__text {
+        min-width: 0;
+      }
+
+      .room-status__spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid rgba(96, 165, 250, 0.24);
+        border-top-color: currentColor;
+        border-radius: 999px;
+        animation: room-status-spin 0.75s linear infinite;
+        flex-shrink: 0;
+      }
+
+      @keyframes room-status-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .avatar-pane {
         aspect-ratio: var(--avatar-aspect-ratio);
         border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
+        border-radius: 18px;
         overflow: hidden;
         background: #030712;
+        isolation: isolate;
+      }
+
+      .avatar-toolbar {
+        position: absolute;
+        inset: 0 0 auto 0;
+        z-index: 3;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 14px 18px;
+        background: linear-gradient(180deg, rgba(2, 6, 23, 0.86) 0%, rgba(2, 6, 23, 0.38) 68%, transparent 100%);
+      }
+
+      .avatar-toolbar__meta {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+      }
+
+      .avatar-toolbar__status-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .avatar-toolbar__status-dot {
+        flex-shrink: 0;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--warn);
+        box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
+      }
+
+      .avatar-toolbar__status-dot.ok {
+        background: var(--ok);
+        box-shadow: 0 0 8px rgba(34, 197, 94, 0.45);
+      }
+
+      .avatar-toolbar__status-dot.warn {
+        background: var(--warn);
+        box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
+      }
+
+      .avatar-toolbar__status-dot.danger {
+        background: var(--danger);
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+      }
+
+      .avatar-toolbar__status {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        font-weight: 600;
+        color: #f8fafc;
+        text-shadow: 0 1px 2px rgba(2, 6, 23, 0.5);
       }
 
       .avatar-media {
+        position: absolute;
+        inset: 0;
         width: 100%;
         height: 100%;
         display: grid;
@@ -268,18 +361,90 @@
       }
 
       .avatar-placeholder {
-        margin: 0;
-        padding: 0 20px;
+        position: absolute;
+        inset: 0;
+        z-index: 5;
+        display: grid;
+        place-items: center;
+        padding: 28px;
         text-align: center;
-        color: var(--muted);
+        background:
+          radial-gradient(circle at top, rgba(59, 130, 246, 0.16), transparent 36%),
+          linear-gradient(180deg, rgba(2, 6, 23, 0.96), rgba(2, 6, 23, 0.98));
+      }
+
+      .avatar-placeholder[hidden] {
+        display: none;
+      }
+
+      .avatar-placeholder__content {
+        max-width: 420px;
+        display: grid;
+        gap: 16px;
+        justify-items: center;
+      }
+
+      .avatar-placeholder__icon {
+        width: min(220px, 55%);
+        aspect-ratio: 1;
+        border-radius: 28px;
+        border: 1px solid rgba(96, 165, 250, 0.18);
+        background:
+          linear-gradient(180deg, rgba(30, 41, 59, 0.72), rgba(15, 23, 42, 0.92)),
+          radial-gradient(circle at center, rgba(96, 165, 250, 0.18), transparent 62%);
+        position: relative;
+      }
+
+      .avatar-placeholder__icon::before,
+      .avatar-placeholder__icon::after {
+        content: "";
+        position: absolute;
+        border: 3px solid rgba(147, 197, 253, 0.9);
+        border-radius: 14px;
+      }
+
+      .avatar-placeholder__icon::before {
+        width: 42%;
+        height: 42%;
+        left: 16%;
+        top: 16%;
+      }
+
+      .avatar-placeholder__icon::after {
+        width: 42%;
+        height: 42%;
+        right: 16%;
+        bottom: 16%;
+      }
+
+      .avatar-placeholder__title {
+        margin: 0;
+        font-size: clamp(28px, 3vw, 40px);
+        line-height: 1.05;
+      }
+
+      .avatar-placeholder__copy {
+        margin: 0;
+        max-width: 34ch;
+        color: var(--muted-foreground);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .avatar-placeholder__status {
+        font-size: 14px;
+        color: rgba(191, 219, 254, 0.92);
+      }
+
+      .avatar-pane--document-picture-in-picture-active .avatar-toolbar,
+      .avatar-pane--document-picture-in-picture-active .avatar-media,
+      .avatar-pane--document-picture-in-picture-active .avatar-resize-handle {
+        visibility: hidden;
       }
 
       .avatar-controls {
-        position: absolute;
-        right: 14px;
-        bottom: 14px;
-        z-index: 3;
         display: inline-flex;
+        align-items: center;
         gap: 10px;
       }
 
@@ -308,6 +473,29 @@
 
       .avatar-control.is-muted {
         color: #f87171;
+      }
+
+      .avatar-control.is-active {
+        color: var(--accent);
+        border-color: rgba(56, 189, 248, 0.55);
+        background: rgba(14, 165, 233, 0.18);
+      }
+
+      .avatar-pane--picture-in-picture {
+        width: 100%;
+        height: 100%;
+        aspect-ratio: auto;
+        border-color: rgba(148, 163, 184, 0.22);
+        border-radius: 20px;
+        box-shadow: 0 18px 40px rgba(2, 6, 23, 0.36);
+      }
+
+      .avatar-pane--picture-in-picture .avatar-toolbar {
+        padding: 12px 12px 18px;
+      }
+
+      .avatar-pane--picture-in-picture .avatar-resize-handle {
+        display: none;
       }
 
       .avatar-resize-handle {
@@ -456,7 +644,7 @@
           </button>
           <div class="brand">
             <div class="brand-text">
-              <span class="brand-title">Video Chat Plugin</span>
+              <span class="brand-title">Claw Cast Plugin</span>
               <span class="brand-sub">Runtime Controls</span>
             </div>
           </div>
@@ -528,7 +716,7 @@
                   <rect x="2" y="6" width="14" height="12" rx="2" ry="2"></rect>
                 </svg>
               </span>
-              <span class="nav-item__text">Video Chat</span>
+              <span class="nav-item__text">Claw Cast</span>
             </a>
             <a class="nav-item" href="/plugins/video-chat/config">
               <span class="nav-item__icon" aria-hidden="true">
@@ -550,7 +738,7 @@
           <div class="content-header">
             <div class="video-chat-header">
               <div>
-                <h1 class="page-title">Video Chat</h1>
+                <h1 class="page-title">Claw Cast</h1>
                 <p class="page-sub">Session controls, avatar preview, and a docked text chat workspace.</p>
               </div>
               <button
@@ -590,45 +778,101 @@
             <section class="card stack video-chat-section avatar-card" id="avatar-card">
               <header class="video-chat-head">
                 <h2 class="card-title">Avatar</h2>
-                <p class="card-sub">Avatar stream appears after session start and keeps the full frame in view.</p>
               </header>
-              <p id="room-status" class="callout info">No active room connection.</p>
+              <div id="room-status" class="callout info room-status" role="status" aria-live="polite">
+                <span class="room-status__text" id="room-status-text">Disconnected</span>
+                <span class="room-status__spinner" id="room-status-spinner" hidden aria-hidden="true"></span>
+              </div>
               <div class="avatar-shell">
-                <div class="avatar-pane" id="avatar-pane">
-                  <div class="avatar-media" id="avatar-media">
-                    <p class="avatar-placeholder" id="avatar-placeholder">
-                      Start a session to load the avatar stream.
-                    </p>
+                <div class="avatar-pane" id="avatar-pane" hidden>
+                  <div class="avatar-toolbar">
+                    <div class="avatar-toolbar__meta">
+                      <span class="avatar-toolbar__status-indicator">
+                        <span class="avatar-toolbar__status-dot warn" id="avatar-toolbar-status-dot" aria-hidden="true"></span>
+                        <span class="avatar-toolbar__status" id="avatar-toolbar-status">Connecting...</span>
+                      </span>
+                    </div>
+                    <div class="avatar-controls">
+                      <button
+                        class="btn avatar-control"
+                        type="button"
+                        id="reconnect-room"
+                        aria-label="Reconnect avatar"
+                        title="Reconnect avatar"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M21 12a9 9 0 0 1-15.36 6.36"></path>
+                          <path d="M3 12A9 9 0 0 1 18.36 5.64"></path>
+                          <path d="M21 3v6h-6"></path>
+                          <path d="M3 21v-6h6"></path>
+                        </svg>
+                      </button>
+                      <button
+                        class="btn avatar-control"
+                        type="button"
+                        id="toggle-mic"
+                        aria-label="Mute microphone"
+                        title="Mute microphone"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M12 1v10"></path>
+                          <rect x="8" y="2" width="8" height="12" rx="4"></rect>
+                          <path d="M19 11v1a7 7 0 0 1-14 0v-1"></path>
+                          <path d="M12 19v4"></path>
+                          <path d="M8 23h8"></path>
+                        </svg>
+                      </button>
+                      <button
+                        class="btn avatar-control"
+                        type="button"
+                        id="toggle-speaker"
+                        aria-label="Mute speaker"
+                        title="Mute speaker"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <polygon points="11 5 6 9 3 9 3 15 6 15 11 19 11 5"></polygon>
+                          <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
+                          <path d="M18.5 5.5a9 9 0 0 1 0 13"></path>
+                        </svg>
+                      </button>
+                      <button
+                        class="btn avatar-control"
+                        type="button"
+                        id="toggle-picture-in-picture"
+                        aria-label="Pop out avatar"
+                        title="Pop out avatar"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M15 3h6v6"></path>
+                          <path d="M10 14 21 3"></path>
+                          <path d="M21 14v5a2 2 0 0 1-2 2h-5"></path>
+                          <path d="M10 3H5a2 2 0 0 0-2 2v5"></path>
+                        </svg>
+                      </button>
+                    </div>
                   </div>
-                  <div class="avatar-controls">
-                    <button
-                      class="btn avatar-control"
-                      type="button"
-                      id="toggle-mic"
-                      aria-label="Mute microphone"
-                      title="Mute microphone"
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 1v10"></path>
-                        <rect x="8" y="2" width="8" height="12" rx="4"></rect>
-                        <path d="M19 11v1a7 7 0 0 1-14 0v-1"></path>
-                        <path d="M12 19v4"></path>
-                        <path d="M8 23h8"></path>
-                      </svg>
-                    </button>
-                    <button
-                      class="btn avatar-control"
-                      type="button"
-                      id="toggle-speaker"
-                      aria-label="Mute speaker"
-                      title="Mute speaker"
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <polygon points="11 5 6 9 3 9 3 15 6 15 11 19 11 5"></polygon>
-                        <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
-                        <path d="M18.5 5.5a9 9 0 0 1 0 13"></path>
-                      </svg>
-                    </button>
+                  <div class="avatar-media" id="avatar-media"></div>
+                  <div class="avatar-placeholder" id="avatar-placeholder" hidden>
+                    <div class="avatar-placeholder__content">
+                      <div class="avatar-placeholder__icon" aria-hidden="true"></div>
+                      <h3 class="avatar-placeholder__title">Claw cast is in another window</h3>
+                      <p class="avatar-placeholder__copy">
+                        Picture-in-picture allows you to take your Claw Cast out of this tab.
+                      </p>
+                      <div class="avatar-placeholder__status" id="avatar-placeholder-status">
+                        <span class="avatar-toolbar__status-indicator">
+                          <span
+                            class="avatar-toolbar__status-dot warn"
+                            id="avatar-placeholder-status-dot"
+                            aria-hidden="true"
+                          ></span>
+                          <span class="avatar-toolbar__status" id="avatar-placeholder-status-text">Connecting...</span>
+                        </span>
+                      </div>
+                      <button class="btn primary" type="button" id="avatar-pip-return">
+                        Bring the avatar back here
+                      </button>
+                    </div>
                   </div>
                   <button
                     class="avatar-resize-handle"

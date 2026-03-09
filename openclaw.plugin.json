@@ -1,7 +1,7 @@
 {
   "id": "video-chat",
-  "name": "Video Chat",
-  "description": "Video chat gateway methods and sidecar worker",
+  "name": "Claw Cast",
+  "description": "Claw Cast gateway methods and sidecar worker",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
