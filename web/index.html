@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Claw Case</title>
+    <title>Claw Cast</title>
     <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
@@ -292,16 +292,34 @@
 
       .avatar-toolbar__meta {
         min-width: 0;
-        display: grid;
-        gap: 3px;
+        display: flex;
+        align-items: center;
       }
 
-      .avatar-toolbar__label {
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: rgba(226, 232, 240, 0.72);
+      .avatar-toolbar__status-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .avatar-toolbar__status-dot {
+        flex-shrink: 0;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--warn);
+        box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
+      }
+
+      .avatar-toolbar__status-dot.ok {
+        background: var(--ok);
+        box-shadow: 0 0 8px rgba(34, 197, 94, 0.45);
+      }
+
+      .avatar-toolbar__status-dot.warn {
+        background: var(--warn);
+        box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
       }
 
       .avatar-toolbar__status {
@@ -765,8 +783,10 @@
                 <div class="avatar-pane" id="avatar-pane" hidden>
                   <div class="avatar-toolbar">
                     <div class="avatar-toolbar__meta">
-                      <span class="avatar-toolbar__label">Avatar</span>
-                      <span class="avatar-toolbar__status" id="avatar-toolbar-status">No active room connection.</span>
+                      <span class="avatar-toolbar__status-indicator">
+                        <span class="avatar-toolbar__status-dot warn" id="avatar-toolbar-status-dot" aria-hidden="true"></span>
+                        <span class="avatar-toolbar__status" id="avatar-toolbar-status">Connecting...</span>
+                      </span>
                     </div>
                     <div class="avatar-controls">
                       <button

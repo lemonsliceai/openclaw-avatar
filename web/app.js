@@ -38,6 +38,7 @@ const avatarMediaEl = document.getElementById("avatar-media");
 const avatarPlaceholderEl = document.getElementById("avatar-placeholder");
 const avatarPlaceholderStatusEl = document.getElementById("avatar-placeholder-status");
 const avatarPictureInPictureReturnButton = document.getElementById("avatar-pip-return");
+const avatarToolbarStatusDotEl = document.getElementById("avatar-toolbar-status-dot");
 const avatarToolbarStatusEl = document.getElementById("avatar-toolbar-status");
 const avatarResizeHandleEl = document.getElementById("avatar-resize-handle");
 const connectRoomButton = document.getElementById("connect-room");
@@ -141,17 +142,26 @@ function setRoomStatus(text, options = {}) {
     return;
   }
   const loading = Boolean(options.loading);
+  const avatarToolbarStatus = getAvatarToolbarStatusState();
+  if (avatarToolbarStatusDotEl) {
+    avatarToolbarStatusDotEl.classList.remove("ok", "warn");
+    avatarToolbarStatusDotEl.classList.add(avatarToolbarStatus.tone);
+  }
   if (avatarToolbarStatusEl) {
-    avatarToolbarStatusEl.textContent = text;
-    avatarToolbarStatusEl.title = text;
+    avatarToolbarStatusEl.textContent = avatarToolbarStatus.text;
+    avatarToolbarStatusEl.title = avatarToolbarStatus.text;
   }
   if (avatarPlaceholderStatusEl) {
     avatarPlaceholderStatusEl.textContent = text;
     avatarPlaceholderStatusEl.title = text;
   }
   if (avatarDocumentPictureInPictureElements?.statusEl) {
-    avatarDocumentPictureInPictureElements.statusEl.textContent = text;
-    avatarDocumentPictureInPictureElements.statusEl.title = text;
+    avatarDocumentPictureInPictureElements.statusEl.textContent = avatarToolbarStatus.text;
+    avatarDocumentPictureInPictureElements.statusEl.title = avatarToolbarStatus.text;
+  }
+  if (avatarDocumentPictureInPictureElements?.statusDotEl) {
+    avatarDocumentPictureInPictureElements.statusDotEl.classList.remove("ok", "warn");
+    avatarDocumentPictureInPictureElements.statusDotEl.classList.add(avatarToolbarStatus.tone);
   }
   if (roomStatusTextEl) {
     roomStatusTextEl.textContent = text;
@@ -162,6 +172,25 @@ function setRoomStatus(text, options = {}) {
   if (roomStatusSpinnerEl) {
     roomStatusSpinnerEl.hidden = !loading;
   }
+}
+
+function getAvatarToolbarStatusState() {
+  const normalizedConnectionState =
+    typeof roomConnectionState === "string" ? roomConnectionState.trim().toLowerCase() : "";
+
+  if (activeRoom && normalizedConnectionState === "connected" && hasAvatarVideo()) {
+    return { text: "Connected", tone: "ok" };
+  }
+
+  if (
+    avatarLoadPending ||
+    activeSession ||
+    (activeRoom && normalizedConnectionState && normalizedConnectionState !== "disconnected")
+  ) {
+    return { text: "Connecting...", tone: "warn" };
+  }
+
+  return { text: "Connecting...", tone: "warn" };
 }
 
 function getGatewayToken() {
@@ -1207,16 +1236,34 @@ function getAvatarDocumentPictureInPictureStyles() {
 
     .avatar-toolbar__meta {
       min-width: 0;
-      display: grid;
-      gap: 3px;
+      display: flex;
+      align-items: center;
     }
 
-    .avatar-toolbar__label {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: rgba(226, 232, 240, 0.72);
+    .avatar-toolbar__status-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .avatar-toolbar__status-dot {
+      flex-shrink: 0;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #f59e0b;
+      box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
+    }
+
+    .avatar-toolbar__status-dot.ok {
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.45);
+    }
+
+    .avatar-toolbar__status-dot.warn {
+      background: #f59e0b;
+      box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
     }
 
     .avatar-toolbar__status {
@@ -1445,15 +1492,19 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   const metaEl = pictureInPictureDocument.createElement("div");
   metaEl.className = "avatar-toolbar__meta";
 
-  const labelEl = pictureInPictureDocument.createElement("span");
-  labelEl.className = "avatar-toolbar__label";
-  labelEl.textContent = "Avatar";
+  const statusIndicatorEl = pictureInPictureDocument.createElement("span");
+  statusIndicatorEl.className = "avatar-toolbar__status-indicator";
+
+  const statusDotEl = pictureInPictureDocument.createElement("span");
+  statusDotEl.className = "avatar-toolbar__status-dot warn";
+  statusDotEl.setAttribute("aria-hidden", "true");
 
   const statusEl = pictureInPictureDocument.createElement("span");
   statusEl.className = "avatar-toolbar__status";
-  statusEl.textContent = roomStatusTextEl?.textContent || "No active room connection.";
+  statusEl.textContent = getAvatarToolbarStatusState().text;
 
-  metaEl.append(labelEl, statusEl);
+  statusIndicatorEl.append(statusDotEl, statusEl);
+  metaEl.append(statusIndicatorEl);
 
   const controlsEl = pictureInPictureDocument.createElement("div");
   controlsEl.className = "avatar-controls";
@@ -1494,6 +1545,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     micButton,
     paneEl,
     speakerButton,
+    statusDotEl,
     statusEl,
     videoEl,
   };
@@ -1609,7 +1661,7 @@ async function enterAvatarDocumentPictureInPicture() {
   };
 
   pictureInPictureDocument.documentElement.lang = document.documentElement.lang || "en";
-  pictureInPictureDocument.title = "Claw Case";
+  pictureInPictureDocument.title = "Claw Cast";
   pictureInPictureDocument.body.className = "video-chat-pip";
   pictureInPictureDocument.body.textContent = "";
 
