@@ -268,6 +268,31 @@ function createChatComposerAttachmentsContainer(ownerDocument, className, id = "
   return container;
 }
 
+function getChatComposerAttachmentsContainer(key = "main") {
+  return normalizeChatComposerKey(key) === "pip" ? avatarDocumentPictureInPictureElements?.chatAttachments || null : chatAttachmentsEl;
+}
+
+function setChatComposerAttachmentRemoveButtonsInteractive(container, interactive) {
+  if (!container) {
+    return;
+  }
+  const isInteractive = interactive !== false;
+  const removeButtons = Array.from(container.querySelectorAll(".chat-attachment__remove"));
+  for (const removeButton of removeButtons) {
+    if (!isButtonElement(removeButton)) {
+      continue;
+    }
+    removeButton.disabled = !isInteractive;
+    if (isInteractive) {
+      removeButton.removeAttribute("aria-disabled");
+      removeButton.removeAttribute("tabindex");
+    } else {
+      removeButton.setAttribute("aria-disabled", "true");
+      removeButton.tabIndex = -1;
+    }
+  }
+}
+
 function ensureChatComposerAttachmentsContainer() {
   if (!chatForm) {
     return null;
@@ -830,11 +855,8 @@ function applyAvatarMessageBubbleStyles(element) {
   if (!element) {
     return;
   }
-  element.style.position = "absolute";
-  element.style.left = "24px";
-  element.style.bottom = "16%";
-  element.style.transform = "none";
-  element.style.width = "min(78%, 34rem)";
+  element.style.display = "block";
+  element.style.maxWidth = "min(78vw, 34rem)";
   element.style.padding = "12px 16px";
   element.style.borderRadius = "18px";
   element.style.border = "1px solid rgba(255, 255, 255, 0.14)";
@@ -845,9 +867,53 @@ function applyAvatarMessageBubbleStyles(element) {
   element.style.lineHeight = "1.4";
   element.style.textAlign = "left";
   element.style.boxShadow = "0 18px 38px rgba(2, 6, 23, 0.4)";
-  element.style.opacity = "0";
-  element.style.transition = "opacity 260ms ease, transform 260ms ease";
   element.style.wordBreak = "break-word";
+}
+
+function applyAvatarMessagePayloadStyles(element) {
+  if (!element) {
+    return;
+  }
+  element.style.position = "absolute";
+  element.style.left = "24px";
+  element.style.bottom = "16%";
+  element.style.display = "flex";
+  element.style.flexDirection = "column";
+  element.style.alignItems = "flex-start";
+  element.style.gap = "10px";
+  element.style.transform = "none";
+  element.style.opacity = "0";
+  element.style.pointerEvents = "none";
+  element.style.transition = "opacity 260ms ease, transform 260ms ease";
+}
+
+function applyAvatarMessageBubbleAttachmentsStyles(element, sourceRect = null) {
+  if (!element) {
+    return;
+  }
+  if (sourceRect && sourceRect.width > 0) {
+    element.style.width = `${sourceRect.width}px`;
+    element.style.maxWidth = `${sourceRect.width}px`;
+  }
+  element.style.margin = "0";
+  element.style.pointerEvents = "none";
+}
+
+function copyComputedElementStyles(sourceElement, targetElement) {
+  if (!sourceElement || !targetElement) {
+    return;
+  }
+  const sourceWindow = sourceElement.ownerDocument?.defaultView || window;
+  const computedStyles = sourceWindow.getComputedStyle(sourceElement);
+  for (const propertyName of computedStyles) {
+    targetElement.style.setProperty(propertyName, computedStyles.getPropertyValue(propertyName));
+  }
+  const sourceChildren = Array.from(sourceElement.children);
+  const targetChildren = Array.from(targetElement.children);
+  const childCount = Math.min(sourceChildren.length, targetChildren.length);
+  for (let index = 0; index < childCount; index += 1) {
+    copyComputedElementStyles(sourceChildren[index], targetChildren[index]);
+  }
 }
 
 function clearAvatarMessageOverlayState(overlayEl, state = {}) {
@@ -874,7 +940,11 @@ function createAnimationFrameHandle(view, callback) {
 
 function animateAvatarSentMessage(message, options = {}) {
   const normalizedMessage = typeof message === "string" ? message.trim() : "";
-  if (!normalizedMessage) {
+  const sourceAttachmentsContainer = options.sourceAttachmentsContainer?.isConnected
+    ? options.sourceAttachmentsContainer
+    : null;
+  const hasAttachments = Boolean(sourceAttachmentsContainer);
+  if (!normalizedMessage && !hasAttachments) {
     return;
   }
 
@@ -903,24 +973,45 @@ function animateAvatarSentMessage(message, options = {}) {
   applyAvatarMessageOverlayStyles(overlayEl);
   clearAvatarMessageOverlayState(overlayEl, overlayState);
 
-  const bubbleEl = overlayDocument.createElement("div");
-  bubbleEl.className = "avatar-message-overlay__bubble";
-  bubbleEl.textContent = normalizedMessage;
-  applyAvatarMessageBubbleStyles(bubbleEl);
-  overlayEl.appendChild(bubbleEl);
+  const payloadEl = overlayDocument.createElement("div");
+  payloadEl.className = "avatar-message-overlay__bubble";
+  applyAvatarMessagePayloadStyles(payloadEl);
+
+  let attachmentsPreviewRect = null;
+  let bubbleEl = null;
+  if (normalizedMessage) {
+    bubbleEl = overlayDocument.createElement("div");
+    const messageTextEl = overlayDocument.createElement("div");
+    applyAvatarMessageBubbleStyles(bubbleEl);
+    messageTextEl.textContent = normalizedMessage;
+    bubbleEl.appendChild(messageTextEl);
+    payloadEl.appendChild(bubbleEl);
+  }
+  if (hasAttachments) {
+    setChatComposerAttachmentRemoveButtonsInteractive(sourceAttachmentsContainer, false);
+    attachmentsPreviewRect = sourceAttachmentsContainer.getBoundingClientRect();
+    const attachmentsPreviewEl = sourceAttachmentsContainer.cloneNode(true);
+    attachmentsPreviewEl.removeAttribute("id");
+    attachmentsPreviewEl.setAttribute("aria-hidden", "true");
+    copyComputedElementStyles(sourceAttachmentsContainer, attachmentsPreviewEl);
+    applyAvatarMessageBubbleAttachmentsStyles(attachmentsPreviewEl, attachmentsPreviewRect);
+    setChatComposerAttachmentRemoveButtonsInteractive(attachmentsPreviewEl, false);
+    payloadEl.prepend(attachmentsPreviewEl);
+  }
+  overlayEl.appendChild(payloadEl);
 
   const revealBubble = () => {
-    bubbleEl.classList.add("is-visible");
-    bubbleEl.style.transition = "opacity 260ms ease, transform 260ms ease";
-    bubbleEl.style.opacity = "1";
-    bubbleEl.style.transform = "none";
+    payloadEl.classList.add("is-visible");
+    payloadEl.style.transition = "opacity 260ms ease, transform 260ms ease";
+    payloadEl.style.opacity = "1";
+    payloadEl.style.transform = "none";
     overlayState.hideTimer = overlayWindow.setTimeout(() => {
-      bubbleEl.classList.add("is-fading");
-      bubbleEl.style.opacity = "0";
-      bubbleEl.style.transform = "translateY(-10px)";
+      payloadEl.classList.add("is-fading");
+      payloadEl.style.opacity = "0";
+      payloadEl.style.transform = "translateY(-10px)";
       overlayState.hideTimer = overlayWindow.setTimeout(() => {
-        if (overlayEl.contains(bubbleEl)) {
-          bubbleEl.remove();
+        if (overlayEl.contains(payloadEl)) {
+          payloadEl.remove();
         }
         overlayState.hideTimer = null;
       }, 320);
@@ -933,39 +1024,52 @@ function animateAvatarSentMessage(message, options = {}) {
   }
 
   const overlayRect = overlayEl.getBoundingClientRect();
-  const bubbleRect = bubbleEl.getBoundingClientRect();
+  const payloadRect = payloadEl.getBoundingClientRect();
+  const bubbleRect = bubbleEl?.getBoundingClientRect() || null;
   const sourceRect = sourceInput.getBoundingClientRect();
+  const sourceAttachmentsRect = attachmentsPreviewRect || sourceAttachmentsContainer?.getBoundingClientRect() || null;
   if (overlayRect.width <= 0 || overlayRect.height <= 0 || sourceRect.width <= 0 || sourceRect.height <= 0) {
     revealBubble();
     return;
   }
 
-  const targetLeft = bubbleRect.left;
-  const targetTop = bubbleRect.top;
-  const startLeft = sourceRect.left + 9;
-  const startTop = sourceRect.top + Math.max(6, sourceRect.height - bubbleRect.height - 8);
+  const targetLeft = payloadRect.left;
+  const targetTop = payloadRect.top;
+  const bubbleStartLeft = sourceRect.left + 9;
+  const bubbleStartTop = sourceRect.top + Math.max(6, sourceRect.height - (bubbleRect?.height || payloadRect.height) - 8);
+  const startLeft = sourceAttachmentsRect ? sourceAttachmentsRect.left : bubbleStartLeft;
+  const startTop = sourceAttachmentsRect ? sourceAttachmentsRect.top : bubbleStartTop;
   const deltaX = startLeft - targetLeft;
   const deltaY = startTop - targetTop;
 
-  bubbleEl.style.opacity = "0";
-  bubbleEl.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+  payloadEl.style.opacity = "0";
+  payloadEl.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+  if (bubbleEl && sourceAttachmentsRect && bubbleRect) {
+    const bubbleDeltaX = bubbleStartLeft - (bubbleRect.left + deltaX);
+    const bubbleDeltaY = bubbleStartTop - (bubbleRect.top + deltaY);
+    bubbleEl.style.transform = `translate(${bubbleDeltaX}px, ${bubbleDeltaY}px)`;
+  }
 
   overlayState.fadeFrame = createAnimationFrameHandle(sourceWindow, () => {
-    bubbleEl.style.transition =
+    payloadEl.style.transition =
       "transform 520ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease";
-    bubbleEl.style.opacity = "1";
-    bubbleEl.style.transform = "none";
+    payloadEl.style.opacity = "1";
+    payloadEl.style.transform = "none";
+    if (bubbleEl) {
+      bubbleEl.style.transition = "transform 520ms cubic-bezier(0.22, 1, 0.36, 1)";
+      bubbleEl.style.transform = "none";
+    }
     overlayState.fadeFrame = null;
   });
 
   overlayState.hideTimer = overlayWindow.setTimeout(() => {
-    bubbleEl.classList.add("is-fading");
-    bubbleEl.style.transition = "opacity 260ms ease, transform 260ms ease";
-    bubbleEl.style.opacity = "0";
-    bubbleEl.style.transform = "translateY(-10px)";
+    payloadEl.classList.add("is-fading");
+    payloadEl.style.transition = "opacity 260ms ease, transform 260ms ease";
+    payloadEl.style.opacity = "0";
+    payloadEl.style.transform = "translateY(-10px)";
     overlayState.hideTimer = overlayWindow.setTimeout(() => {
-      if (overlayEl.contains(bubbleEl)) {
-        bubbleEl.remove();
+      if (overlayEl.contains(payloadEl)) {
+        payloadEl.remove();
       }
       overlayState.hideTimer = null;
     }, 320);
@@ -4419,6 +4523,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   const sourceInput = isTextAreaElement(options.sourceInput) ? options.sourceInput : null;
   const sourceComposer = normalizeChatComposerKey(options.sourceComposer);
   const composerDraft = getChatComposerDraft(sourceComposer);
+  const sourceAttachmentsContainer = getChatComposerAttachmentsContainer(sourceComposer);
   const attachments = composerDraft.attachments.map((attachment) => ({ ...attachment }));
   if (!message && attachments.length === 0) {
     return false;
@@ -4442,7 +4547,10 @@ async function submitChatMessage(rawMessage, options = {}) {
       alt: attachment.name || "Pasted image",
     })),
   }, { awaitingReply: true });
-  animateAvatarSentMessage(message, { sourceInput });
+  animateAvatarSentMessage(message, {
+    sourceInput,
+    sourceAttachmentsContainer,
+  });
   setChatComposerInputValue(sourceInput, "");
   clearChatComposerAttachments(sourceComposer);
   syncAvatarDocumentPictureInPictureChatComposer();
