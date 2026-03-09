@@ -1,34 +1,60 @@
 # OpenClaw Claw Cast Plugin
 
-External OpenClaw plugin that adds a LiveKit + LemonSlice Claw Cast experience with setup UI, room controls, text chat, STT, and TTS.
+Standalone OpenClaw plugin that adds a LiveKit + LemonSlice Claw Cast experience with plugin-owned setup, browser session controls, text chat, speech-to-text, and text-to-speech.
 
-## Architecture (Concise)
+## What Ships
 
-- Gateway plugin runtime (`video-chat/index.ts`)
-  - Registers gateway methods (`videoChat.*`), HTTP routes, and `video-chat-agent` sidecar service.
-  - Creates room/session tokens and dispatches LiveKit agent jobs.
-- Browser UI (`web/index.html`, `web/app.js`)
-  - Setup form, session controls, LiveKit room view, and text chat panel.
-  - Calls plugin HTTP routes and gateway RPC.
-- Sidecar worker
-  - Runs the Claw Cast agent entrypoint (`gateway video-chat-agent`) as a child process.
-  - Connects to LiveKit and starts the LemonSlice avatar session.
+- Gateway extension: `video-chat/index.ts`
+- Sidecar helpers:
+  - `video-chat/video-chat-agent-bridge.mjs`
+  - `video-chat/video-chat-agent-runner-wrapper.mjs`
+  - `video-chat/video-chat-agent-runner.js`
+  - `video-chat/sidecar-process-control.ts`
+- Web UI:
+  - `web/index.html`
+  - `web/settings.html`
+  - `web/app.js`
+  - `styles/`
+- Plugin manifest: `openclaw.plugin.json`
 
-## Where Keys/Config Are Stored
+`package.json` uses a `files` allowlist so `npm pack` only includes the runtime files above and excludes tests, local dependencies, and editor artifacts.
 
-- Persistent plugin config is written to OpenClaw config under:
-  - `plugins.entries.video-chat.config.videoChat.provider`
-  - `plugins.entries.video-chat.config.videoChat.lemonSlice.apiKey`
-  - `plugins.entries.video-chat.config.videoChat.lemonSlice.imageUrl`
-  - `plugins.entries.video-chat.config.videoChat.livekit.url`
-  - `plugins.entries.video-chat.config.videoChat.livekit.apiKey`
-  - `plugins.entries.video-chat.config.videoChat.livekit.apiSecret`
-  - `plugins.entries.video-chat.config.messages.tts.elevenlabs.apiKey`
-  - `plugins.entries.video-chat.config.messages.tts.elevenlabs.voiceId`
-- OpenClaw config file location is typically `~/.openclaw/openclaw.json`.
-- Gateway token entered in the web UI is stored in browser `localStorage` using the same OpenClaw Control UI settings key:
-  - `openclaw.control.settings.v1` (`token` field)
-- Legacy plugin-only storage key `videoChat.gatewayToken` is automatically migrated on load.
+## Runtime Surface
+
+- Gateway methods:
+  - `videoChat.config`
+  - `videoChat.setup.get`
+  - `videoChat.setup.save`
+  - `videoChat.session.create`
+  - `videoChat.session.stop`
+  - `videoChat.audio.transcribe`
+  - `videoChat.tts.generate`
+- HTTP routes:
+  - `/plugins/video-chat`
+  - `/plugins/video-chat/config`
+  - `/plugins/video-chat/api/*`
+  - `/plugins/video-chat/styles/*`
+- Service:
+  - `video-chat-agent`
+- CLI command:
+  - `video-chat-setup`
+
+## Configuration
+
+The plugin persists its setup under the plugin entry in the OpenClaw config file:
+
+- `plugins.entries.video-chat.config.videoChat.provider`
+- `plugins.entries.video-chat.config.videoChat.lemonSlice.apiKey`
+- `plugins.entries.video-chat.config.videoChat.lemonSlice.imageUrl`
+- `plugins.entries.video-chat.config.videoChat.livekit.url`
+- `plugins.entries.video-chat.config.videoChat.livekit.apiKey`
+- `plugins.entries.video-chat.config.videoChat.livekit.apiSecret`
+- `plugins.entries.video-chat.config.messages.tts.elevenlabs.apiKey`
+- `plugins.entries.video-chat.config.messages.tts.elevenlabs.voiceId`
+
+OpenClaw typically stores that file at `~/.openclaw/openclaw.json`.
+
+The browser UI stores the gateway token in `localStorage` under `openclaw.control.settings.v1`. Legacy `videoChat.gatewayToken` values are migrated automatically.
 
 ## Install
 
@@ -40,31 +66,27 @@ openclaw plugins list
 
 ## Run
 
-1. Start/restart gateway:
+1. Start or restart the gateway:
+
 ```bash
 openclaw gateway run --force
 ```
 
-2. Open plugin UI:
+2. Open the plugin UI:
+
 ```text
 http://127.0.0.1:18789/plugins/video-chat/
 ```
 
-3. In the UI:
-- Enter gateway token (if gateway auth mode is token) and click `Use Token`.
-- Fill setup values and click `Save Setup`.
-- Click `Start Session`, then `Join Room`.
-- Use the avatar pop-out control to keep the remote avatar visible in browser picture-in-picture while you switch tabs.
+3. Configure the plugin with either:
+  - the browser config page at `/plugins/video-chat/config`
+  - the registered `video-chat-setup` CLI command, using flags or interactive prompts
 
-4. Verify plugin config/status:
-```bash
-openclaw gateway call videoChat.config --params '{}'
-openclaw gateway call videoChat.setup.get --params '{}'
-```
+4. Start a session, join the room, and use the chat, STT, and TTS controls from the page.
 
-## Manual Sidecar Run (Debug)
+## Manual Sidecar Run
 
-If needed, run agent worker directly in a separate terminal:
+For debugging the LiveKit agent directly:
 
 ```bash
 LIVEKIT_URL="wss://<your-livekit-host>" \
@@ -77,24 +99,25 @@ node /Users/scott/Documents/GitHub/openclaw/dist/index.js gateway video-chat-age
 ```
 
 Notes:
-- `LEMONSLICE_IMAGE_URL` must be a direct image URL, not a directory/base path.
-- You can override auto-discovery with `OPENCLAW_VIDEO_CHAT_AGENT_RUNNER=<absolute path to video-chat-agent-runner.js>`.
 
-## Commands Exposed by Plugin
+- `LEMONSLICE_IMAGE_URL` must be a direct image URL, not a directory URL.
+- `OPENCLAW_VIDEO_CHAT_AGENT_RUNNER` can override the runner path auto-discovery.
 
-- Methods:
-  - `videoChat.config`
-  - `videoChat.setup.get`
-  - `videoChat.setup.save`
-  - `videoChat.session.create`
-  - `videoChat.audio.transcribe`
-  - `videoChat.tts.generate`
-- Service:
-  - `video-chat-agent`
+## Verification
 
-## Local Checks
+Release validation is codified in the project scripts:
 
 ```bash
 npm run typecheck
 npm test
+npm run pack:check
+npm run validate
 ```
+
+Current automated coverage includes:
+
+- gateway method registration and request validation
+- plugin-owned config overlay behavior
+- HTTP route serving for the shipped UI/API entry points
+- sidecar process-group shutdown and reset behavior
+- TTS and STT integration points through the plugin runtime mock
