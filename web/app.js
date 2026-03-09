@@ -4525,6 +4525,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   const composerDraft = getChatComposerDraft(sourceComposer);
   const sourceAttachmentsContainer = getChatComposerAttachmentsContainer(sourceComposer);
   const attachments = composerDraft.attachments.map((attachment) => ({ ...attachment }));
+  const hasAttachments = attachments.length > 0;
   if (!message && attachments.length === 0) {
     return false;
   }
@@ -4538,18 +4539,24 @@ async function submitChatMessage(rawMessage, options = {}) {
   }
 
   const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-  const rpcAttachments = buildChatSendAttachments(attachments);
+  const rpcAttachments = hasAttachments ? buildChatSendAttachments(attachments) : [];
   setChatPaneOpen(true);
-  appendChatLine("user", {
-    text: message,
-    images: attachments.map((attachment) => ({
-      url: attachment.dataUrl,
-      alt: attachment.name || "Pasted image",
-    })),
-  }, { awaitingReply: true });
+  appendChatLine(
+    "user",
+    hasAttachments
+      ? {
+          text: message,
+          images: attachments.map((attachment) => ({
+            url: attachment.dataUrl,
+            alt: attachment.name || "Pasted image",
+          })),
+        }
+      : message,
+    { awaitingReply: true },
+  );
   animateAvatarSentMessage(message, {
     sourceInput,
-    sourceAttachmentsContainer,
+    sourceAttachmentsContainer: hasAttachments ? sourceAttachmentsContainer : null,
   });
   setChatComposerInputValue(sourceInput, "");
   clearChatComposerAttachments(sourceComposer);
