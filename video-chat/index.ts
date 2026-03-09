@@ -24,21 +24,26 @@ const VIDEO_CHAT_ROOM_PART_FALLBACK = "main";
 const VIDEO_CHAT_ROOM_PART_MAX_LENGTH = 48;
 const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
+const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
   configured: boolean;
   missing: string[];
   lemonSlice: {
+    apiKey: string | null;
     apiKeyConfigured: boolean;
     imageUrl: string | null;
   };
   livekit: {
     url: string | null;
+    apiKey: string | null;
     apiKeyConfigured: boolean;
+    apiSecret: string | null;
     apiSecretConfigured: boolean;
   };
   tts: {
+    elevenLabsApiKey: string | null;
     elevenLabsApiKeyConfigured: boolean;
     elevenLabsVoiceId: string | null;
   };
@@ -131,6 +136,14 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeOptionalSetupSecretString(value: unknown): string | undefined {
+  const trimmed = normalizeOptionalString(value);
+  if (!trimmed) {
+    return undefined;
+  }
+  return REDACTED_SECRET_VALUES.has(trimmed) ? undefined : trimmed;
 }
 
 function validateLemonSliceImageUrl(value: string): string | null {
@@ -442,6 +455,12 @@ function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigRe
   const livekit = effective.videoChat?.livekit;
   const elevenLabs = effective.messages?.tts?.elevenlabs;
   const missing: string[] = [];
+  const readSecretValue = (value: unknown, path: string): string | null => {
+    if (!hasConfiguredSecretInput(value)) {
+      return null;
+    }
+    return normalizeResolvedSecretInputString({ value, path });
+  };
 
   if (provider !== "lemonslice") {
     missing.push("videoChat.provider");
@@ -470,15 +489,19 @@ function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigRe
     configured: missing.length === 0,
     missing,
     lemonSlice: {
+      apiKey: readSecretValue(lemonSlice?.apiKey, "videoChat.lemonSlice.apiKey"),
       apiKeyConfigured: hasConfiguredSecretInput(lemonSlice?.apiKey),
       imageUrl: normalizeOptionalString(lemonSlice?.imageUrl) ?? null,
     },
     livekit: {
       url: normalizeOptionalString(livekit?.url) ?? null,
+      apiKey: readSecretValue(livekit?.apiKey, "videoChat.livekit.apiKey"),
       apiKeyConfigured: hasConfiguredSecretInput(livekit?.apiKey),
+      apiSecret: readSecretValue(livekit?.apiSecret, "videoChat.livekit.apiSecret"),
       apiSecretConfigured: hasConfiguredSecretInput(livekit?.apiSecret),
     },
     tts: {
+      elevenLabsApiKey: readSecretValue(elevenLabs?.apiKey, "messages.tts.elevenlabs.apiKey"),
       elevenLabsApiKeyConfigured: hasConfiguredSecretInput(elevenLabs?.apiKey),
       elevenLabsVoiceId: normalizeOptionalString(elevenLabs?.voiceId) ?? null,
     },
@@ -527,7 +550,7 @@ function applyVideoChatSetupToConfig(
 ): OpenClawConfig {
   const effective = resolveEffectiveVideoChatConfig(config);
   const lemonSliceApiKey =
-    normalizeOptionalString(setupInput.lemonSliceApiKey) ??
+    normalizeOptionalSetupSecretString(setupInput.lemonSliceApiKey) ??
     effective.videoChat?.lemonSlice?.apiKey;
   const lemonSliceImageUrl =
     normalizeOptionalString(setupInput.lemonSliceImageUrl) ??
@@ -535,12 +558,13 @@ function applyVideoChatSetupToConfig(
   const livekitUrl =
     normalizeOptionalString(setupInput.livekitUrl) ?? effective.videoChat?.livekit?.url;
   const livekitApiKey =
-    normalizeOptionalString(setupInput.livekitApiKey) ?? effective.videoChat?.livekit?.apiKey;
+    normalizeOptionalSetupSecretString(setupInput.livekitApiKey) ??
+    effective.videoChat?.livekit?.apiKey;
   const livekitApiSecret =
-    normalizeOptionalString(setupInput.livekitApiSecret) ??
+    normalizeOptionalSetupSecretString(setupInput.livekitApiSecret) ??
     effective.videoChat?.livekit?.apiSecret;
   const elevenLabsApiKey =
-    normalizeOptionalString(setupInput.elevenLabsApiKey) ??
+    normalizeOptionalSetupSecretString(setupInput.elevenLabsApiKey) ??
     effective.messages?.tts?.elevenlabs?.apiKey;
   const elevenLabsVoiceId =
     normalizeOptionalString(setupInput.elevenLabsVoiceId) ??

@@ -371,6 +371,48 @@ describe("video-chat plugin", () => {
     expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
   });
 
+  it("saves setup values while preserving redacted secrets", async () => {
+    const { methods, runtime } = setup();
+    const respond = await invoke(methods, "videoChat.setup.save", {
+      lemonSliceApiKey: "_REDACTED_",
+      lemonSliceImageUrl: "https://example.com/new-avatar.png",
+      livekitUrl: "wss://new.livekit.cloud",
+      livekitApiKey: "__OPENCLAW_REDACTED__",
+      livekitApiSecret: "_REDACTED_",
+      elevenLabsApiKey: "__OPENCLAW_REDACTED__",
+      elevenLabsVoiceId: "voice-1234",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(runtime.config.writeConfigFile).toHaveBeenCalledTimes(1);
+    const savedConfig = vi.mocked(runtime.config.writeConfigFile).mock.calls[0]?.[0] as
+      | {
+          plugins?: {
+            entries?: {
+              "video-chat"?: {
+                config?: {
+                  videoChat?: {
+                    lemonSlice?: { apiKey?: string; imageUrl?: string };
+                    livekit?: { url?: string; apiKey?: string; apiSecret?: string };
+                  };
+                  messages?: { tts?: { elevenlabs?: { apiKey?: string; voiceId?: string } } };
+                };
+              };
+            };
+          };
+        }
+      | undefined;
+    const pluginConfig = savedConfig?.plugins?.entries?.["video-chat"]?.config;
+    expect(pluginConfig?.videoChat?.lemonSlice?.apiKey).toBe("ls-key");
+    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe("https://example.com/new-avatar.png");
+    expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
+    expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
+    expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
+    expect(pluginConfig?.messages?.tts?.elevenlabs?.apiKey).toBe("eleven-key");
+    expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
+  });
+
   it("rejects invalid setup save params", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.setup.save", {
@@ -511,6 +553,16 @@ describe("video-chat plugin", () => {
       success: true,
       setup: {
         configured: true,
+        lemonSlice: {
+          apiKey: "ls-key",
+        },
+        livekit: {
+          apiKey: "lk-key",
+          apiSecret: "lk-secret",
+        },
+        tts: {
+          elevenLabsApiKey: "eleven-key",
+        },
       },
     });
   });

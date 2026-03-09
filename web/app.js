@@ -13,6 +13,7 @@ const setupSaveButton = document.querySelector('button[form="setup-form"][type="
 const stopSessionButton = document.getElementById("stop-session");
 const tokenForm = document.getElementById("token-form");
 const tokenInput = document.getElementById("gateway-token");
+const toggleTokenVisibilityButton = document.getElementById("toggle-token-visibility");
 const clearTokenButton = document.getElementById("clear-token");
 const replaceTokenButton = document.getElementById("replace-token");
 const navCollapseButton = document.getElementById("nav-collapse-toggle");
@@ -129,16 +130,19 @@ let gatewayRequestCounter = 0;
 const gatewayPendingRequests = new Map();
 const sensitiveFieldReplaceButtons = Array.from(document.querySelectorAll("[data-replace-secret]"));
 const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
+const sensitiveFieldVisibilityButtons = Array.from(document.querySelectorAll("[data-toggle-secret-visibility]"));
 const configSectionFilterButtons = Array.from(document.querySelectorAll("[data-section-filter]"));
 const configSectionCards = Array.from(document.querySelectorAll("[data-config-section]"));
 const configModeButtons = Array.from(document.querySelectorAll("[data-config-mode]"));
 const secretEditState = new Set();
+const secretVisibilityState = new Set();
 const mobileChatPaneMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 960px)") : null;
 const systemThemeMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
 let activeThemePreference = "system";
 let tokenEditMode = false;
+let tokenVisible = false;
 let latestSetupStatus = null;
 let activeConfigSectionFilter = "all";
 let activeConfigMode = "form";
@@ -1099,16 +1103,49 @@ function preventSensitiveCopy(event) {
   event.preventDefault();
 }
 
+function setSensitiveInputVisible(input, visible) {
+  if (!input) {
+    return;
+  }
+  input.type = visible ? "text" : "password";
+}
+
+function getStoredSetupSecretValue(setup, fieldName) {
+  switch (fieldName) {
+    case "lemonSliceApiKey":
+      return normalizeOptionalInputValue(setup?.lemonSlice?.apiKey);
+    case "livekitApiKey":
+      return normalizeOptionalInputValue(setup?.livekit?.apiKey);
+    case "livekitApiSecret":
+      return normalizeOptionalInputValue(setup?.livekit?.apiSecret);
+    case "elevenLabsApiKey":
+      return normalizeOptionalInputValue(setup?.tts?.elevenLabsApiKey);
+    default:
+      return "";
+  }
+}
+
+function updateSensitiveVisibilityButton(button, visible, label) {
+  if (!button) {
+    return;
+  }
+  const action = visible ? "Hide" : "Show";
+  button.setAttribute("aria-pressed", visible ? "true" : "false");
+  button.setAttribute("aria-label", `${action} ${label}`);
+  button.setAttribute("title", `${action} ${label}`);
+}
+
 function maskSensitiveField(input, isMasked) {
   if (!input) {
     return;
   }
   if (isMasked) {
-    input.value = "";
     input.placeholder = REDACTED_SECRET_VALUE;
-    input.disabled = true;
+    input.readOnly = true;
+    input.setAttribute("aria-readonly", "true");
   } else {
-    input.disabled = false;
+    input.readOnly = false;
+    input.removeAttribute("aria-readonly");
     input.placeholder = "";
   }
 }
@@ -1127,7 +1164,13 @@ function updateSensitiveFieldMasking(setup) {
   for (const [fieldName, configured] of configuredMap.entries()) {
     const input = setupForm.elements.namedItem(fieldName);
     const editing = secretEditState.has(fieldName);
+    const storedValue = getStoredSetupSecretValue(setup, fieldName);
+    const visible = secretVisibilityState.has(fieldName);
+    if (configured && !editing && input && typeof input.value === "string") {
+      input.value = storedValue;
+    }
     maskSensitiveField(input, configured && !editing);
+    setSensitiveInputVisible(input, visible && configured && !editing);
   }
 
   for (const button of sensitiveFieldReplaceButtons) {
@@ -1139,6 +1182,21 @@ function updateSensitiveFieldMasking(setup) {
     }
     button.style.display = "";
     button.textContent = secretEditState.has(fieldName) ? "Cancel" : "Replace";
+  }
+
+  for (const button of sensitiveFieldVisibilityButtons) {
+    const fieldName = button.getAttribute("data-toggle-secret-visibility");
+    const configured = configuredMap.get(fieldName);
+    if (!fieldName || !configured) {
+      button.style.display = "none";
+      continue;
+    }
+    button.style.display = "";
+    updateSensitiveVisibilityButton(
+      button,
+      secretVisibilityState.has(fieldName),
+      button.getAttribute("data-secret-label") || "secret",
+    );
   }
 
   updateSetupSaveButtonState();
@@ -1199,7 +1257,7 @@ function buildSetupPayloadFromForm() {
       continue;
     }
     const isSecretField = isSetupSecretFieldName(name);
-    payload[name] = field.disabled && isSecretField ? REDACTED_SECRET_VALUE : field.value;
+    payload[name] = field.readOnly && isSecretField ? REDACTED_SECRET_VALUE : field.value;
   }
   return payload;
 }
@@ -1210,6 +1268,7 @@ function applySetupPayloadToForm(payload) {
   }
 
   secretEditState.clear();
+  secretVisibilityState.clear();
   for (const name of setupSecretFieldNames) {
     if (!hasOwn(payload, name)) {
       continue;
@@ -1226,7 +1285,7 @@ function applySetupPayloadToForm(payload) {
       continue;
     }
     const field = setupForm.elements.namedItem(name);
-    if (!field || field.disabled || typeof field.value !== "string") {
+    if (!field || field.readOnly || typeof field.value !== "string") {
       continue;
     }
     const value = payload[name];
@@ -1332,7 +1391,7 @@ function isSecretFieldDirty(name) {
     return false;
   }
   const field = setupForm.elements.namedItem(name);
-  if (!field || field.disabled) {
+  if (!field || field.readOnly) {
     return false;
   }
   return normalizeOptionalInputValue(field.value).length > 0;
@@ -1408,16 +1467,21 @@ function updateTokenFieldMasking() {
   const hasStoredToken = hasGatewayToken();
   const shouldMask = hasStoredToken && !tokenEditMode;
   if (shouldMask) {
-    tokenInput.value = "";
-    tokenInput.placeholder = "******** (stored)";
+    tokenInput.value = getGatewayToken();
+    tokenInput.placeholder = "";
     tokenInput.disabled = true;
   } else {
     tokenInput.disabled = false;
     tokenInput.placeholder = "";
   }
+  setSensitiveInputVisible(tokenInput, tokenVisible && shouldMask);
   if (replaceTokenButton) {
     replaceTokenButton.style.display = hasStoredToken ? "" : "none";
     replaceTokenButton.textContent = tokenEditMode ? "Cancel" : "Replace";
+  }
+  if (toggleTokenVisibilityButton) {
+    toggleTokenVisibilityButton.style.display = hasStoredToken && !tokenEditMode ? "" : "none";
+    updateSensitiveVisibilityButton(toggleTokenVisibilityButton, tokenVisible && shouldMask, "gateway token");
   }
 }
 
@@ -2447,7 +2511,9 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   const pipAttachments = getChatComposerDraft("pip").attachments;
   const hasDraft = hasChatComposerDraftValue(pipChatInput.value, pipAttachments);
   pipChatInput.disabled = !hasSession;
-  pipChatInput.placeholder = hasSession ? "Message" : "Start a session to message";
+  pipChatInput.placeholder = hasSession
+    ? "Message (↵ to send, Shift+↵ for line breaks, paste images)"
+    : "Start a session to message";
   pipChatInput.title = disabledTitle;
   pipChatSendButton.disabled = !hasSession;
   pipChatSendButton.hidden = !hasDraft;
@@ -2598,7 +2664,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
 
   const chatInputEl = pictureInPictureDocument.createElement("textarea");
   chatInputEl.rows = 1;
-  chatInputEl.placeholder = "Message";
+  chatInputEl.placeholder = "Message (↵ to send, Shift+↵ for line breaks, paste images)";
   chatInputEl.autocomplete = "off";
   chatInputEl.spellcheck = true;
   chatInputEl.setAttribute("aria-label", "Message");
@@ -4206,6 +4272,7 @@ async function saveSetupPayload(body) {
   updateKeysHealthFromSetup(payload.setup);
   populateSetupFormFromSetupStatus(payload.setup);
   secretEditState.clear();
+  secretVisibilityState.clear();
   syncSetupEditorsFromCurrentForm();
   setOutput({ action: "setup-saved", setup: payload.setup });
   return payload;
@@ -4215,6 +4282,7 @@ async function refreshSetupStatus() {
   if (!hasGatewayToken()) {
     latestSetupStatus = null;
     secretEditState.clear();
+    secretVisibilityState.clear();
     syncSetupEditorsFromCurrentForm();
     if (statusEl) {
       statusEl.textContent = "Enter a gateway token above, then click Use Token.";
@@ -4240,6 +4308,7 @@ async function refreshSetupStatus() {
     syncSetupEditorsFromCurrentForm();
   } catch (error) {
     latestSetupStatus = null;
+    secretVisibilityState.clear();
     syncSetupEditorsFromCurrentForm();
     const message = error instanceof Error ? error.message : "Failed to load status";
     if (statusEl) {
@@ -4278,6 +4347,7 @@ if (setupForm) {
       } else {
         secretEditState.add(fieldName);
       }
+      secretVisibilityState.delete(fieldName);
       updateSensitiveFieldMasking(latestSetupStatus);
       const input = setupForm.elements.namedItem(fieldName);
       if (input && !input.disabled) {
@@ -4287,11 +4357,24 @@ if (setupForm) {
       updateSetupSaveButtonState();
     });
   }
+  for (const button of sensitiveFieldVisibilityButtons) {
+    button.addEventListener("click", () => {
+      const fieldName = button.getAttribute("data-toggle-secret-visibility");
+      if (!fieldName || !setupForm) {
+        return;
+      }
+      if (secretVisibilityState.has(fieldName)) {
+        secretVisibilityState.delete(fieldName);
+      } else {
+        secretVisibilityState.add(fieldName);
+      }
+      updateSensitiveFieldMasking(latestSetupStatus);
+    });
+  }
 
   setupForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const formData = new FormData(setupForm);
-    const body = Object.fromEntries(formData.entries());
+    const body = buildSetupPayloadFromForm();
     try {
       await saveSetupPayload(body);
     } catch (error) {
@@ -4641,11 +4724,19 @@ if (tokenInput) {
 if (replaceTokenButton) {
   replaceTokenButton.addEventListener("click", () => {
     tokenEditMode = !tokenEditMode;
+    tokenVisible = false;
     updateTokenFieldMasking();
     if (tokenEditMode && tokenInput) {
       tokenInput.value = "";
       tokenInput.focus();
     }
+  });
+}
+
+if (toggleTokenVisibilityButton) {
+  toggleTokenVisibilityButton.addEventListener("click", () => {
+    tokenVisible = !tokenVisible;
+    updateTokenFieldMasking();
   });
 }
 
@@ -4658,6 +4749,7 @@ if (clearTokenButton) {
       tokenInput.value = "";
     }
     tokenEditMode = false;
+    tokenVisible = false;
     updateTokenFieldMasking();
     updateRoomButtons();
     updateChatControls();
