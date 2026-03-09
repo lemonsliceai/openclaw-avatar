@@ -78,6 +78,7 @@ const AVATAR_PIP_VERTICAL_PADDING = 20;
 const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
 const AVATAR_PIP_MIN_VIDEO_HEIGHT = 220;
 const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
+const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
@@ -1308,14 +1309,17 @@ function getAvatarDocumentPictureInPictureStyles() {
     }
 
     .avatar-control--danger svg {
-      display: block;
+      display: none;
+    }
+
+    .avatar-control--danger::before {
+      content: "";
       width: 22px;
       height: 22px;
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 2.6;
-      stroke-linecap: round;
-      stroke-linejoin: round;
+      display: block;
+      background: currentColor;
+      -webkit-mask: url("${AVATAR_PIP_END_CALL_ICON_URL}") center / contain no-repeat;
+      mask: url("${AVATAR_PIP_END_CALL_ICON_URL}") center / contain no-repeat;
     }
 
     .avatar-resize-handle {
@@ -1338,13 +1342,7 @@ function createAvatarDocumentPictureInPictureEndCallButton(ownerDocument) {
   button.className = "btn avatar-control avatar-control--danger";
   button.setAttribute("aria-label", "End session");
   button.setAttribute("title", "End session");
-  button.innerHTML = `
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4.75 15.35c2.06-1.9 4.64-2.85 7.25-2.85s5.19.95 7.25 2.85"></path>
-      <path d="M6.5 14.85 5.1 17.35"></path>
-      <path d="M17.5 14.85l1.4 2.5"></path>
-    </svg>
-  `;
+  button.innerHTML = "<svg aria-hidden=\"true\"></svg>";
   return button;
 }
 
