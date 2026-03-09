@@ -162,6 +162,15 @@ function isButtonElement(element) {
   return Boolean(element && typeof element === "object" && element.nodeType === 1 && element.tagName === "BUTTON");
 }
 
+function isBlobLike(value) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof value.arrayBuffer === "function" &&
+      typeof value.type === "string",
+  );
+}
+
 function nextChatComposerAttachmentId() {
   chatComposerAttachmentIdCounter += 1;
   return `chat-attachment-${Date.now()}-${chatComposerAttachmentIdCounter}`;
@@ -173,7 +182,7 @@ function isSupportedChatImageMimeType(mimeType) {
 
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
-    if (!(file instanceof Blob)) {
+    if (!isBlobLike(file)) {
       reject(new Error("Clipboard item is not a file."));
       return;
     }
@@ -193,11 +202,13 @@ function extractImageFilesFromClipboardEvent(event) {
   const itemFiles = clipboardItems
     .filter((item) => item?.kind === "file" && isSupportedChatImageMimeType(item.type))
     .map((item) => item.getAsFile())
-    .filter((file) => file instanceof File);
+    .filter((file) => isBlobLike(file));
   if (itemFiles.length > 0) {
     return itemFiles;
   }
-  return Array.from(event?.clipboardData?.files || []).filter((file) => isSupportedChatImageMimeType(file?.type));
+  return Array.from(event?.clipboardData?.files || []).filter(
+    (file) => isBlobLike(file) && isSupportedChatImageMimeType(file?.type),
+  );
 }
 
 function createChatComposerAttachmentPreview(attachment, ownerDocument, options = {}) {
@@ -268,7 +279,7 @@ function ensureAvatarDocumentPictureInPictureChatAttachmentsContainer() {
   if (!avatarDocumentPictureInPictureElements.chatAttachments) {
     avatarDocumentPictureInPictureElements.chatAttachments = createChatComposerAttachmentsContainer(
       avatarDocumentPictureInPictureElements.chatForm.ownerDocument || document,
-      "avatar-pip-chat-attachments",
+      "chat-attachments",
     );
   }
   const { chatAttachments, chatForm: pipChatForm, chatInput: pipChatInput } = avatarDocumentPictureInPictureElements;
@@ -1779,6 +1790,9 @@ function getAvatarDocumentPictureInPictureStyles() {
   return `
     :root {
       color-scheme: dark;
+      --bg: #020617;
+      --panel: rgba(15, 23, 42, 0.88);
+      --border: rgba(148, 163, 184, 0.22);
     }
 
     html,
@@ -1921,34 +1935,69 @@ function getAvatarDocumentPictureInPictureStyles() {
       box-shadow: none;
     }
 
-    .avatar-pip-chat-attachments {
-      display: flex;
+    .avatar-pip-chat-compose .chat-attachments {
+      display: inline-flex;
       flex-wrap: wrap;
       gap: 8px;
-      padding: 10px;
-      border-radius: 16px;
-      background: rgba(2, 6, 23, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      backdrop-filter: blur(18px) saturate(140%);
-      box-shadow:
-        inset 0 1px 0 rgba(255, 255, 255, 0.05),
-        0 14px 32px rgba(2, 6, 23, 0.3);
+      padding: 8px;
+      background: var(--panel);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      width: fit-content;
+      max-width: 100%;
+      align-self: flex-start;
     }
 
-    .avatar-pip-chat-attachments[hidden] {
-      display: none;
+    .avatar-pip-chat-compose .chat-attachment {
+      position: relative;
+      width: 80px;
+      height: 80px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--bg);
     }
 
-    .avatar-pip-chat-attachments .chat-attachment {
-      width: 56px;
-      height: 56px;
-      border-color: rgba(255, 255, 255, 0.12);
-      background: rgba(15, 23, 42, 0.72);
+    .avatar-pip-chat-compose .chat-attachment__img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
     }
 
-    .avatar-pip-chat-attachments .chat-attachment__remove {
+    .avatar-pip-chat-compose .chat-attachment__remove {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(0, 0, 0, 0.7);
+      color: #fff;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 150ms ease-out;
+    }
+
+    .avatar-pip-chat-compose .chat-attachment:hover .chat-attachment__remove {
       opacity: 1;
-      background: rgba(15, 23, 42, 0.82);
+    }
+
+    .avatar-pip-chat-compose .chat-attachment__remove:hover {
+      background: rgba(220, 38, 38, 0.9);
+    }
+
+    .avatar-pip-chat-compose .chat-attachment__remove svg {
+      width: 12px;
+      height: 12px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2px;
     }
 
     .avatar-pip-chat-compose textarea {
