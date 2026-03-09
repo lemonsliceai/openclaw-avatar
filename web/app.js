@@ -53,7 +53,7 @@ const togglePictureInPictureButton = document.getElementById("toggle-picture-in-
 const chatStatusEl = document.getElementById("chat-status");
 const chatLogEl = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
-const chatAttachmentsEl = document.getElementById("chat-attachments");
+let chatAttachmentsEl = document.getElementById("chat-attachments");
 const chatInput = document.getElementById("chat-input");
 const chatSendButton = document.getElementById("chat-send");
 
@@ -232,20 +232,73 @@ function createChatComposerAttachmentPreview(attachment, ownerDocument, options 
   return previewEl;
 }
 
+function createChatComposerAttachmentsContainer(ownerDocument, className, id = "") {
+  const container = ownerDocument.createElement("div");
+  container.className = className;
+  container.setAttribute("aria-label", "Pasted image attachments");
+  if (id) {
+    container.id = id;
+  }
+  return container;
+}
+
+function ensureChatComposerAttachmentsContainer() {
+  if (!chatForm) {
+    return null;
+  }
+  if (!chatAttachmentsEl) {
+    chatAttachmentsEl = createChatComposerAttachmentsContainer(document, "chat-attachments", "chat-attachments");
+  }
+  if (!chatAttachmentsEl.isConnected) {
+    chatForm.insertBefore(chatAttachmentsEl, chatInput?.closest(".chat-compose__row") || null);
+  }
+  return chatAttachmentsEl;
+}
+
+function removeChatComposerAttachmentsContainer() {
+  if (chatAttachmentsEl?.isConnected) {
+    chatAttachmentsEl.remove();
+  }
+}
+
+function ensureAvatarDocumentPictureInPictureChatAttachmentsContainer() {
+  if (!avatarDocumentPictureInPictureElements?.chatForm) {
+    return null;
+  }
+  if (!avatarDocumentPictureInPictureElements.chatAttachments) {
+    avatarDocumentPictureInPictureElements.chatAttachments = createChatComposerAttachmentsContainer(
+      avatarDocumentPictureInPictureElements.chatForm.ownerDocument || document,
+      "avatar-pip-chat-attachments",
+    );
+  }
+  const { chatAttachments, chatForm: pipChatForm, chatInput: pipChatInput } = avatarDocumentPictureInPictureElements;
+  if (!chatAttachments.isConnected) {
+    pipChatForm.insertBefore(chatAttachments, pipChatInput || null);
+  }
+  return chatAttachments;
+}
+
+function removeAvatarDocumentPictureInPictureChatAttachmentsContainer() {
+  if (avatarDocumentPictureInPictureElements?.chatAttachments?.isConnected) {
+    avatarDocumentPictureInPictureElements.chatAttachments.remove();
+  }
+}
+
 function renderChatComposerAttachments() {
+  if (chatComposerAttachments.length === 0) {
+    removeChatComposerAttachmentsContainer();
+    removeAvatarDocumentPictureInPictureChatAttachmentsContainer();
+    return;
+  }
   const attachmentContainers = [
-    chatAttachmentsEl,
-    avatarDocumentPictureInPictureElements?.chatAttachments || null,
+    ensureChatComposerAttachmentsContainer(),
+    ensureAvatarDocumentPictureInPictureChatAttachmentsContainer(),
   ];
   for (const container of attachmentContainers) {
     if (!container) {
       continue;
     }
     container.replaceChildren();
-    container.hidden = chatComposerAttachments.length === 0;
-    if (chatComposerAttachments.length === 0) {
-      continue;
-    }
     for (const attachment of chatComposerAttachments) {
       container.appendChild(
         createChatComposerAttachmentPreview(attachment, container.ownerDocument || document, {
@@ -2194,8 +2247,10 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   pipChatSendButton.setAttribute("aria-hidden", hasDraft ? "false" : "true");
   pipChatSendButton.title = hasSession ? "Send message" : disabledTitle;
   pipChatSendButton.setAttribute("aria-label", hasSession ? "Send message" : disabledTitle);
-  if (pipChatAttachments) {
-    pipChatAttachments.hidden = chatComposerAttachments.length === 0;
+  if (chatComposerAttachments.length > 0) {
+    ensureAvatarDocumentPictureInPictureChatAttachmentsContainer();
+  } else if (pipChatAttachments) {
+    removeAvatarDocumentPictureInPictureChatAttachmentsContainer();
   }
 }
 
@@ -2330,11 +2385,6 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   const chatFormEl = pictureInPictureDocument.createElement("form");
   chatFormEl.className = "avatar-pip-chat-compose";
 
-  const chatAttachmentsPreviewEl = pictureInPictureDocument.createElement("div");
-  chatAttachmentsPreviewEl.className = "avatar-pip-chat-attachments";
-  chatAttachmentsPreviewEl.hidden = true;
-  chatAttachmentsPreviewEl.setAttribute("aria-label", "Pasted image attachments");
-
   const chatInputEl = pictureInPictureDocument.createElement("textarea");
   chatInputEl.rows = 1;
   chatInputEl.placeholder = "Message";
@@ -2377,7 +2427,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     await submitChatMessage(chatInputEl.value, { sourceInput: chatInputEl });
   });
 
-  chatFormEl.append(chatAttachmentsPreviewEl, chatInputEl, chatSendButton);
+  chatFormEl.append(chatInputEl, chatSendButton);
   mediaEl.appendChild(chatFormEl);
 
   paneEl.append(toolbarEl, mediaEl);
@@ -2385,7 +2435,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
 
   avatarDocumentPictureInPictureElements = {
     captureSourceVideo: null,
-    chatAttachments: chatAttachmentsPreviewEl,
+    chatAttachments: null,
     chatForm: chatFormEl,
     chatInput: chatInputEl,
     chatSendButton,
@@ -3174,8 +3224,10 @@ function updateChatControls() {
   const hasSession = Boolean(activeSession);
   chatInput.disabled = !hasSession;
   chatSendButton.disabled = !hasSession;
-  if (chatAttachmentsEl) {
-    chatAttachmentsEl.hidden = chatComposerAttachments.length === 0;
+  if (chatComposerAttachments.length > 0) {
+    ensureChatComposerAttachmentsContainer();
+  } else {
+    removeChatComposerAttachmentsContainer();
   }
   syncChatInputHeight();
   syncAvatarDocumentPictureInPictureChatComposer();
