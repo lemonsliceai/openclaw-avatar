@@ -104,8 +104,6 @@ let avatarSpeakerMuted = false;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
 let avatarDocumentPictureInPictureElements = null;
-let avatarDocumentPictureInPictureResizeHandler = null;
-let avatarDocumentPictureInPictureIsAdjustingSize = false;
 let avatarPictureInPictureVideo = null;
 const avatarMessageOverlayState = {
   fadeFrame: null,
@@ -1363,38 +1361,6 @@ function getAvatarPictureInPictureWindowSize(options = {}) {
   };
 }
 
-function syncAvatarDocumentPictureInPictureWindowSize(options = {}) {
-  const pictureInPictureWindow = avatarDocumentPictureInPictureWindow;
-  if (
-    !pictureInPictureWindow ||
-    pictureInPictureWindow.closed ||
-    typeof pictureInPictureWindow.resizeTo !== "function" ||
-    avatarDocumentPictureInPictureIsAdjustingSize
-  ) {
-    return;
-  }
-
-  const nextSize = getAvatarPictureInPictureWindowSize({
-    preferredWidth: options.preferredWidth ?? pictureInPictureWindow.innerWidth,
-    preferredHeight: options.preferredHeight ?? pictureInPictureWindow.innerHeight,
-  });
-  const widthDelta = Math.abs((pictureInPictureWindow.innerWidth || 0) - nextSize.width);
-  const heightDelta = Math.abs((pictureInPictureWindow.innerHeight || 0) - nextSize.height);
-  if (widthDelta < 2 && heightDelta < 2) {
-    return;
-  }
-
-  avatarDocumentPictureInPictureIsAdjustingSize = true;
-  try {
-    pictureInPictureWindow.resizeTo(nextSize.width, nextSize.height);
-  } catch {
-    // Ignore browsers that disallow script-driven resizing.
-  }
-  window.setTimeout(() => {
-    avatarDocumentPictureInPictureIsAdjustingSize = false;
-  }, 0);
-}
-
 function getAvatarDocumentPictureInPictureStyles() {
   return `
     :root {
@@ -1876,9 +1842,6 @@ function cleanupAvatarDocumentPictureInPicture() {
   if (pictureInPictureWindow && avatarDocumentPictureInPictureCleanup) {
     pictureInPictureWindow.removeEventListener("pagehide", avatarDocumentPictureInPictureCleanup);
   }
-  if (pictureInPictureWindow && avatarDocumentPictureInPictureResizeHandler) {
-    pictureInPictureWindow.removeEventListener("resize", avatarDocumentPictureInPictureResizeHandler);
-  }
   if (avatarDocumentPictureInPictureElements?.videoEl) {
     avatarDocumentPictureInPictureElements.videoEl.pause?.();
     avatarDocumentPictureInPictureElements.videoEl.srcObject = null;
@@ -1892,8 +1855,6 @@ function cleanupAvatarDocumentPictureInPicture() {
   avatarDocumentPictureInPictureCleanup = null;
   avatarDocumentPictureInPictureWindow = null;
   avatarDocumentPictureInPictureElements = null;
-  avatarDocumentPictureInPictureResizeHandler = null;
-  avatarDocumentPictureInPictureIsAdjustingSize = false;
   updateAvatarUiState();
   updatePictureInPictureButtonState();
 }
@@ -2135,9 +2096,6 @@ async function enterAvatarDocumentPictureInPicture() {
 
   avatarDocumentPictureInPictureWindow = pictureInPictureWindow;
   avatarDocumentPictureInPictureCleanup = cleanupAvatarDocumentPictureInPicture;
-  avatarDocumentPictureInPictureResizeHandler = () => {
-    syncAvatarDocumentPictureInPictureWindowSize();
-  };
 
   pictureInPictureDocument.documentElement.lang = document.documentElement.lang || "en";
   pictureInPictureDocument.title = "Claw Cast";
@@ -2150,10 +2108,7 @@ async function enterAvatarDocumentPictureInPicture() {
 
   buildAvatarDocumentPictureInPictureView(pictureInPictureDocument);
   pictureInPictureWindow.addEventListener("pagehide", cleanupAvatarDocumentPictureInPicture);
-  pictureInPictureWindow.addEventListener("resize", avatarDocumentPictureInPictureResizeHandler);
   syncAvatarDocumentPictureInPicture();
-  syncAvatarDocumentPictureInPictureWindowSize();
-
   updateAvatarUiState();
   updatePictureInPictureButtonState();
 }
@@ -3109,7 +3064,6 @@ function attachTrackToContainer(track, container) {
       const updateRatio = () => {
         updateAvatarAspectRatio(element);
         syncAvatarDocumentPictureInPictureMedia();
-        syncAvatarDocumentPictureInPictureWindowSize();
       };
       element.addEventListener("loadedmetadata", updateRatio);
       element.addEventListener("resize", updateRatio);
