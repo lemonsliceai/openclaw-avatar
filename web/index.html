@@ -322,6 +322,11 @@
         box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
       }
 
+      .avatar-toolbar__status-dot.danger {
+        background: var(--danger);
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+      }
+
       .avatar-toolbar__status {
         min-width: 0;
         overflow: hidden;
@@ -789,6 +794,20 @@
                       </span>
                     </div>
                     <div class="avatar-controls">
+                      <button
+                        class="btn avatar-control"
+                        type="button"
+                        id="reconnect-room"
+                        aria-label="Reconnect avatar"
+                        title="Reconnect avatar"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M21 12a9 9 0 0 1-15.36 6.36"></path>
+                          <path d="M3 12A9 9 0 0 1 18.36 5.64"></path>
+                          <path d="M21 3v6h-6"></path>
+                          <path d="M3 21v-6h6"></path>
+                        </svg>
+                      </button>
                       <button
                         class="btn avatar-control"
                         type="button"

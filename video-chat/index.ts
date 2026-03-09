@@ -422,6 +422,17 @@ function createLiveKitAccessToken(params: {
   return `${signingInput}.${toBase64Url(signature)}`;
 }
 
+function validateVideoChatRoomName(roomName: string): string {
+  const normalizedRoomName = roomName.trim();
+  if (!normalizedRoomName) {
+    throw new Error("roomName is required");
+  }
+  if (!normalizedRoomName.startsWith(`${VIDEO_CHAT_ROOM_PREFIX}-`)) {
+    throw new Error("invalid Claw Cast room name");
+  }
+  return normalizedRoomName;
+}
+
 function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigResponse {
   const effective = resolveEffectiveVideoChatConfig(config);
   const provider = effective.videoChat?.provider === "lemonslice" ? "lemonslice" : null;
@@ -1513,13 +1524,7 @@ async function createVideoChatSession(params: {
 async function stopVideoChatSession(params: {
   roomName: string;
 }): Promise<VideoChatSessionStopResult> {
-  const roomName = params.roomName.trim();
-  if (!roomName) {
-    throw new Error("roomName is required");
-  }
-  if (!roomName.startsWith(`${VIDEO_CHAT_ROOM_PREFIX}-`)) {
-    throw new Error("invalid Claw Cast room name");
-  }
+  const roomName = validateVideoChatRoomName(params.roomName);
   return {
     stopped: true,
     roomName,

@@ -42,6 +42,7 @@ const avatarToolbarStatusDotEl = document.getElementById("avatar-toolbar-status-
 const avatarToolbarStatusEl = document.getElementById("avatar-toolbar-status");
 const avatarResizeHandleEl = document.getElementById("avatar-resize-handle");
 const connectRoomButton = document.getElementById("connect-room");
+const reconnectRoomButton = document.getElementById("reconnect-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const toggleMicButton = document.getElementById("toggle-mic");
 const toggleSpeakerButton = document.getElementById("toggle-speaker");
@@ -83,6 +84,7 @@ const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/ic
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
+const AVATAR_RECONNECTING_STATUS = "Reconnecting avatar...";
 const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
 const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
@@ -92,6 +94,7 @@ let activeRoom = null;
 let localAudioTrack = null;
 let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
+let avatarConnectionState = "idle";
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let avatarSpeakerMuted = false;
@@ -144,7 +147,7 @@ function setRoomStatus(text, options = {}) {
   const loading = Boolean(options.loading);
   const avatarToolbarStatus = getAvatarToolbarStatusState();
   if (avatarToolbarStatusDotEl) {
-    avatarToolbarStatusDotEl.classList.remove("ok", "warn");
+    avatarToolbarStatusDotEl.classList.remove("ok", "warn", "danger");
     avatarToolbarStatusDotEl.classList.add(avatarToolbarStatus.tone);
   }
   if (avatarToolbarStatusEl) {
@@ -160,7 +163,7 @@ function setRoomStatus(text, options = {}) {
     avatarDocumentPictureInPictureElements.statusEl.title = avatarToolbarStatus.text;
   }
   if (avatarDocumentPictureInPictureElements?.statusDotEl) {
-    avatarDocumentPictureInPictureElements.statusDotEl.classList.remove("ok", "warn");
+    avatarDocumentPictureInPictureElements.statusDotEl.classList.remove("ok", "warn", "danger");
     avatarDocumentPictureInPictureElements.statusDotEl.classList.add(avatarToolbarStatus.tone);
   }
   if (roomStatusTextEl) {
@@ -174,9 +177,31 @@ function setRoomStatus(text, options = {}) {
   }
 }
 
+function setAvatarConnectionState(nextState) {
+  avatarConnectionState =
+    typeof nextState === "string" && nextState.trim() ? nextState.trim().toLowerCase() : "idle";
+}
+
+function hasReconnectableSession() {
+  if (!activeSession || avatarLoadPending) {
+    return false;
+  }
+  const normalizedConnectionState =
+    typeof roomConnectionState === "string" ? roomConnectionState.trim().toLowerCase() : "";
+  return (
+    !activeRoom ||
+    normalizedConnectionState === "disconnected" ||
+    avatarConnectionState === "disconnected"
+  );
+}
+
 function getAvatarToolbarStatusState() {
   const normalizedConnectionState =
     typeof roomConnectionState === "string" ? roomConnectionState.trim().toLowerCase() : "";
+
+  if (avatarConnectionState === "disconnected") {
+    return { text: "Disconnected", tone: "danger" };
+  }
 
   if (activeRoom && normalizedConnectionState === "connected" && hasAvatarVideo()) {
     return { text: "Connected", tone: "ok" };
@@ -184,13 +209,14 @@ function getAvatarToolbarStatusState() {
 
   if (
     avatarLoadPending ||
+    avatarConnectionState === "connecting" ||
     activeSession ||
     (activeRoom && normalizedConnectionState && normalizedConnectionState !== "disconnected")
   ) {
     return { text: "Connecting...", tone: "warn" };
   }
 
-  return { text: "Connecting...", tone: "warn" };
+  return { text: "Disconnected", tone: "danger" };
 }
 
 function getGatewayToken() {
@@ -291,7 +317,7 @@ function setHealthStatus(dotEl, valueEl, tone, text) {
     return;
   }
   dotEl.classList.remove("ok", "warn");
-  if (tone === "ok" || tone === "warn") {
+  if (tone === "ok" || tone === "warn" || tone === "danger") {
     dotEl.classList.add(tone);
   }
   valueEl.textContent = text;
@@ -1266,6 +1292,11 @@ function getAvatarDocumentPictureInPictureStyles() {
       box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
     }
 
+    .avatar-toolbar__status-dot.danger {
+      background: #ef4444;
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+    }
+
     .avatar-toolbar__status {
       min-width: 0;
       overflow: hidden;
@@ -1398,6 +1429,7 @@ function syncAvatarDocumentPictureInPictureButtons() {
     return;
   }
   const buttonPairs = [
+    [reconnectRoomButton, avatarDocumentPictureInPictureElements.reconnectButton],
     [toggleMicButton, avatarDocumentPictureInPictureElements.micButton],
     [toggleSpeakerButton, avatarDocumentPictureInPictureElements.speakerButton],
   ];
@@ -1509,10 +1541,16 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   const controlsEl = pictureInPictureDocument.createElement("div");
   controlsEl.className = "avatar-controls";
 
+  const reconnectButton = cloneAvatarControlButton(reconnectRoomButton, pictureInPictureDocument);
   const micButton = cloneAvatarControlButton(toggleMicButton, pictureInPictureDocument);
   const speakerButton = cloneAvatarControlButton(toggleSpeakerButton, pictureInPictureDocument);
   const endSessionButton = createAvatarDocumentPictureInPictureEndCallButton(pictureInPictureDocument);
 
+  reconnectButton.addEventListener("click", () => {
+    void reconnectAvatarSession().catch((error) => {
+      setOutput({ action: "avatar-reconnect-failed", error: String(error) });
+    });
+  });
   micButton.addEventListener("click", () => {
     void toggleMicrophone();
   });
@@ -1523,7 +1561,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     void stopActiveSession();
   });
 
-  controlsEl.append(micButton, speakerButton, endSessionButton);
+  controlsEl.append(reconnectButton, micButton, speakerButton, endSessionButton);
   toolbarEl.append(metaEl, controlsEl);
 
   const mediaEl = pictureInPictureDocument.createElement("div");
@@ -1544,6 +1582,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     mediaEl,
     micButton,
     paneEl,
+    reconnectButton,
     speakerButton,
     statusDotEl,
     statusEl,
@@ -1824,9 +1863,13 @@ function updateRoomStatusState() {
     if (normalizedConnectionState && normalizedConnectionState !== "connected") {
       const isLoading = normalizedConnectionState !== "disconnected";
       setRoomStatus(
-        isLoading ? `Room state: ${normalizedConnectionState}` : "Disconnected from room.",
+        isLoading ? `Room state: ${normalizedConnectionState}` : "Disconnected from room. Reconnect to resume.",
         { loading: isLoading },
       );
+      return;
+    }
+    if (avatarConnectionState === "disconnected") {
+      setRoomStatus("Avatar disconnected. Reconnect to resume.");
       return;
     }
     if (!hasAvatarVideo()) {
@@ -1842,7 +1885,11 @@ function updateRoomStatusState() {
   }
 
   if (activeSession) {
-    if (normalizedConnectionState === "connected") {
+    if (avatarConnectionState === "disconnected") {
+      setRoomStatus("Avatar disconnected. Reconnect to resume.");
+      return;
+    }
+    if (normalizedConnectionState === "connected" || avatarConnectionState === "connecting") {
       setRoomStatus(AVATAR_LOADING_STATUS, { loading: true });
       return;
     }
@@ -1850,7 +1897,7 @@ function updateRoomStatusState() {
       setRoomStatus(`Room state: ${normalizedConnectionState}`, { loading: true });
       return;
     }
-    setRoomStatus("Disconnected from room.");
+    setRoomStatus("Disconnected from room. Reconnect to resume.");
     return;
   }
 
@@ -2395,6 +2442,9 @@ function attachTrackToContainer(track, container) {
   }
   container.appendChild(element);
   applyAvatarSpeakerMuteState();
+  if (track.kind === "video") {
+    markAvatarConnected();
+  }
   updateAvatarUiState();
 }
 
@@ -2416,11 +2466,26 @@ function releaseLocalTracks() {
   localAudioTrack = null;
 }
 
+function markAvatarConnected() {
+  setAvatarConnectionState("connected");
+  updateRoomStatusState();
+  updateRoomButtons();
+}
+
+function markAvatarDisconnected() {
+  setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+  updateRoomStatusState();
+  updateRoomButtons();
+}
+
 function updateRoomButtons() {
   const hasSession = Boolean(activeSession);
   const hasRoom = Boolean(activeRoom);
   if (connectRoomButton) {
     connectRoomButton.disabled = !hasSession || hasRoom;
+  }
+  if (reconnectRoomButton) {
+    reconnectRoomButton.disabled = !hasReconnectableSession();
   }
   if (leaveRoomButton) {
     leaveRoomButton.disabled = !hasRoom;
@@ -2446,6 +2511,7 @@ function removeParticipantTile(participantIdentity) {
   if (!isAvatarParticipantIdentity(participantIdentity)) {
     return;
   }
+  markAvatarDisconnected();
   clearRemoteTiles({ keepDocumentPictureInPicture: Boolean(activeRoom || activeSession) });
 }
 
@@ -2489,6 +2555,8 @@ function bindRoomEvents(room) {
     );
     if (!hasSubscribedTracks) {
       removeParticipantTile(participant.identity);
+    } else if (isAvatarParticipantIdentity(participant.identity) && !hasAvatarVideo()) {
+      markAvatarDisconnected();
     }
   });
   room.on(LIVEKIT.RoomEvent.ParticipantDisconnected, (participant) => {
@@ -2497,13 +2565,18 @@ function bindRoomEvents(room) {
   room.on(LIVEKIT.RoomEvent.ConnectionStateChanged, (state) => {
     roomConnectionState =
       typeof state === "string" && state.trim() ? state.trim().toLowerCase() : "disconnected";
+    if (roomConnectionState !== "connected") {
+      setAvatarConnectionState(activeSession ? "connecting" : "idle");
+    }
     updateRoomStatusState();
+    updateRoomButtons();
   });
   room.on(LIVEKIT.RoomEvent.Disconnected, () => {
     if (activeRoom !== room) {
       return;
     }
     roomConnectionState = "disconnected";
+    setAvatarConnectionState(activeSession ? "disconnected" : "idle");
     activeRoom = null;
     setAvatarLoadingState(false);
     releaseLocalTracks();
@@ -2512,7 +2585,7 @@ function bindRoomEvents(room) {
   });
 }
 
-async function connectToRoom() {
+async function connectToRoom(options = {}) {
   if (!activeSession) {
     throw new Error("Start a session first.");
   }
@@ -2527,7 +2600,12 @@ async function connectToRoom() {
 
   const connectGeneration = ++roomConnectGeneration;
   roomConnectionState = "connecting";
-  setAvatarLoadingState(false);
+  setAvatarConnectionState("connecting");
+  const loadingMessage =
+    typeof options.loadingMessage === "string" && options.loadingMessage.trim()
+      ? options.loadingMessage.trim()
+      : "";
+  setAvatarLoadingState(Boolean(loadingMessage), loadingMessage);
   updateRoomStatusState();
   const room = new LIVEKIT.Room({
     adaptiveStream: true,
@@ -2543,6 +2621,8 @@ async function connectToRoom() {
         room.disconnect();
       } catch {}
       roomConnectionState = "disconnected";
+      setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+      setAvatarLoadingState(false);
       releaseLocalTracks();
       updateRoomButtons();
       return;
@@ -2561,6 +2641,7 @@ async function connectToRoom() {
         activeRoom = null;
       }
       roomConnectionState = "disconnected";
+      setAvatarConnectionState(activeSession ? "disconnected" : "idle");
       setAvatarLoadingState(false);
       releaseLocalTracks();
       clearRemoteTiles();
@@ -2580,6 +2661,7 @@ async function connectToRoom() {
     updateRoomButtons();
   } catch (error) {
     roomConnectionState = "disconnected";
+    setAvatarConnectionState(activeSession ? "disconnected" : "idle");
     setAvatarLoadingState(false);
     try {
       room.disconnect();
@@ -2593,13 +2675,15 @@ async function connectToRoom() {
   }
 }
 
-function disconnectRoom() {
+function disconnectRoom(options = {}) {
+  const keepDocumentPictureInPicture = options.keepDocumentPictureInPicture === true;
   roomConnectGeneration += 1;
   roomConnectionState = "disconnected";
   setAvatarLoadingState(false);
+  setAvatarConnectionState(activeSession ? "disconnected" : "idle");
   if (!activeRoom) {
     releaseLocalTracks();
-    clearRemoteTiles();
+    clearRemoteTiles({ keepDocumentPictureInPicture });
     updateRoomButtons();
     return;
   }
@@ -2608,14 +2692,63 @@ function disconnectRoom() {
   } catch {}
   activeRoom = null;
   releaseLocalTracks();
-  clearRemoteTiles();
+  clearRemoteTiles({ keepDocumentPictureInPicture });
   updateRoomButtons();
+}
+
+async function reconnectAvatarSession() {
+  if (!activeSession?.sessionKey || !activeSession?.roomName) {
+    throw new Error("Start a session first.");
+  }
+
+  const priorSessionKey = activeSession.sessionKey;
+  const priorRoomName = activeSession.roomName;
+  const keepDocumentPictureInPicture = isAvatarDocumentPictureInPictureActive();
+
+  setAvatarConnectionState("connecting");
+  setAvatarLoadingState(true, AVATAR_RECONNECTING_STATUS);
+  updateRoomButtons();
+  try {
+    disconnectRoom({
+      keepDocumentPictureInPicture,
+    });
+    await requestJson("/plugins/video-chat/api/session/stop", {
+      method: "POST",
+      body: JSON.stringify({
+        roomName: priorRoomName,
+      }),
+    });
+    const payload = await requestJson("/plugins/video-chat/api/session", {
+      method: "POST",
+      body: JSON.stringify({ sessionKey: priorSessionKey }),
+    });
+    activeSession = payload.session;
+    setChatPaneOpen(true);
+    updateRoomButtons();
+    updateChatControls();
+    try {
+      await ensureGatewaySocketConnected();
+      await loadChatHistory();
+      setChatStatus(`Text chat ready for ${resolveChatSessionKey()}.`);
+    } catch (chatError) {
+      setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
+      appendChatLine("system", "Text chat initialization failed.");
+    }
+    await connectToRoom({ loadingMessage: AVATAR_RECONNECTING_STATUS });
+    setOutput({ action: "avatar-reconnected", roomName: activeSession?.roomName ?? null });
+  } catch (error) {
+    setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+    setAvatarLoadingState(false);
+    updateRoomButtons();
+    throw error;
+  }
 }
 
 async function stopActiveSession() {
   const session = activeSession;
   disconnectRoom();
   activeSession = null;
+  setAvatarConnectionState("idle");
   updateAvatarUiState();
   updateRoomButtons();
   updateChatControls();
@@ -2851,6 +2984,7 @@ if (sessionForm) {
     const formData = new FormData(sessionForm);
     const sessionKey = String(formData.get("sessionKey") || "").trim();
     roomConnectionState = "disconnected";
+    setAvatarConnectionState("connecting");
     clearRemoteTiles({
       keepDocumentPictureInPicture: autoPictureInPictureOpened || isAvatarDocumentPictureInPictureActive(),
     });
@@ -2873,7 +3007,7 @@ if (sessionForm) {
         setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
         appendChatLine("system", "Text chat initialization failed.");
       }
-      await connectToRoom();
+      await connectToRoom({ loadingMessage: SESSION_STARTING_STATUS });
     } catch (error) {
       setAvatarLoadingState(false);
       if (autoPictureInPictureOpened) {
@@ -2936,7 +3070,7 @@ if (connectRoomButton) {
   connectRoomButton.addEventListener("click", async () => {
     const autoPictureInPictureOpened = await maybeStartAvatarPictureInPicture();
     try {
-      await connectToRoom();
+      await connectToRoom({ loadingMessage: SESSION_STARTING_STATUS });
       setOutput({ action: "room-connected", roomName: activeSession?.roomName ?? null });
     } catch (error) {
       if (autoPictureInPictureOpened) {
@@ -2944,6 +3078,14 @@ if (connectRoomButton) {
       }
       setOutput({ action: "room-connect-failed", error: String(error) });
     }
+  });
+}
+
+if (reconnectRoomButton) {
+  reconnectRoomButton.addEventListener("click", () => {
+    void reconnectAvatarSession().catch((error) => {
+      setOutput({ action: "avatar-reconnect-failed", error: String(error) });
+    });
   });
 }
 
