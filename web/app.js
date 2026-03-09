@@ -1404,9 +1404,9 @@ function getAvatarDocumentPictureInPictureStyles() {
 
     .avatar-pip-chat-compose textarea:focus {
       outline: none;
-      border-color: rgba(56, 189, 248, 0.72);
+      border-color: rgba(59, 130, 246, 0.42);
       box-shadow:
-        0 0 0 1px rgba(56, 189, 248, 0.48),
+        0 0 0 0.5px rgba(59, 130, 246, 0.34),
         inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
 
