@@ -75,13 +75,12 @@ const GATEWAY_WS_CLIENT = {
 const CHAT_PANE_MIN_WIDTH = 300;
 const CHAT_PANE_MAX_WIDTH = 640;
 const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
-const AVATAR_PANE_MIN_WIDTH = 320;
+const AVATAR_PANE_MIN_WIDTH = 0;
 const AVATAR_PANE_MAX_WIDTH = 1200;
 const AVATAR_PIP_DEFAULT_ASPECT_RATIO = 16 / 9;
 const AVATAR_PIP_HORIZONTAL_PADDING = 20;
 const AVATAR_PIP_VERTICAL_PADDING = 20;
 const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
-const AVATAR_PIP_MIN_VIDEO_HEIGHT = 220;
 const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
@@ -1346,10 +1345,6 @@ function getAvatarPictureInPictureWindowSize(options = {}) {
   if (!Number.isFinite(videoHeight) || videoHeight <= 0) {
     videoHeight = 280;
   }
-  if (videoHeight < AVATAR_PIP_MIN_VIDEO_HEIGHT) {
-    videoHeight = AVATAR_PIP_MIN_VIDEO_HEIGHT;
-    width = Math.round(videoHeight * aspectRatio);
-  }
   if (videoHeight > AVATAR_PIP_MAX_VIDEO_HEIGHT) {
     videoHeight = AVATAR_PIP_MAX_VIDEO_HEIGHT;
     width = Math.round(videoHeight * aspectRatio);
@@ -1479,6 +1474,8 @@ function getAvatarDocumentPictureInPictureStyles() {
     .avatar-media video {
       width: 100%;
       height: 100%;
+      min-width: 0;
+      min-height: 0;
       display: block;
       object-fit: contain;
       background: #000;
