@@ -137,6 +137,14 @@ const renderedVoiceUserRuns = new Set();
 const chatMessages = [];
 let chatAwaitingReply = false;
 
+function isTextAreaElement(element) {
+  return Boolean(element && typeof element === "object" && element.nodeType === 1 && element.tagName === "TEXTAREA");
+}
+
+function isButtonElement(element) {
+  return Boolean(element && typeof element === "object" && element.nodeType === 1 && element.tagName === "BUTTON");
+}
+
 function setOutput(value) {
   if (!outputEl) {
     return;
@@ -1330,15 +1338,138 @@ function getAvatarDocumentPictureInPictureStyles() {
       background: #030712;
     }
 
+    .avatar-media::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0 0;
+      height: 120px;
+      background: linear-gradient(180deg, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0.18) 28%, rgba(2, 6, 23, 0.74) 100%);
+      pointer-events: none;
+      z-index: 1;
+    }
+
     .avatar-media video {
       width: 100%;
       height: 100%;
       display: block;
       object-fit: contain;
       background: #000;
+      position: relative;
+      z-index: 0;
     }
 
     .avatar-media audio {
+      display: none;
+    }
+
+    .avatar-pip-chat-compose {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: 14px;
+      z-index: 2;
+      display: block;
+      padding: 0;
+      border: none;
+      background: transparent;
+      backdrop-filter: none;
+      box-shadow: none;
+    }
+
+    .avatar-pip-chat-compose textarea {
+      display: block;
+      width: 100%;
+      min-height: 44px;
+      max-height: 96px;
+      padding: 11px 52px 11px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 20px;
+      background: rgba(2, 6, 23, 0.56);
+      backdrop-filter: blur(18px) saturate(140%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        0 14px 32px rgba(2, 6, 23, 0.42);
+      color: #f8fafc;
+      font: inherit;
+      font-size: 14px;
+      line-height: 1.4;
+      resize: none;
+      overflow-y: auto;
+      box-sizing: border-box;
+    }
+
+    .avatar-pip-chat-compose textarea::placeholder {
+      color: rgba(226, 232, 240, 0.72);
+    }
+
+    .avatar-pip-chat-compose textarea:focus {
+      outline: none;
+      border-color: rgba(56, 189, 248, 0.72);
+      box-shadow:
+        0 0 0 1px rgba(56, 189, 248, 0.48),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+
+    .avatar-pip-chat-compose textarea:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .avatar-pip-chat-compose button {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.62);
+      backdrop-filter: blur(5px);
+      color: #e2e8f0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transform: translateY(-50%);
+      transition:
+        opacity 120ms ease,
+        transform 120ms ease,
+        border-color 120ms ease,
+        background 120ms ease;
+    }
+
+    .avatar-pip-chat-compose button:not([hidden]):hover {
+      border-color: rgba(56, 189, 248, 0.55);
+      background: rgba(14, 165, 233, 0.18);
+      color: #38bdf8;
+    }
+
+    .avatar-pip-chat-compose button:not([hidden]):active {
+      transform: translateY(-50%) scale(0.96);
+    }
+
+    .avatar-pip-chat-compose button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .avatar-pip-chat-compose button svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .avatar-pip-chat-compose button[hidden] {
+      display: none;
+    }
+
+    .avatar-pip-chat-compose button.is-hidden {
       display: none;
     }
 
@@ -1464,6 +1595,78 @@ function syncAvatarDocumentPictureInPictureButtons() {
   }
 }
 
+function getAvatarDocumentPictureInPictureChatInput() {
+  const chatInputEl = avatarDocumentPictureInPictureElements?.chatInput;
+  return isTextAreaElement(chatInputEl) ? chatInputEl : null;
+}
+
+function syncTextareaHeight(textarea, options = {}) {
+  if (!isTextAreaElement(textarea)) {
+    return;
+  }
+  const minHeight = Number.isFinite(options.minHeight) ? options.minHeight : 40;
+  const maxHeight = Number.isFinite(options.maxHeight) ? options.maxHeight : 150;
+  textarea.style.height = "auto";
+  const nextHeight = Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight));
+  textarea.style.height = `${nextHeight}px`;
+}
+
+function syncChatInputHeight() {
+  syncTextareaHeight(chatInput);
+}
+
+function setMainChatComposerValue(nextValue) {
+  if (!isTextAreaElement(chatInput)) {
+    return;
+  }
+  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
+  if (chatInput.value !== normalizedValue) {
+    chatInput.value = normalizedValue;
+  }
+  syncChatInputHeight();
+}
+
+function setAvatarDocumentPictureInPictureChatComposerValue(nextValue) {
+  const pipChatInput = getAvatarDocumentPictureInPictureChatInput();
+  if (!pipChatInput) {
+    return;
+  }
+  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
+  if (pipChatInput.value !== normalizedValue) {
+    pipChatInput.value = normalizedValue;
+  }
+  syncTextareaHeight(getAvatarDocumentPictureInPictureChatInput(), {
+    minHeight: 44,
+    maxHeight: 96,
+  });
+}
+
+function syncAvatarDocumentPictureInPictureChatComposer() {
+  if (!avatarDocumentPictureInPictureElements) {
+    return;
+  }
+
+  const { chatInput: pipChatInput, chatSendButton: pipChatSendButton } = avatarDocumentPictureInPictureElements;
+  if (!isTextAreaElement(pipChatInput) || !isButtonElement(pipChatSendButton)) {
+    return;
+  }
+
+  const hasSession = Boolean(activeSession);
+  const disabledTitle = hasSession
+    ? "Send message"
+    : "Start a session before sending chat messages.";
+  const hasDraft = Boolean(String(pipChatInput.value || "").trim());
+  pipChatInput.disabled = !hasSession;
+  pipChatInput.placeholder = hasSession ? "Message" : "Start a session to message";
+  pipChatInput.title = disabledTitle;
+  pipChatSendButton.disabled = !hasSession;
+  pipChatSendButton.hidden = !hasDraft;
+  pipChatSendButton.classList.toggle("is-hidden", !hasDraft);
+  pipChatSendButton.setAttribute("aria-hidden", hasDraft ? "false" : "true");
+  pipChatSendButton.title = hasSession ? "Send message" : disabledTitle;
+  pipChatSendButton.setAttribute("aria-label", hasSession ? "Send message" : disabledTitle);
+}
+
 function syncAvatarDocumentPictureInPictureMedia() {
   if (!avatarDocumentPictureInPictureElements?.videoEl) {
     return;
@@ -1503,6 +1706,7 @@ function syncAvatarDocumentPictureInPictureMedia() {
 function syncAvatarDocumentPictureInPicture() {
   syncAvatarDocumentPictureInPictureButtons();
   syncAvatarDocumentPictureInPictureMedia();
+  syncAvatarDocumentPictureInPictureChatComposer();
 }
 
 function cleanupAvatarDocumentPictureInPicture() {
@@ -1585,11 +1789,57 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   videoEl.muted = true;
   mediaEl.appendChild(videoEl);
 
+  const chatFormEl = pictureInPictureDocument.createElement("form");
+  chatFormEl.className = "avatar-pip-chat-compose";
+
+  const chatInputEl = pictureInPictureDocument.createElement("textarea");
+  chatInputEl.rows = 1;
+  chatInputEl.placeholder = "Message";
+  chatInputEl.autocomplete = "off";
+  chatInputEl.spellcheck = true;
+  chatInputEl.setAttribute("aria-label", "Message");
+
+  const chatSendButton = pictureInPictureDocument.createElement("button");
+  chatSendButton.type = "submit";
+  chatSendButton.hidden = true;
+  chatSendButton.classList.add("is-hidden");
+  chatSendButton.setAttribute("aria-hidden", "true");
+  chatSendButton.setAttribute("aria-label", "Send message");
+  chatSendButton.setAttribute("title", "Send message");
+  chatSendButton.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M22 2 11 13"></path>
+      <path d="m22 2-7 20-4-9-9-4 20-7Z"></path>
+    </svg>
+  `;
+
+  chatInputEl.addEventListener("input", () => {
+    syncTextareaHeight(chatInputEl, { minHeight: 44, maxHeight: 96 });
+    syncAvatarDocumentPictureInPictureChatComposer();
+  });
+  chatInputEl.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    event.preventDefault();
+    chatFormEl.requestSubmit();
+  });
+  chatFormEl.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await submitChatMessage(chatInputEl.value);
+  });
+
+  chatFormEl.append(chatInputEl, chatSendButton);
+  mediaEl.appendChild(chatFormEl);
+
   paneEl.append(toolbarEl, mediaEl);
   pictureInPictureDocument.body.appendChild(paneEl);
 
   avatarDocumentPictureInPictureElements = {
     captureSourceVideo: null,
+    chatForm: chatFormEl,
+    chatInput: chatInputEl,
+    chatSendButton,
     endSessionButton,
     mediaEl,
     micButton,
@@ -2337,12 +2587,14 @@ function resolveChatSessionKey() {
 
 function updateChatControls() {
   if (!chatInput || !chatSendButton) {
+    syncAvatarDocumentPictureInPictureChatComposer();
     return;
   }
   const hasSession = Boolean(activeSession);
   chatInput.disabled = !hasSession;
   chatSendButton.disabled = !hasSession;
   syncChatInputHeight();
+  syncAvatarDocumentPictureInPictureChatComposer();
 }
 
 function nextGatewayRequestId() {
@@ -3406,16 +3658,48 @@ if (ttsForm) {
   }
 }
 
-function syncChatInputHeight() {
-  if (!(chatInput instanceof HTMLTextAreaElement)) {
-    return;
+async function submitChatMessage(rawMessage) {
+  const message = String(rawMessage || "").trim();
+  if (!message) {
+    return false;
   }
-  chatInput.style.height = "auto";
-  const nextHeight = Math.max(40, Math.min(chatInput.scrollHeight, 150));
-  chatInput.style.height = `${nextHeight}px`;
+
+  const sessionKey = resolveChatSessionKey();
+  if (!sessionKey) {
+    appendChatLine("system", "Start a session before sending chat messages.", {
+      awaitingReply: false,
+    });
+    return false;
+  }
+
+  const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  setChatPaneOpen(true);
+  appendChatLine("user", message, { awaitingReply: true });
+  setMainChatComposerValue("");
+  setAvatarDocumentPictureInPictureChatComposerValue("");
+  syncAvatarDocumentPictureInPictureChatComposer();
+  setChatStatus("Sending message...");
+
+  try {
+    const response = await gatewayRpc("chat.send", {
+      sessionKey,
+      message,
+      idempotencyKey,
+    });
+    setOutput({ action: "chat-sent", sessionKey, response });
+    setChatStatus("Awaiting agent reply...");
+    return true;
+  } catch (error) {
+    appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.", {
+      awaitingReply: false,
+    });
+    setOutput({ action: "chat-send-failed", error: String(error) });
+    setChatStatus("Chat send failed.");
+    return false;
+  }
 }
 
-if (chatInput instanceof HTMLTextAreaElement) {
+if (isTextAreaElement(chatInput)) {
   chatInput.addEventListener("input", () => {
     syncChatInputHeight();
   });
@@ -3432,38 +3716,7 @@ if (chatInput instanceof HTMLTextAreaElement) {
 if (chatForm) {
   chatForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const message = String(chatInput?.value || "").trim();
-    if (!message) {
-      return;
-    }
-    const sessionKey = resolveChatSessionKey();
-    if (!sessionKey) {
-      appendChatLine("system", "Start a session before sending chat messages.", {
-        awaitingReply: false,
-      });
-      return;
-    }
-    const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-    setChatPaneOpen(true);
-    appendChatLine("user", message, { awaitingReply: true });
-    chatInput.value = "";
-    syncChatInputHeight();
-    setChatStatus("Sending message...");
-    try {
-      const response = await gatewayRpc("chat.send", {
-        sessionKey,
-        message,
-        idempotencyKey,
-      });
-      setOutput({ action: "chat-sent", sessionKey, response });
-      setChatStatus("Awaiting agent reply...");
-    } catch (error) {
-      appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.", {
-        awaitingReply: false,
-      });
-      setOutput({ action: "chat-send-failed", error: String(error) });
-      setChatStatus("Chat send failed.");
-    }
+    await submitChatMessage(chatInput?.value);
   });
 }
 
