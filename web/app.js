@@ -134,6 +134,8 @@ let setupFormBaseline = {
 };
 let setupRawBaseline = "";
 const renderedVoiceUserRuns = new Set();
+const chatMessages = [];
+let chatAwaitingReply = false;
 
 function setOutput(value) {
   if (!outputEl) {
@@ -319,6 +321,7 @@ function setChatStatus(text) {
     return;
   }
   chatStatusEl.textContent = text;
+  chatStatusEl.title = text;
 }
 
 function setHealthStatus(dotEl, valueEl, tone, text) {
@@ -1927,10 +1930,9 @@ function applyAvatarSpeakerMuteState() {
 
 function clearChatLog() {
   renderedVoiceUserRuns.clear();
-  if (!chatLogEl) {
-    return;
-  }
-  chatLogEl.textContent = "";
+  chatMessages.length = 0;
+  chatAwaitingReply = false;
+  renderChatLog({ scrollToBottom: false });
 }
 
 function applyConfigSectionFilter(nextFilter) {
@@ -1964,26 +1966,250 @@ function initConfigSectionFiltering() {
   applyConfigSectionFilter(activeConfigSectionFilter);
 }
 
-function appendChatLine(role, text) {
+function resolveChatTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function resolveMessageTimestamp(message) {
+  if (!message || typeof message !== "object") {
+    return Date.now();
+  }
+  const candidates = [
+    message.timestamp,
+    message.createdAt,
+    message.created_at,
+    message.time,
+  ];
+  for (const candidate of candidates) {
+    const timestamp = resolveChatTimestamp(candidate);
+    if (timestamp !== null) {
+      return timestamp;
+    }
+  }
+  return Date.now();
+}
+
+function getChatRoleClass(role) {
+  const normalized = typeof role === "string" ? role.trim().toLowerCase() : "";
+  if (normalized === "user") {
+    return "user";
+  }
+  if (normalized === "assistant") {
+    return "assistant";
+  }
+  return "other";
+}
+
+function getChatSenderLabel(roleClass) {
+  if (roleClass === "user") {
+    return "You";
+  }
+  if (roleClass === "assistant") {
+    return "Agent";
+  }
+  return "System";
+}
+
+function getChatAvatarLabel(roleClass) {
+  if (roleClass === "user") {
+    return "Y";
+  }
+  if (roleClass === "assistant") {
+    return "A";
+  }
+  return "S";
+}
+
+function formatChatTimestamp(timestamp) {
+  return new Date(resolveChatTimestamp(timestamp) ?? Date.now()).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function buildChatTextContent(text) {
+  const content = document.createElement("div");
+  content.className = "chat-text";
+
+  const normalizedText = String(text || "").replace(/\r\n/g, "\n").trim();
+  const paragraphs = normalizedText ? normalizedText.split(/\n{2,}/) : [];
+
+  if (!paragraphs.length) {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = "";
+    content.appendChild(paragraph);
+    return content;
+  }
+
+  for (const paragraphText of paragraphs) {
+    const paragraph = document.createElement("p");
+    const lines = paragraphText.split("\n");
+    lines.forEach((line, index) => {
+      if (index > 0) {
+        paragraph.appendChild(document.createElement("br"));
+      }
+      paragraph.appendChild(document.createTextNode(line));
+    });
+    content.appendChild(paragraph);
+  }
+
+  return content;
+}
+
+function createChatAvatar(roleClass) {
+  const avatar = document.createElement("div");
+  avatar.className = `chat-avatar ${roleClass}`;
+  avatar.textContent = getChatAvatarLabel(roleClass);
+  return avatar;
+}
+
+function createChatBubble(text) {
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble fade-in";
+  bubble.appendChild(buildChatTextContent(text));
+  return bubble;
+}
+
+function createTypingIndicatorGroup() {
+  const group = document.createElement("article");
+  group.className = "chat-group assistant";
+  group.appendChild(createChatAvatar("assistant"));
+
+  const messages = document.createElement("div");
+  messages.className = "chat-group-messages";
+
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble chat-reading-indicator";
+  bubble.setAttribute("aria-hidden", "true");
+
+  const dots = document.createElement("span");
+  dots.className = "chat-reading-indicator__dots";
+  for (let index = 0; index < 3; index += 1) {
+    dots.appendChild(document.createElement("span"));
+  }
+  bubble.appendChild(dots);
+  messages.appendChild(bubble);
+  group.appendChild(messages);
+
+  return group;
+}
+
+function renderChatLog(options = {}) {
+  if (!chatLogEl) {
+    return;
+  }
+
+  const scrollToBottom = options.scrollToBottom !== false;
+  chatLogEl.textContent = "";
+
+  if (!chatMessages.length && !chatAwaitingReply) {
+    const emptyState = document.createElement("div");
+    emptyState.className = "video-chat-chat-empty";
+    emptyState.textContent = "Chat history will appear here once the active session starts talking.";
+    chatLogEl.appendChild(emptyState);
+  } else {
+    const groups = [];
+    for (const message of chatMessages) {
+      const roleClass = getChatRoleClass(message.role);
+      const lastGroup = groups[groups.length - 1];
+      if (lastGroup && lastGroup.roleClass === roleClass) {
+        lastGroup.messages.push(message);
+      } else {
+        groups.push({ roleClass, messages: [message] });
+      }
+    }
+
+    for (const group of groups) {
+      const groupEl = document.createElement("article");
+      groupEl.className = `chat-group ${group.roleClass}`;
+      groupEl.appendChild(createChatAvatar(group.roleClass));
+
+      const messagesEl = document.createElement("div");
+      messagesEl.className = "chat-group-messages";
+
+      for (const message of group.messages) {
+        messagesEl.appendChild(createChatBubble(message.text));
+      }
+
+      const footer = document.createElement("div");
+      footer.className = "chat-group-footer";
+
+      const sender = document.createElement("span");
+      sender.className = "chat-sender-name";
+      sender.textContent = getChatSenderLabel(group.roleClass);
+
+      const timestamp = document.createElement("span");
+      timestamp.className = "chat-group-timestamp";
+      timestamp.textContent = formatChatTimestamp(group.messages[group.messages.length - 1].timestamp);
+
+      footer.appendChild(sender);
+      footer.appendChild(timestamp);
+      messagesEl.appendChild(footer);
+      groupEl.appendChild(messagesEl);
+      chatLogEl.appendChild(groupEl);
+    }
+  }
+
+  if (chatAwaitingReply) {
+    chatLogEl.appendChild(createTypingIndicatorGroup());
+  }
+
+  if (scrollToBottom) {
+    requestAnimationFrame(() => {
+      if (chatLogEl) {
+        chatLogEl.scrollTop = chatLogEl.scrollHeight;
+      }
+    });
+  }
+}
+
+function replaceChatLog(entries) {
+  chatMessages.length = 0;
+  for (const entry of entries) {
+    if (!entry || !entry.text) {
+      continue;
+    }
+    chatMessages.push({
+      role: entry.role,
+      text: entry.text,
+      timestamp: resolveChatTimestamp(entry.timestamp) ?? Date.now(),
+    });
+  }
+  chatAwaitingReply = false;
+  renderChatLog({ scrollToBottom: false });
+}
+
+function setChatAwaitingReply(nextValue) {
+  const normalized = Boolean(nextValue);
+  if (chatAwaitingReply === normalized) {
+    return;
+  }
+  chatAwaitingReply = normalized;
+  renderChatLog();
+}
+
+function appendChatLine(role, text, options = {}) {
   if (!chatLogEl || !text) {
     return;
   }
-  const line = document.createElement("article");
-  line.className = `chat-line ${role}`;
-  const message = document.createElement("div");
-  message.className = "chat-msg";
-  const heading = document.createElement("strong");
-  heading.className = "muted";
-  heading.textContent =
-    role === "user" ? "You" : role === "assistant" ? "Agent" : role === "system" ? "System" : role;
-  const body = document.createElement("p");
-  body.className = "chat-bubble";
-  body.textContent = text;
-  message.appendChild(heading);
-  message.appendChild(body);
-  line.appendChild(message);
-  chatLogEl.appendChild(line);
-  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  chatMessages.push({
+    role,
+    text: String(text),
+    timestamp: resolveChatTimestamp(options.timestamp) ?? Date.now(),
+  });
+  if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
+    chatAwaitingReply = Boolean(options.awaitingReply);
+  }
+  renderChatLog();
 }
 
 function extractAssistantText(message) {
@@ -2060,7 +2286,10 @@ function appendVoiceUserTranscript(payload) {
   if (isVoiceRunId(idempotencyKey) && renderedVoiceUserRuns.has(idempotencyKey)) {
     return;
   }
-  appendChatLine("user", text);
+  appendChatLine("user", text, {
+    awaitingReply: true,
+    timestamp: resolveMessageTimestamp(payload),
+  });
   if (isVoiceRunId(idempotencyKey)) {
     renderedVoiceUserRuns.add(idempotencyKey);
   }
@@ -2113,6 +2342,7 @@ function updateChatControls() {
   const hasSession = Boolean(activeSession);
   chatInput.disabled = !hasSession;
   chatSendButton.disabled = !hasSession;
+  syncChatInputHeight();
 }
 
 function nextGatewayRequestId() {
@@ -2131,6 +2361,7 @@ function clearGatewayPendingRequests(error) {
 function closeGatewaySocket(reason) {
   gatewaySocketReady = false;
   gatewayConnectRequestId = null;
+  chatAwaitingReply = false;
   if (gatewaySocket) {
     try {
       gatewaySocket.close();
@@ -2139,6 +2370,7 @@ function closeGatewaySocket(reason) {
   gatewaySocket = null;
   gatewayHandshakePromise = null;
   clearGatewayPendingRequests(new Error(reason));
+  renderChatLog({ scrollToBottom: false });
 }
 
 function handleGatewayChatEvent(payload) {
@@ -2150,22 +2382,30 @@ function handleGatewayChatEvent(payload) {
 
   const state = typeof payload.state === "string" ? payload.state : "";
   if (state === "delta") {
+    setChatAwaitingReply(true);
     setChatStatus("Agent is responding...");
     return;
   }
   if (state === "final") {
     const text = extractAssistantText(payload.message) || "[No text in final message]";
-    appendChatLine("assistant", text);
+    appendChatLine("assistant", text, {
+      awaitingReply: false,
+      timestamp: resolveMessageTimestamp(payload.message),
+    });
     setChatStatus("Reply received.");
     return;
   }
   if (state === "error") {
-    appendChatLine("system", payload.errorMessage || "Chat request failed.");
+    appendChatLine("system", payload.errorMessage || "Chat request failed.", {
+      awaitingReply: false,
+    });
     setChatStatus("Chat error.");
     return;
   }
   if (state === "aborted") {
-    appendChatLine("system", "Chat run aborted.");
+    appendChatLine("system", "Chat run aborted.", {
+      awaitingReply: false,
+    });
     setChatStatus("Chat run aborted.");
   }
 }
@@ -2296,7 +2536,9 @@ async function ensureGatewaySocketConnected() {
       }
       gatewaySocketReady = false;
       gatewayConnectRequestId = null;
+      chatAwaitingReply = false;
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
+      renderChatLog({ scrollToBottom: false });
       setChatStatus("Chat disconnected.");
     });
 
@@ -2343,7 +2585,8 @@ async function loadChatHistory() {
     sessionKey,
     limit: 30,
   });
-  clearChatLog();
+  renderedVoiceUserRuns.clear();
+  const entries = [];
   const messages = Array.isArray(history?.messages) ? history.messages : [];
   for (const message of messages) {
     if (!message || typeof message !== "object") {
@@ -2358,7 +2601,11 @@ async function loadChatHistory() {
         ? extractAssistantText(message)
         : extractUserText(message);
     if (text) {
-      appendChatLine(role, text);
+      entries.push({
+        role,
+        text,
+        timestamp: resolveMessageTimestamp(message),
+      });
       if (role === "user") {
         const idempotencyKey =
           typeof message.idempotencyKey === "string" ? message.idempotencyKey.trim() : "";
@@ -2368,6 +2615,7 @@ async function loadChatHistory() {
       }
     }
   }
+  replaceChatLog(entries);
 }
 
 function clearRemoteTiles(options = {}) {
@@ -3158,36 +3406,64 @@ if (ttsForm) {
   }
 }
 
+function syncChatInputHeight() {
+  if (!(chatInput instanceof HTMLTextAreaElement)) {
+    return;
+  }
+  chatInput.style.height = "auto";
+  const nextHeight = Math.max(40, Math.min(chatInput.scrollHeight, 150));
+  chatInput.style.height = `${nextHeight}px`;
+}
+
+if (chatInput instanceof HTMLTextAreaElement) {
+  chatInput.addEventListener("input", () => {
+    syncChatInputHeight();
+  });
+
+  chatInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    event.preventDefault();
+    chatForm?.requestSubmit();
+  });
+}
+
 if (chatForm) {
   chatForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const message = String(chatInput.value || "").trim();
-  if (!message) {
-    return;
-  }
-  const sessionKey = resolveChatSessionKey();
-  if (!sessionKey) {
-    appendChatLine("system", "Start a session before sending chat messages.");
-    return;
-  }
-  const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-  setChatPaneOpen(true);
-  appendChatLine("user", message);
-  chatInput.value = "";
-  setChatStatus("Sending message...");
-  try {
-    const response = await gatewayRpc("chat.send", {
-      sessionKey,
-      message,
-      idempotencyKey,
-    });
-    setOutput({ action: "chat-sent", sessionKey, response });
-    setChatStatus("Awaiting agent reply...");
-  } catch (error) {
-    appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.");
-    setOutput({ action: "chat-send-failed", error: String(error) });
-    setChatStatus("Chat send failed.");
-  }
+    event.preventDefault();
+    const message = String(chatInput?.value || "").trim();
+    if (!message) {
+      return;
+    }
+    const sessionKey = resolveChatSessionKey();
+    if (!sessionKey) {
+      appendChatLine("system", "Start a session before sending chat messages.", {
+        awaitingReply: false,
+      });
+      return;
+    }
+    const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    setChatPaneOpen(true);
+    appendChatLine("user", message, { awaitingReply: true });
+    chatInput.value = "";
+    syncChatInputHeight();
+    setChatStatus("Sending message...");
+    try {
+      const response = await gatewayRpc("chat.send", {
+        sessionKey,
+        message,
+        idempotencyKey,
+      });
+      setOutput({ action: "chat-sent", sessionKey, response });
+      setChatStatus("Awaiting agent reply...");
+    } catch (error) {
+      appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.", {
+        awaitingReply: false,
+      });
+      setOutput({ action: "chat-send-failed", error: String(error) });
+      setChatStatus("Chat send failed.");
+    }
   });
 }
 
