@@ -150,7 +150,14 @@ let setupFormBaseline = {
 let setupRawBaseline = "";
 const renderedVoiceUserRuns = new Set();
 const chatMessages = [];
-const chatComposerAttachments = [];
+const chatComposerDrafts = {
+  main: {
+    attachments: [],
+  },
+  pip: {
+    attachments: [],
+  },
+};
 let chatAwaitingReply = false;
 let chatComposerAttachmentIdCounter = 0;
 
@@ -174,6 +181,14 @@ function isBlobLike(value) {
 function nextChatComposerAttachmentId() {
   chatComposerAttachmentIdCounter += 1;
   return `chat-attachment-${Date.now()}-${chatComposerAttachmentIdCounter}`;
+}
+
+function normalizeChatComposerKey(key) {
+  return key === "pip" ? "pip" : "main";
+}
+
+function getChatComposerDraft(key = "main") {
+  return chatComposerDrafts[normalizeChatComposerKey(key)];
 }
 
 function isSupportedChatImageMimeType(mimeType) {
@@ -295,53 +310,86 @@ function removeAvatarDocumentPictureInPictureChatAttachmentsContainer() {
   }
 }
 
-function renderChatComposerAttachments() {
-  if (chatComposerAttachments.length === 0) {
+function renderMainChatComposerAttachments() {
+  const attachments = getChatComposerDraft("main").attachments;
+  if (attachments.length === 0) {
     removeChatComposerAttachmentsContainer();
+    return;
+  }
+  const container = ensureChatComposerAttachmentsContainer();
+  if (!container) {
+    return;
+  }
+  container.replaceChildren();
+  for (const attachment of attachments) {
+    container.appendChild(
+      createChatComposerAttachmentPreview(attachment, container.ownerDocument || document, {
+        onRemove: (attachmentId) => removeChatComposerAttachment("main", attachmentId),
+      }),
+    );
+  }
+}
+
+function renderAvatarDocumentPictureInPictureChatAttachments() {
+  const attachments = getChatComposerDraft("pip").attachments;
+  if (attachments.length === 0) {
     removeAvatarDocumentPictureInPictureChatAttachmentsContainer();
     return;
   }
-  const attachmentContainers = [
-    ensureChatComposerAttachmentsContainer(),
-    ensureAvatarDocumentPictureInPictureChatAttachmentsContainer(),
-  ];
-  for (const container of attachmentContainers) {
-    if (!container) {
-      continue;
-    }
-    container.replaceChildren();
-    for (const attachment of chatComposerAttachments) {
-      container.appendChild(
-        createChatComposerAttachmentPreview(attachment, container.ownerDocument || document, {
-          onRemove: removeChatComposerAttachment,
-        }),
-      );
-    }
-  }
-}
-
-function clearChatComposerAttachments() {
-  if (chatComposerAttachments.length === 0) {
-    renderChatComposerAttachments();
-    syncAvatarDocumentPictureInPictureChatComposer();
+  const container = ensureAvatarDocumentPictureInPictureChatAttachmentsContainer();
+  if (!container) {
     return;
   }
-  chatComposerAttachments.length = 0;
-  renderChatComposerAttachments();
-  syncAvatarDocumentPictureInPictureChatComposer();
+  container.replaceChildren();
+  for (const attachment of attachments) {
+    container.appendChild(
+      createChatComposerAttachmentPreview(attachment, container.ownerDocument || document, {
+        onRemove: (attachmentId) => removeChatComposerAttachment("pip", attachmentId),
+      }),
+    );
+  }
 }
 
-function removeChatComposerAttachment(attachmentId) {
-  const index = chatComposerAttachments.findIndex((attachment) => attachment.id === attachmentId);
+function renderChatComposerAttachments() {
+  renderMainChatComposerAttachments();
+  renderAvatarDocumentPictureInPictureChatAttachments();
+}
+
+function clearChatComposerAttachments(key) {
+  const attachments = getChatComposerDraft(key).attachments;
+  if (attachments.length === 0) {
+    renderChatComposerAttachments();
+    if (normalizeChatComposerKey(key) === "pip") {
+      syncAvatarDocumentPictureInPictureChatComposer();
+    }
+    return;
+  }
+  attachments.length = 0;
+  renderChatComposerAttachments();
+  if (normalizeChatComposerKey(key) === "pip") {
+    syncAvatarDocumentPictureInPictureChatComposer();
+  }
+}
+
+function clearAllChatComposerAttachments() {
+  clearChatComposerAttachments("main");
+  clearChatComposerAttachments("pip");
+}
+
+function removeChatComposerAttachment(key, attachmentId) {
+  const attachments = getChatComposerDraft(key).attachments;
+  const index = attachments.findIndex((attachment) => attachment.id === attachmentId);
   if (index < 0) {
     return;
   }
-  chatComposerAttachments.splice(index, 1);
+  attachments.splice(index, 1);
   renderChatComposerAttachments();
-  syncAvatarDocumentPictureInPictureChatComposer();
+  if (normalizeChatComposerKey(key) === "pip") {
+    syncAvatarDocumentPictureInPictureChatComposer();
+  }
 }
 
-async function addChatComposerAttachmentsFromClipboardEvent(event) {
+async function addChatComposerAttachmentsFromClipboardEvent(event, key = "main") {
   const imageFiles = extractImageFilesFromClipboardEvent(event);
   if (imageFiles.length === 0) {
     return false;
@@ -349,7 +397,8 @@ async function addChatComposerAttachmentsFromClipboardEvent(event) {
 
   event.preventDefault();
 
-  const remainingSlots = CHAT_MAX_IMAGE_ATTACHMENTS - chatComposerAttachments.length;
+  const attachments = getChatComposerDraft(key).attachments;
+  const remainingSlots = CHAT_MAX_IMAGE_ATTACHMENTS - attachments.length;
   if (remainingSlots <= 0) {
     setChatStatus(`You can attach up to ${CHAT_MAX_IMAGE_ATTACHMENTS} images per message.`);
     return true;
@@ -387,9 +436,11 @@ async function addChatComposerAttachmentsFromClipboardEvent(event) {
     return true;
   }
 
-  chatComposerAttachments.push(...nextAttachments);
+  attachments.push(...nextAttachments);
   renderChatComposerAttachments();
-  syncAvatarDocumentPictureInPictureChatComposer();
+  if (normalizeChatComposerKey(key) === "pip") {
+    syncAvatarDocumentPictureInPictureChatComposer();
+  }
 
   const skippedCount = Math.max(0, skippedForLimit + skippedInvalid);
   setChatStatus(
@@ -400,8 +451,8 @@ async function addChatComposerAttachmentsFromClipboardEvent(event) {
   return true;
 }
 
-function hasChatComposerDraftValue(value) {
-  return Boolean(String(value || "").trim()) || chatComposerAttachments.length > 0;
+function hasChatComposerDraftValue(value, attachments = []) {
+  return Boolean(String(value || "").trim()) || attachments.length > 0;
 }
 
 function parseDataUrl(dataUrl) {
@@ -2246,30 +2297,29 @@ function syncChatInputHeight() {
   syncTextareaHeight(chatInput);
 }
 
-function setMainChatComposerValue(nextValue) {
-  if (!isTextAreaElement(chatInput)) {
+function syncChatComposerInputHeight(input) {
+  if (!isTextAreaElement(input)) {
     return;
   }
-  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
-  if (chatInput.value !== normalizedValue) {
-    chatInput.value = normalizedValue;
-  }
-  syncChatInputHeight();
-}
-
-function setAvatarDocumentPictureInPictureChatComposerValue(nextValue) {
-  const pipChatInput = getAvatarDocumentPictureInPictureChatInput();
-  if (!pipChatInput) {
+  if (input === chatInput) {
+    syncChatInputHeight();
     return;
   }
-  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
-  if (pipChatInput.value !== normalizedValue) {
-    pipChatInput.value = normalizedValue;
-  }
-  syncTextareaHeight(getAvatarDocumentPictureInPictureChatInput(), {
+  syncTextareaHeight(input, {
     minHeight: 44,
     maxHeight: 96,
   });
+}
+
+function setChatComposerInputValue(input, nextValue) {
+  if (!isTextAreaElement(input)) {
+    return;
+  }
+  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
+  if (input.value !== normalizedValue) {
+    input.value = normalizedValue;
+  }
+  syncChatComposerInputHeight(input);
 }
 
 function syncAvatarDocumentPictureInPictureChatComposer() {
@@ -2290,7 +2340,8 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   const disabledTitle = hasSession
     ? "Send message"
     : "Start a session before sending chat messages.";
-  const hasDraft = hasChatComposerDraftValue(pipChatInput.value);
+  const pipAttachments = getChatComposerDraft("pip").attachments;
+  const hasDraft = hasChatComposerDraftValue(pipChatInput.value, pipAttachments);
   pipChatInput.disabled = !hasSession;
   pipChatInput.placeholder = hasSession ? "Message" : "Start a session to message";
   pipChatInput.title = disabledTitle;
@@ -2300,7 +2351,7 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   pipChatSendButton.setAttribute("aria-hidden", hasDraft ? "false" : "true");
   pipChatSendButton.title = hasSession ? "Send message" : disabledTitle;
   pipChatSendButton.setAttribute("aria-label", hasSession ? "Send message" : disabledTitle);
-  if (chatComposerAttachments.length > 0) {
+  if (pipAttachments.length > 0) {
     ensureAvatarDocumentPictureInPictureChatAttachmentsContainer();
   } else if (pipChatAttachments) {
     removeAvatarDocumentPictureInPictureChatAttachmentsContainer();
@@ -2467,7 +2518,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     syncAvatarDocumentPictureInPictureChatComposer();
   });
   chatInputEl.addEventListener("paste", (event) => {
-    void addChatComposerAttachmentsFromClipboardEvent(event).catch((error) => {
+    void addChatComposerAttachmentsFromClipboardEvent(event, "pip").catch((error) => {
       setChatStatus(error instanceof Error ? error.message : "Failed to paste image.");
     });
   });
@@ -2480,7 +2531,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   });
   chatFormEl.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await submitChatMessage(chatInputEl.value, { sourceInput: chatInputEl });
+    await submitChatMessage(chatInputEl.value, { sourceInput: chatInputEl, sourceComposer: "pip" });
   });
 
   chatInputRowEl.append(chatInputEl, chatSendButton);
@@ -2853,7 +2904,7 @@ function clearChatLog() {
   renderedVoiceUserRuns.clear();
   chatMessages.length = 0;
   chatAwaitingReply = false;
-  clearChatComposerAttachments();
+  clearAllChatComposerAttachments();
   renderChatLog({ scrollToBottom: false });
 }
 
@@ -3282,7 +3333,7 @@ function updateChatControls() {
   const hasSession = Boolean(activeSession);
   chatInput.disabled = !hasSession;
   chatSendButton.disabled = !hasSession;
-  if (chatComposerAttachments.length > 0) {
+  if (getChatComposerDraft("main").attachments.length > 0) {
     ensureChatComposerAttachmentsContainer();
   } else {
     removeChatComposerAttachmentsContainer();
@@ -4365,7 +4416,10 @@ if (ttsForm) {
 
 async function submitChatMessage(rawMessage, options = {}) {
   const message = String(rawMessage || "").trim();
-  const attachments = chatComposerAttachments.map((attachment) => ({ ...attachment }));
+  const sourceInput = isTextAreaElement(options.sourceInput) ? options.sourceInput : null;
+  const sourceComposer = normalizeChatComposerKey(options.sourceComposer);
+  const composerDraft = getChatComposerDraft(sourceComposer);
+  const attachments = composerDraft.attachments.map((attachment) => ({ ...attachment }));
   if (!message && attachments.length === 0) {
     return false;
   }
@@ -4388,10 +4442,9 @@ async function submitChatMessage(rawMessage, options = {}) {
       alt: attachment.name || "Pasted image",
     })),
   }, { awaitingReply: true });
-  animateAvatarSentMessage(message, { sourceInput: options.sourceInput });
-  setMainChatComposerValue("");
-  setAvatarDocumentPictureInPictureChatComposerValue("");
-  clearChatComposerAttachments();
+  animateAvatarSentMessage(message, { sourceInput });
+  setChatComposerInputValue(sourceInput, "");
+  clearChatComposerAttachments(sourceComposer);
   syncAvatarDocumentPictureInPictureChatComposer();
   setChatStatus("Sending message...");
 
@@ -4406,9 +4459,8 @@ async function submitChatMessage(rawMessage, options = {}) {
     setChatStatus("Awaiting agent reply...");
     return true;
   } catch (error) {
-    setMainChatComposerValue(message);
-    setAvatarDocumentPictureInPictureChatComposerValue(message);
-    chatComposerAttachments.push(...attachments);
+    setChatComposerInputValue(sourceInput, message);
+    composerDraft.attachments.push(...attachments);
     renderChatComposerAttachments();
     syncAvatarDocumentPictureInPictureChatComposer();
     appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.", {
@@ -4426,7 +4478,7 @@ if (isTextAreaElement(chatInput)) {
   });
 
   chatInput.addEventListener("paste", (event) => {
-    void addChatComposerAttachmentsFromClipboardEvent(event).catch((error) => {
+    void addChatComposerAttachmentsFromClipboardEvent(event, "main").catch((error) => {
       setChatStatus(error instanceof Error ? error.message : "Failed to paste image.");
     });
   });
@@ -4443,7 +4495,7 @@ if (isTextAreaElement(chatInput)) {
 if (chatForm) {
   chatForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await submitChatMessage(chatInput?.value, { sourceInput: chatInput });
+    await submitChatMessage(chatInput?.value, { sourceInput: chatInput, sourceComposer: "main" });
   });
 }
 
