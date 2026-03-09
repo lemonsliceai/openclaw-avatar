@@ -511,6 +511,16 @@ describe("video-chat plugin", () => {
       success: true,
       setup: {
         configured: true,
+        lemonSlice: {
+          apiKey: "ls-key",
+        },
+        livekit: {
+          apiKey: "lk-key",
+          apiSecret: "lk-secret",
+        },
+        tts: {
+          elevenLabsApiKey: "eleven-key",
+        },
       },
     });
   });

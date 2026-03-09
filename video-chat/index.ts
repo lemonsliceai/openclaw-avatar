@@ -30,15 +30,19 @@ type VideoChatConfigResponse = {
   configured: boolean;
   missing: string[];
   lemonSlice: {
+    apiKey: string | null;
     apiKeyConfigured: boolean;
     imageUrl: string | null;
   };
   livekit: {
     url: string | null;
+    apiKey: string | null;
     apiKeyConfigured: boolean;
+    apiSecret: string | null;
     apiSecretConfigured: boolean;
   };
   tts: {
+    elevenLabsApiKey: string | null;
     elevenLabsApiKeyConfigured: boolean;
     elevenLabsVoiceId: string | null;
   };
@@ -442,6 +446,12 @@ function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigRe
   const livekit = effective.videoChat?.livekit;
   const elevenLabs = effective.messages?.tts?.elevenlabs;
   const missing: string[] = [];
+  const readSecretValue = (value: unknown, path: string): string | null => {
+    if (!hasConfiguredSecretInput(value)) {
+      return null;
+    }
+    return normalizeResolvedSecretInputString({ value, path });
+  };
 
   if (provider !== "lemonslice") {
     missing.push("videoChat.provider");
@@ -470,15 +480,19 @@ function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigRe
     configured: missing.length === 0,
     missing,
     lemonSlice: {
+      apiKey: readSecretValue(lemonSlice?.apiKey, "videoChat.lemonSlice.apiKey"),
       apiKeyConfigured: hasConfiguredSecretInput(lemonSlice?.apiKey),
       imageUrl: normalizeOptionalString(lemonSlice?.imageUrl) ?? null,
     },
     livekit: {
       url: normalizeOptionalString(livekit?.url) ?? null,
+      apiKey: readSecretValue(livekit?.apiKey, "videoChat.livekit.apiKey"),
       apiKeyConfigured: hasConfiguredSecretInput(livekit?.apiKey),
+      apiSecret: readSecretValue(livekit?.apiSecret, "videoChat.livekit.apiSecret"),
       apiSecretConfigured: hasConfiguredSecretInput(livekit?.apiSecret),
     },
     tts: {
+      elevenLabsApiKey: readSecretValue(elevenLabs?.apiKey, "messages.tts.elevenlabs.apiKey"),
       elevenLabsApiKeyConfigured: hasConfiguredSecretInput(elevenLabs?.apiKey),
       elevenLabsVoiceId: normalizeOptionalString(elevenLabs?.voiceId) ?? null,
     },
