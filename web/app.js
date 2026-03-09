@@ -35,6 +35,7 @@ const roomStatusTextEl = document.getElementById("room-status-text");
 const roomStatusSpinnerEl = document.getElementById("room-status-spinner");
 const avatarPaneEl = document.getElementById("avatar-pane");
 const avatarMediaEl = document.getElementById("avatar-media");
+const avatarMessageOverlayEl = document.getElementById("avatar-message-overlay");
 const avatarPlaceholderEl = document.getElementById("avatar-placeholder");
 const avatarPlaceholderStatusEl = document.getElementById("avatar-placeholder-status");
 const avatarPlaceholderStatusDotEl = document.getElementById("avatar-placeholder-status-dot");
@@ -106,6 +107,10 @@ let avatarDocumentPictureInPictureElements = null;
 let avatarDocumentPictureInPictureResizeHandler = null;
 let avatarDocumentPictureInPictureIsAdjustingSize = false;
 let avatarPictureInPictureVideo = null;
+const avatarMessageOverlayState = {
+  fadeFrame: null,
+  hideTimer: null,
+};
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
@@ -330,6 +335,163 @@ function setChatStatus(text) {
   }
   chatStatusEl.textContent = text;
   chatStatusEl.title = text;
+}
+
+function applyAvatarMessageOverlayStyles(element) {
+  if (!element) {
+    return;
+  }
+  element.style.position = "absolute";
+  element.style.inset = "0";
+  element.style.zIndex = "2";
+  element.style.pointerEvents = "none";
+  element.style.overflow = "hidden";
+}
+
+function applyAvatarMessageBubbleStyles(element) {
+  if (!element) {
+    return;
+  }
+  element.style.position = "absolute";
+  element.style.left = "24px";
+  element.style.bottom = "16%";
+  element.style.transform = "none";
+  element.style.width = "min(78%, 34rem)";
+  element.style.padding = "12px 16px";
+  element.style.borderRadius = "18px";
+  element.style.border = "1px solid rgba(255, 255, 255, 0.14)";
+  element.style.background = "rgba(15, 23, 42, 0.78)";
+  element.style.backdropFilter = "blur(12px)";
+  element.style.color = "#f8fafc";
+  element.style.fontSize = "clamp(14px, 1.5vw, 17px)";
+  element.style.lineHeight = "1.4";
+  element.style.textAlign = "left";
+  element.style.boxShadow = "0 18px 38px rgba(2, 6, 23, 0.4)";
+  element.style.opacity = "0";
+  element.style.transition = "opacity 260ms ease, transform 260ms ease";
+  element.style.wordBreak = "break-word";
+}
+
+function clearAvatarMessageOverlayState(overlayEl, state = {}) {
+  if (state.hideTimer) {
+    clearTimeout(state.hideTimer);
+    state.hideTimer = null;
+  }
+  if (state.fadeFrame) {
+    state.fadeFrame.cancel();
+    state.fadeFrame = null;
+  }
+  overlayEl?.replaceChildren();
+}
+
+function createAnimationFrameHandle(view, callback) {
+  const frameView = view && typeof view.requestAnimationFrame === "function" ? view : window;
+  const frameId = frameView.requestAnimationFrame(callback);
+  return {
+    cancel() {
+      frameView.cancelAnimationFrame?.(frameId);
+    },
+  };
+}
+
+function animateAvatarSentMessage(message, options = {}) {
+  const normalizedMessage = typeof message === "string" ? message.trim() : "";
+  if (!normalizedMessage) {
+    return;
+  }
+
+  const sourceInput = isTextAreaElement(options.sourceInput) ? options.sourceInput : null;
+  const sourceDocument = sourceInput?.ownerDocument || document;
+  const sourceWindow = sourceDocument.defaultView || window;
+  const shouldTargetPictureInPictureOverlay =
+    sourceDocument === document &&
+    Boolean(avatarDocumentPictureInPictureElements?.messageOverlayEl) &&
+    (avatarPaneEl?.hidden || avatarPaneEl?.classList.contains("avatar-pane--document-picture-in-picture-active"));
+  const overlayEl = shouldTargetPictureInPictureOverlay
+    ? avatarDocumentPictureInPictureElements?.messageOverlayEl
+    : sourceDocument === document
+      ? avatarMessageOverlayEl
+      : avatarDocumentPictureInPictureElements?.messageOverlayEl;
+  const overlayState = overlayEl === avatarMessageOverlayEl
+    ? avatarMessageOverlayState
+    : avatarDocumentPictureInPictureElements?.messageOverlayState;
+  const overlayDocument = overlayEl?.ownerDocument || sourceDocument;
+  const overlayWindow = overlayDocument.defaultView || sourceWindow;
+
+  if (!overlayEl || !overlayState) {
+    return;
+  }
+
+  applyAvatarMessageOverlayStyles(overlayEl);
+  clearAvatarMessageOverlayState(overlayEl, overlayState);
+
+  const bubbleEl = overlayDocument.createElement("div");
+  bubbleEl.className = "avatar-message-overlay__bubble";
+  bubbleEl.textContent = normalizedMessage;
+  applyAvatarMessageBubbleStyles(bubbleEl);
+  overlayEl.appendChild(bubbleEl);
+
+  const revealBubble = () => {
+    bubbleEl.classList.add("is-visible");
+    bubbleEl.style.transition = "opacity 260ms ease, transform 260ms ease";
+    bubbleEl.style.opacity = "1";
+    bubbleEl.style.transform = "none";
+    overlayState.hideTimer = overlayWindow.setTimeout(() => {
+      bubbleEl.classList.add("is-fading");
+      bubbleEl.style.opacity = "0";
+      bubbleEl.style.transform = "translateY(-10px)";
+      overlayState.hideTimer = overlayWindow.setTimeout(() => {
+        if (overlayEl.contains(bubbleEl)) {
+          bubbleEl.remove();
+        }
+        overlayState.hideTimer = null;
+      }, 320);
+    }, 3000);
+  };
+
+  if (!sourceInput || sourceDocument !== overlayDocument) {
+    revealBubble();
+    return;
+  }
+
+  const overlayRect = overlayEl.getBoundingClientRect();
+  const bubbleRect = bubbleEl.getBoundingClientRect();
+  const sourceRect = sourceInput.getBoundingClientRect();
+  if (overlayRect.width <= 0 || overlayRect.height <= 0 || sourceRect.width <= 0 || sourceRect.height <= 0) {
+    revealBubble();
+    return;
+  }
+
+  const targetLeft = bubbleRect.left;
+  const targetTop = bubbleRect.top;
+  const startLeft = sourceRect.left + 9;
+  const startTop = sourceRect.top + Math.max(6, sourceRect.height - bubbleRect.height - 8);
+  const deltaX = startLeft - targetLeft;
+  const deltaY = startTop - targetTop;
+
+  bubbleEl.style.opacity = "0";
+  bubbleEl.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+
+  overlayState.fadeFrame = createAnimationFrameHandle(sourceWindow, () => {
+    bubbleEl.style.transition =
+      "transform 520ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease";
+    bubbleEl.style.opacity = "1";
+    bubbleEl.style.transform = "none";
+    overlayState.fadeFrame = null;
+  });
+
+  overlayState.hideTimer = overlayWindow.setTimeout(() => {
+    bubbleEl.classList.add("is-fading");
+    bubbleEl.style.transition = "opacity 260ms ease, transform 260ms ease";
+    bubbleEl.style.opacity = "0";
+    bubbleEl.style.transform = "translateY(-10px)";
+    overlayState.hideTimer = overlayWindow.setTimeout(() => {
+      if (overlayEl.contains(bubbleEl)) {
+        bubbleEl.remove();
+      }
+      overlayState.hideTimer = null;
+    }, 320);
+  }, 3520);
 }
 
 function setHealthStatus(dotEl, valueEl, tone, text) {
@@ -1721,6 +1883,12 @@ function cleanupAvatarDocumentPictureInPicture() {
     avatarDocumentPictureInPictureElements.videoEl.pause?.();
     avatarDocumentPictureInPictureElements.videoEl.srcObject = null;
   }
+  if (avatarDocumentPictureInPictureElements?.messageOverlayEl) {
+    clearAvatarMessageOverlayState(
+      avatarDocumentPictureInPictureElements.messageOverlayEl,
+      avatarDocumentPictureInPictureElements.messageOverlayState,
+    );
+  }
   avatarDocumentPictureInPictureCleanup = null;
   avatarDocumentPictureInPictureWindow = null;
   avatarDocumentPictureInPictureElements = null;
@@ -1783,11 +1951,16 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   const mediaEl = pictureInPictureDocument.createElement("div");
   mediaEl.className = "avatar-media";
 
+  const messageOverlayEl = pictureInPictureDocument.createElement("div");
+  messageOverlayEl.className = "avatar-message-overlay";
+  messageOverlayEl.setAttribute("aria-hidden", "true");
+
   const videoEl = pictureInPictureDocument.createElement("video");
   videoEl.autoplay = true;
   videoEl.playsInline = true;
   videoEl.muted = true;
   mediaEl.appendChild(videoEl);
+  mediaEl.appendChild(messageOverlayEl);
 
   const chatFormEl = pictureInPictureDocument.createElement("form");
   chatFormEl.className = "avatar-pip-chat-compose";
@@ -1826,7 +1999,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   });
   chatFormEl.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await submitChatMessage(chatInputEl.value);
+    await submitChatMessage(chatInputEl.value, { sourceInput: chatInputEl });
   });
 
   chatFormEl.append(chatInputEl, chatSendButton);
@@ -1842,6 +2015,11 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     chatSendButton,
     endSessionButton,
     mediaEl,
+    messageOverlayEl,
+    messageOverlayState: {
+      fadeFrame: null,
+      hideTimer: null,
+    },
     micButton,
     paneEl,
     reconnectButton,
@@ -3658,7 +3836,7 @@ if (ttsForm) {
   }
 }
 
-async function submitChatMessage(rawMessage) {
+async function submitChatMessage(rawMessage, options = {}) {
   const message = String(rawMessage || "").trim();
   if (!message) {
     return false;
@@ -3675,6 +3853,7 @@ async function submitChatMessage(rawMessage) {
   const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   setChatPaneOpen(true);
   appendChatLine("user", message, { awaitingReply: true });
+  animateAvatarSentMessage(message, { sourceInput: options.sourceInput });
   setMainChatComposerValue("");
   setAvatarDocumentPictureInPictureChatComposerValue("");
   syncAvatarDocumentPictureInPictureChatComposer();
@@ -3716,7 +3895,7 @@ if (isTextAreaElement(chatInput)) {
 if (chatForm) {
   chatForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await submitChatMessage(chatInput?.value);
+    await submitChatMessage(chatInput?.value, { sourceInput: chatInput });
   });
 }
 
