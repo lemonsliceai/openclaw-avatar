@@ -53,6 +53,7 @@ const togglePictureInPictureButton = document.getElementById("toggle-picture-in-
 const chatStatusEl = document.getElementById("chat-status");
 const chatLogEl = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
+let chatAttachmentsEl = document.getElementById("chat-attachments");
 const chatInput = document.getElementById("chat-input");
 const chatSendButton = document.getElementById("chat-send");
 
@@ -92,6 +93,15 @@ const AVATAR_RECONNECTING_STATUS = "Reconnecting avatar...";
 const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
 const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
+const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
+const CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const CHAT_SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+]);
 
 let activeSession = null;
 let activeRoom = null;
@@ -140,7 +150,16 @@ let setupFormBaseline = {
 let setupRawBaseline = "";
 const renderedVoiceUserRuns = new Set();
 const chatMessages = [];
+const chatComposerDrafts = {
+  main: {
+    attachments: [],
+  },
+  pip: {
+    attachments: [],
+  },
+};
 let chatAwaitingReply = false;
+let chatComposerAttachmentIdCounter = 0;
 
 function isTextAreaElement(element) {
   return Boolean(element && typeof element === "object" && element.nodeType === 1 && element.tagName === "TEXTAREA");
@@ -148,6 +167,462 @@ function isTextAreaElement(element) {
 
 function isButtonElement(element) {
   return Boolean(element && typeof element === "object" && element.nodeType === 1 && element.tagName === "BUTTON");
+}
+
+function isBlobLike(value) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof value.arrayBuffer === "function" &&
+      typeof value.type === "string",
+  );
+}
+
+function nextChatComposerAttachmentId() {
+  chatComposerAttachmentIdCounter += 1;
+  return `chat-attachment-${Date.now()}-${chatComposerAttachmentIdCounter}`;
+}
+
+function normalizeChatComposerKey(key) {
+  return key === "pip" ? "pip" : "main";
+}
+
+function getChatComposerDraft(key = "main") {
+  return chatComposerDrafts[normalizeChatComposerKey(key)];
+}
+
+function isSupportedChatImageMimeType(mimeType) {
+  return typeof mimeType === "string" && CHAT_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType.trim().toLowerCase());
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (!isBlobLike(file)) {
+      reject(new Error("Clipboard item is not a file."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      resolve(typeof reader.result === "string" ? reader.result : "");
+    });
+    reader.addEventListener("error", () => {
+      reject(reader.error || new Error("Failed to read clipboard image."));
+    });
+    reader.readAsDataURL(file);
+  });
+}
+
+function extractImageFilesFromClipboardEvent(event) {
+  const clipboardItems = Array.from(event?.clipboardData?.items || []);
+  const itemFiles = clipboardItems
+    .filter((item) => item?.kind === "file" && isSupportedChatImageMimeType(item.type))
+    .map((item) => item.getAsFile())
+    .filter((file) => isBlobLike(file));
+  if (itemFiles.length > 0) {
+    return itemFiles;
+  }
+  return Array.from(event?.clipboardData?.files || []).filter(
+    (file) => isBlobLike(file) && isSupportedChatImageMimeType(file?.type),
+  );
+}
+
+function createChatComposerAttachmentPreview(attachment, ownerDocument, options = {}) {
+  const previewEl = ownerDocument.createElement("div");
+  previewEl.className = "chat-attachment";
+
+  const imageEl = ownerDocument.createElement("img");
+  imageEl.className = "chat-attachment__img";
+  imageEl.src = attachment.dataUrl;
+  imageEl.alt = attachment.name || "Pasted image";
+  imageEl.decoding = "async";
+  previewEl.appendChild(imageEl);
+
+  if (typeof options.onRemove === "function") {
+    const removeButton = ownerDocument.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "chat-attachment__remove";
+    removeButton.setAttribute("aria-label", "Remove pasted image");
+    removeButton.setAttribute("title", "Remove pasted image");
+    removeButton.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M18 6 6 18"></path>
+        <path d="m6 6 12 12"></path>
+      </svg>
+    `;
+    removeButton.addEventListener("click", () => {
+      options.onRemove(attachment.id);
+    });
+    previewEl.appendChild(removeButton);
+  }
+
+  return previewEl;
+}
+
+function createChatComposerAttachmentsContainer(ownerDocument, className, id = "") {
+  const container = ownerDocument.createElement("div");
+  container.className = className;
+  container.setAttribute("aria-label", "Pasted image attachments");
+  if (id) {
+    container.id = id;
+  }
+  return container;
+}
+
+function getChatComposerAttachmentsContainer(key = "main") {
+  return normalizeChatComposerKey(key) === "pip" ? avatarDocumentPictureInPictureElements?.chatAttachments || null : chatAttachmentsEl;
+}
+
+function setChatComposerAttachmentRemoveButtonsInteractive(container, interactive) {
+  if (!container) {
+    return;
+  }
+  const isInteractive = interactive !== false;
+  const removeButtons = Array.from(container.querySelectorAll(".chat-attachment__remove"));
+  for (const removeButton of removeButtons) {
+    if (!isButtonElement(removeButton)) {
+      continue;
+    }
+    removeButton.disabled = !isInteractive;
+    if (isInteractive) {
+      removeButton.removeAttribute("aria-disabled");
+      removeButton.removeAttribute("tabindex");
+    } else {
+      removeButton.setAttribute("aria-disabled", "true");
+      removeButton.tabIndex = -1;
+    }
+  }
+}
+
+function ensureChatComposerAttachmentsContainer() {
+  if (!chatForm) {
+    return null;
+  }
+  if (!chatAttachmentsEl) {
+    chatAttachmentsEl = createChatComposerAttachmentsContainer(document, "chat-attachments", "chat-attachments");
+  }
+  if (!chatAttachmentsEl.isConnected) {
+    chatForm.insertBefore(chatAttachmentsEl, chatInput?.closest(".chat-compose__row") || null);
+  }
+  return chatAttachmentsEl;
+}
+
+function removeChatComposerAttachmentsContainer() {
+  if (chatAttachmentsEl?.isConnected) {
+    chatAttachmentsEl.remove();
+  }
+}
+
+function ensureAvatarDocumentPictureInPictureChatAttachmentsContainer() {
+  if (!avatarDocumentPictureInPictureElements?.chatForm) {
+    return null;
+  }
+  if (!avatarDocumentPictureInPictureElements.chatAttachments) {
+    avatarDocumentPictureInPictureElements.chatAttachments = createChatComposerAttachmentsContainer(
+      avatarDocumentPictureInPictureElements.chatForm.ownerDocument || document,
+      "chat-attachments",
+    );
+  }
+  const { chatAttachments, chatForm: pipChatForm, chatInputRow: pipChatInputRow } = avatarDocumentPictureInPictureElements;
+  if (!chatAttachments.isConnected) {
+    pipChatForm.insertBefore(chatAttachments, pipChatInputRow || null);
+  }
+  return chatAttachments;
+}
+
+function removeAvatarDocumentPictureInPictureChatAttachmentsContainer() {
+  if (avatarDocumentPictureInPictureElements?.chatAttachments?.isConnected) {
+    avatarDocumentPictureInPictureElements.chatAttachments.remove();
+  }
+}
+
+function renderMainChatComposerAttachments() {
+  const attachments = getChatComposerDraft("main").attachments;
+  if (attachments.length === 0) {
+    removeChatComposerAttachmentsContainer();
+    return;
+  }
+  const container = ensureChatComposerAttachmentsContainer();
+  if (!container) {
+    return;
+  }
+  container.replaceChildren();
+  for (const attachment of attachments) {
+    container.appendChild(
+      createChatComposerAttachmentPreview(attachment, container.ownerDocument || document, {
+        onRemove: (attachmentId) => removeChatComposerAttachment("main", attachmentId),
+      }),
+    );
+  }
+}
+
+function renderAvatarDocumentPictureInPictureChatAttachments() {
+  const attachments = getChatComposerDraft("pip").attachments;
+  if (attachments.length === 0) {
+    removeAvatarDocumentPictureInPictureChatAttachmentsContainer();
+    return;
+  }
+  const container = ensureAvatarDocumentPictureInPictureChatAttachmentsContainer();
+  if (!container) {
+    return;
+  }
+  container.replaceChildren();
+  for (const attachment of attachments) {
+    container.appendChild(
+      createChatComposerAttachmentPreview(attachment, container.ownerDocument || document, {
+        onRemove: (attachmentId) => removeChatComposerAttachment("pip", attachmentId),
+      }),
+    );
+  }
+}
+
+function renderChatComposerAttachments() {
+  renderMainChatComposerAttachments();
+  renderAvatarDocumentPictureInPictureChatAttachments();
+}
+
+function clearChatComposerAttachments(key) {
+  const attachments = getChatComposerDraft(key).attachments;
+  if (attachments.length === 0) {
+    renderChatComposerAttachments();
+    if (normalizeChatComposerKey(key) === "pip") {
+      syncAvatarDocumentPictureInPictureChatComposer();
+    }
+    return;
+  }
+  attachments.length = 0;
+  renderChatComposerAttachments();
+  if (normalizeChatComposerKey(key) === "pip") {
+    syncAvatarDocumentPictureInPictureChatComposer();
+  }
+}
+
+function clearAllChatComposerAttachments() {
+  clearChatComposerAttachments("main");
+  clearChatComposerAttachments("pip");
+}
+
+function removeChatComposerAttachment(key, attachmentId) {
+  const attachments = getChatComposerDraft(key).attachments;
+  const index = attachments.findIndex((attachment) => attachment.id === attachmentId);
+  if (index < 0) {
+    return;
+  }
+  attachments.splice(index, 1);
+  renderChatComposerAttachments();
+  if (normalizeChatComposerKey(key) === "pip") {
+    syncAvatarDocumentPictureInPictureChatComposer();
+  }
+}
+
+async function addChatComposerAttachmentsFromClipboardEvent(event, key = "main") {
+  const imageFiles = extractImageFilesFromClipboardEvent(event);
+  if (imageFiles.length === 0) {
+    return false;
+  }
+
+  event.preventDefault();
+
+  const attachments = getChatComposerDraft(key).attachments;
+  const remainingSlots = CHAT_MAX_IMAGE_ATTACHMENTS - attachments.length;
+  if (remainingSlots <= 0) {
+    setChatStatus(`You can attach up to ${CHAT_MAX_IMAGE_ATTACHMENTS} images per message.`);
+    return true;
+  }
+
+  const filesToRead = imageFiles.slice(0, remainingSlots);
+  const skippedForLimit = imageFiles.length - filesToRead.length;
+  let skippedInvalid = 0;
+  const nextAttachments = [];
+
+  for (const file of filesToRead) {
+    if (!file || !isSupportedChatImageMimeType(file.type)) {
+      skippedInvalid += 1;
+      continue;
+    }
+    if (Number.isFinite(file.size) && file.size > CHAT_MAX_IMAGE_ATTACHMENT_BYTES) {
+      skippedInvalid += 1;
+      setChatStatus(`Pasted image is too large. Limit ${Math.round(CHAT_MAX_IMAGE_ATTACHMENT_BYTES / (1024 * 1024))} MB.`);
+      continue;
+    }
+    const dataUrl = await readFileAsDataUrl(file).catch(() => "");
+    if (!dataUrl) {
+      skippedInvalid += 1;
+      continue;
+    }
+    nextAttachments.push({
+      id: nextChatComposerAttachmentId(),
+      dataUrl,
+      mimeType: file.type,
+      name: file.name || "Pasted image",
+    });
+  }
+
+  if (nextAttachments.length === 0) {
+    return true;
+  }
+
+  attachments.push(...nextAttachments);
+  renderChatComposerAttachments();
+  if (normalizeChatComposerKey(key) === "pip") {
+    syncAvatarDocumentPictureInPictureChatComposer();
+  }
+
+  const skippedCount = Math.max(0, skippedForLimit + skippedInvalid);
+  setChatStatus(
+    skippedCount > 0
+      ? `Added ${nextAttachments.length} image${nextAttachments.length === 1 ? "" : "s"}. Extra images were skipped.`
+      : `Added ${nextAttachments.length} image${nextAttachments.length === 1 ? "" : "s"} to the message.`,
+  );
+  return true;
+}
+
+function hasChatComposerDraftValue(value, attachments = []) {
+  return Boolean(String(value || "").trim()) || attachments.length > 0;
+}
+
+function parseDataUrl(dataUrl) {
+  if (typeof dataUrl !== "string") {
+    return null;
+  }
+  const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    mimeType: match[1],
+    data: match[2],
+  };
+}
+
+function buildChatSendAttachments(attachments) {
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return [];
+  }
+  return attachments
+    .map((attachment) => {
+      const parsedDataUrl = parseDataUrl(attachment?.dataUrl);
+      if (!parsedDataUrl) {
+        return null;
+      }
+      return {
+        type: "image",
+        mimeType: parsedDataUrl.mimeType,
+        fileName: attachment.name || "pasted-image",
+        content: parsedDataUrl.data,
+      };
+    })
+    .filter(Boolean);
+}
+
+function resolveChatContentTextParts(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content
+    .filter((item) => item && typeof item === "object")
+    .filter((item) => item.type === "text" || item.type === "input_text" || item.type === "output_text")
+    .map((item) => (typeof item.text === "string" ? item.text.trim() : ""))
+    .filter(Boolean);
+}
+
+function buildDataUrlFromImageSource(source) {
+  if (!source || typeof source !== "object") {
+    return "";
+  }
+  if (source.type === "url" && typeof source.url === "string" && source.url.trim()) {
+    return source.url.trim();
+  }
+  const data = typeof source.data === "string" ? source.data.trim() : "";
+  const mimeType = [
+    source.mime_type,
+    source.media_type,
+    source.mimeType,
+    source.mediaType,
+  ].find((value) => typeof value === "string" && value.trim());
+  if (!data || !mimeType) {
+    return "";
+  }
+  return `data:${mimeType.trim()};base64,${data}`;
+}
+
+function resolveChatImageUrl(block) {
+  if (!block || typeof block !== "object") {
+    return "";
+  }
+  if (typeof block.imageUrl === "string" && block.imageUrl.trim()) {
+    return block.imageUrl.trim();
+  }
+  if (typeof block.url === "string" && block.url.trim()) {
+    return block.url.trim();
+  }
+  if (typeof block.image_url === "string" && block.image_url.trim()) {
+    return block.image_url.trim();
+  }
+  if (block.image_url && typeof block.image_url === "object") {
+    const url = typeof block.image_url.url === "string" ? block.image_url.url.trim() : "";
+    if (url) {
+      return url;
+    }
+  }
+  return buildDataUrlFromImageSource(block.source);
+}
+
+function extractChatMessageContent(message) {
+  if (!message || typeof message !== "object") {
+    return { text: "", images: [] };
+  }
+
+  const textParts = resolveChatContentTextParts(message.content);
+  const images =
+    Array.isArray(message.content)
+      ? message.content
+          .filter((item) => item && typeof item === "object")
+          .map((item) => {
+            const type = typeof item.type === "string" ? item.type.trim() : "";
+            if (
+              type !== "input_image" &&
+              type !== "image" &&
+              type !== "image_url" &&
+              !item.image_url &&
+              !item.imageUrl &&
+              !item.source &&
+              !item.url
+            ) {
+              return null;
+            }
+            const url = resolveChatImageUrl(item);
+            if (!url) {
+              return null;
+            }
+            return {
+              url,
+              alt:
+                typeof item.alt === "string" && item.alt.trim()
+                  ? item.alt.trim()
+                  : typeof item.name === "string" && item.name.trim()
+                    ? item.name.trim()
+                    : "Pasted image",
+            };
+          })
+          .filter(Boolean)
+      : [];
+
+  let text = textParts.join("\n\n");
+  if (!text && typeof message.content === "string" && message.content.trim()) {
+    text = message.content.trim();
+  }
+  if (!text && typeof message.text === "string" && message.text.trim()) {
+    text = message.text.trim();
+  }
+
+  return { text, images };
+}
+
+function openChatImage(url) {
+  if (typeof url !== "string" || !url.trim()) {
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function setOutput(value) {
@@ -380,11 +855,8 @@ function applyAvatarMessageBubbleStyles(element) {
   if (!element) {
     return;
   }
-  element.style.position = "absolute";
-  element.style.left = "24px";
-  element.style.bottom = "16%";
-  element.style.transform = "none";
-  element.style.width = "min(78%, 34rem)";
+  element.style.display = "block";
+  element.style.maxWidth = "min(78vw, 34rem)";
   element.style.padding = "12px 16px";
   element.style.borderRadius = "18px";
   element.style.border = "1px solid rgba(255, 255, 255, 0.14)";
@@ -395,9 +867,53 @@ function applyAvatarMessageBubbleStyles(element) {
   element.style.lineHeight = "1.4";
   element.style.textAlign = "left";
   element.style.boxShadow = "0 18px 38px rgba(2, 6, 23, 0.4)";
-  element.style.opacity = "0";
-  element.style.transition = "opacity 260ms ease, transform 260ms ease";
   element.style.wordBreak = "break-word";
+}
+
+function applyAvatarMessagePayloadStyles(element) {
+  if (!element) {
+    return;
+  }
+  element.style.position = "absolute";
+  element.style.left = "24px";
+  element.style.bottom = "16%";
+  element.style.display = "flex";
+  element.style.flexDirection = "column";
+  element.style.alignItems = "flex-start";
+  element.style.gap = "10px";
+  element.style.transform = "none";
+  element.style.opacity = "0";
+  element.style.pointerEvents = "none";
+  element.style.transition = "opacity 260ms ease, transform 260ms ease";
+}
+
+function applyAvatarMessageBubbleAttachmentsStyles(element, sourceRect = null) {
+  if (!element) {
+    return;
+  }
+  if (sourceRect && sourceRect.width > 0) {
+    element.style.width = `${sourceRect.width}px`;
+    element.style.maxWidth = `${sourceRect.width}px`;
+  }
+  element.style.margin = "0";
+  element.style.pointerEvents = "none";
+}
+
+function copyComputedElementStyles(sourceElement, targetElement) {
+  if (!sourceElement || !targetElement) {
+    return;
+  }
+  const sourceWindow = sourceElement.ownerDocument?.defaultView || window;
+  const computedStyles = sourceWindow.getComputedStyle(sourceElement);
+  for (const propertyName of computedStyles) {
+    targetElement.style.setProperty(propertyName, computedStyles.getPropertyValue(propertyName));
+  }
+  const sourceChildren = Array.from(sourceElement.children);
+  const targetChildren = Array.from(targetElement.children);
+  const childCount = Math.min(sourceChildren.length, targetChildren.length);
+  for (let index = 0; index < childCount; index += 1) {
+    copyComputedElementStyles(sourceChildren[index], targetChildren[index]);
+  }
 }
 
 function clearAvatarMessageOverlayState(overlayEl, state = {}) {
@@ -424,7 +940,11 @@ function createAnimationFrameHandle(view, callback) {
 
 function animateAvatarSentMessage(message, options = {}) {
   const normalizedMessage = typeof message === "string" ? message.trim() : "";
-  if (!normalizedMessage) {
+  const sourceAttachmentsContainer = options.sourceAttachmentsContainer?.isConnected
+    ? options.sourceAttachmentsContainer
+    : null;
+  const hasAttachments = Boolean(sourceAttachmentsContainer);
+  if (!normalizedMessage && !hasAttachments) {
     return;
   }
 
@@ -453,24 +973,45 @@ function animateAvatarSentMessage(message, options = {}) {
   applyAvatarMessageOverlayStyles(overlayEl);
   clearAvatarMessageOverlayState(overlayEl, overlayState);
 
-  const bubbleEl = overlayDocument.createElement("div");
-  bubbleEl.className = "avatar-message-overlay__bubble";
-  bubbleEl.textContent = normalizedMessage;
-  applyAvatarMessageBubbleStyles(bubbleEl);
-  overlayEl.appendChild(bubbleEl);
+  const payloadEl = overlayDocument.createElement("div");
+  payloadEl.className = "avatar-message-overlay__bubble";
+  applyAvatarMessagePayloadStyles(payloadEl);
+
+  let attachmentsPreviewRect = null;
+  let bubbleEl = null;
+  if (normalizedMessage) {
+    bubbleEl = overlayDocument.createElement("div");
+    const messageTextEl = overlayDocument.createElement("div");
+    applyAvatarMessageBubbleStyles(bubbleEl);
+    messageTextEl.textContent = normalizedMessage;
+    bubbleEl.appendChild(messageTextEl);
+    payloadEl.appendChild(bubbleEl);
+  }
+  if (hasAttachments) {
+    setChatComposerAttachmentRemoveButtonsInteractive(sourceAttachmentsContainer, false);
+    attachmentsPreviewRect = sourceAttachmentsContainer.getBoundingClientRect();
+    const attachmentsPreviewEl = sourceAttachmentsContainer.cloneNode(true);
+    attachmentsPreviewEl.removeAttribute("id");
+    attachmentsPreviewEl.setAttribute("aria-hidden", "true");
+    copyComputedElementStyles(sourceAttachmentsContainer, attachmentsPreviewEl);
+    applyAvatarMessageBubbleAttachmentsStyles(attachmentsPreviewEl, attachmentsPreviewRect);
+    setChatComposerAttachmentRemoveButtonsInteractive(attachmentsPreviewEl, false);
+    payloadEl.prepend(attachmentsPreviewEl);
+  }
+  overlayEl.appendChild(payloadEl);
 
   const revealBubble = () => {
-    bubbleEl.classList.add("is-visible");
-    bubbleEl.style.transition = "opacity 260ms ease, transform 260ms ease";
-    bubbleEl.style.opacity = "1";
-    bubbleEl.style.transform = "none";
+    payloadEl.classList.add("is-visible");
+    payloadEl.style.transition = "opacity 260ms ease, transform 260ms ease";
+    payloadEl.style.opacity = "1";
+    payloadEl.style.transform = "none";
     overlayState.hideTimer = overlayWindow.setTimeout(() => {
-      bubbleEl.classList.add("is-fading");
-      bubbleEl.style.opacity = "0";
-      bubbleEl.style.transform = "translateY(-10px)";
+      payloadEl.classList.add("is-fading");
+      payloadEl.style.opacity = "0";
+      payloadEl.style.transform = "translateY(-10px)";
       overlayState.hideTimer = overlayWindow.setTimeout(() => {
-        if (overlayEl.contains(bubbleEl)) {
-          bubbleEl.remove();
+        if (overlayEl.contains(payloadEl)) {
+          payloadEl.remove();
         }
         overlayState.hideTimer = null;
       }, 320);
@@ -483,39 +1024,52 @@ function animateAvatarSentMessage(message, options = {}) {
   }
 
   const overlayRect = overlayEl.getBoundingClientRect();
-  const bubbleRect = bubbleEl.getBoundingClientRect();
+  const payloadRect = payloadEl.getBoundingClientRect();
+  const bubbleRect = bubbleEl?.getBoundingClientRect() || null;
   const sourceRect = sourceInput.getBoundingClientRect();
+  const sourceAttachmentsRect = attachmentsPreviewRect || sourceAttachmentsContainer?.getBoundingClientRect() || null;
   if (overlayRect.width <= 0 || overlayRect.height <= 0 || sourceRect.width <= 0 || sourceRect.height <= 0) {
     revealBubble();
     return;
   }
 
-  const targetLeft = bubbleRect.left;
-  const targetTop = bubbleRect.top;
-  const startLeft = sourceRect.left + 9;
-  const startTop = sourceRect.top + Math.max(6, sourceRect.height - bubbleRect.height - 8);
+  const targetLeft = payloadRect.left;
+  const targetTop = payloadRect.top;
+  const bubbleStartLeft = sourceRect.left + 9;
+  const bubbleStartTop = sourceRect.top + Math.max(6, sourceRect.height - (bubbleRect?.height || payloadRect.height) - 8);
+  const startLeft = sourceAttachmentsRect ? sourceAttachmentsRect.left : bubbleStartLeft;
+  const startTop = sourceAttachmentsRect ? sourceAttachmentsRect.top : bubbleStartTop;
   const deltaX = startLeft - targetLeft;
   const deltaY = startTop - targetTop;
 
-  bubbleEl.style.opacity = "0";
-  bubbleEl.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+  payloadEl.style.opacity = "0";
+  payloadEl.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+  if (bubbleEl && sourceAttachmentsRect && bubbleRect) {
+    const bubbleDeltaX = bubbleStartLeft - (bubbleRect.left + deltaX);
+    const bubbleDeltaY = bubbleStartTop - (bubbleRect.top + deltaY);
+    bubbleEl.style.transform = `translate(${bubbleDeltaX}px, ${bubbleDeltaY}px)`;
+  }
 
   overlayState.fadeFrame = createAnimationFrameHandle(sourceWindow, () => {
-    bubbleEl.style.transition =
+    payloadEl.style.transition =
       "transform 520ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease";
-    bubbleEl.style.opacity = "1";
-    bubbleEl.style.transform = "none";
+    payloadEl.style.opacity = "1";
+    payloadEl.style.transform = "none";
+    if (bubbleEl) {
+      bubbleEl.style.transition = "transform 520ms cubic-bezier(0.22, 1, 0.36, 1)";
+      bubbleEl.style.transform = "none";
+    }
     overlayState.fadeFrame = null;
   });
 
   overlayState.hideTimer = overlayWindow.setTimeout(() => {
-    bubbleEl.classList.add("is-fading");
-    bubbleEl.style.transition = "opacity 260ms ease, transform 260ms ease";
-    bubbleEl.style.opacity = "0";
-    bubbleEl.style.transform = "translateY(-10px)";
+    payloadEl.classList.add("is-fading");
+    payloadEl.style.transition = "opacity 260ms ease, transform 260ms ease";
+    payloadEl.style.opacity = "0";
+    payloadEl.style.transform = "translateY(-10px)";
     overlayState.hideTimer = overlayWindow.setTimeout(() => {
-      if (overlayEl.contains(bubbleEl)) {
-        bubbleEl.remove();
+      if (overlayEl.contains(payloadEl)) {
+        payloadEl.remove();
       }
       overlayState.hideTimer = null;
     }, 320);
@@ -1391,6 +1945,9 @@ function getAvatarDocumentPictureInPictureStyles() {
   return `
     :root {
       color-scheme: dark;
+      --bg: #020617;
+      --panel: rgba(15, 23, 42, 0.88);
+      --border: rgba(148, 163, 184, 0.22);
     }
 
     html,
@@ -1524,12 +2081,82 @@ function getAvatarDocumentPictureInPictureStyles() {
       right: 14px;
       bottom: 14px;
       z-index: 2;
-      display: block;
+      display: grid;
+      gap: 8px;
       padding: 0;
       border: none;
       background: transparent;
       backdrop-filter: none;
       box-shadow: none;
+    }
+
+    .avatar-pip-chat-compose__row {
+      position: relative;
+    }
+
+    .avatar-pip-chat-compose .chat-attachments {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px;
+      background: var(--panel);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      width: fit-content;
+      max-width: 100%;
+      align-self: flex-start;
+    }
+
+    .avatar-pip-chat-compose .chat-attachment {
+      position: relative;
+      width: 80px;
+      height: 80px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    .avatar-pip-chat-compose .chat-attachment__img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .avatar-pip-chat-compose .chat-attachment__remove {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(0, 0, 0, 0.7);
+      color: #fff;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 150ms ease-out;
+    }
+
+    .avatar-pip-chat-compose .chat-attachment:hover .chat-attachment__remove {
+      opacity: 1;
+    }
+
+    .avatar-pip-chat-compose .chat-attachment__remove:hover {
+      background: rgba(220, 38, 38, 0.9);
+    }
+
+    .avatar-pip-chat-compose .chat-attachment__remove svg {
+      width: 12px;
+      height: 12px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2px;
     }
 
     .avatar-pip-chat-compose textarea {
@@ -1571,7 +2198,7 @@ function getAvatarDocumentPictureInPictureStyles() {
       cursor: not-allowed;
     }
 
-    .avatar-pip-chat-compose button {
+    .avatar-pip-chat-compose__row button {
       position: absolute;
       right: 8px;
       top: 50%;
@@ -1595,13 +2222,13 @@ function getAvatarDocumentPictureInPictureStyles() {
         background 120ms ease;
     }
 
-    .avatar-pip-chat-compose button:not([hidden]):hover {
+    .avatar-pip-chat-compose__row button:not([hidden]):hover {
       border-color: rgba(56, 189, 248, 0.55);
       background: rgba(14, 165, 233, 0.18);
       color: #38bdf8;
     }
 
-    .avatar-pip-chat-compose button:not([hidden]):active {
+    .avatar-pip-chat-compose__row button:not([hidden]):active {
       transform: translateY(-50%) scale(0.96);
     }
 
@@ -1774,30 +2401,29 @@ function syncChatInputHeight() {
   syncTextareaHeight(chatInput);
 }
 
-function setMainChatComposerValue(nextValue) {
-  if (!isTextAreaElement(chatInput)) {
+function syncChatComposerInputHeight(input) {
+  if (!isTextAreaElement(input)) {
     return;
   }
-  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
-  if (chatInput.value !== normalizedValue) {
-    chatInput.value = normalizedValue;
-  }
-  syncChatInputHeight();
-}
-
-function setAvatarDocumentPictureInPictureChatComposerValue(nextValue) {
-  const pipChatInput = getAvatarDocumentPictureInPictureChatInput();
-  if (!pipChatInput) {
+  if (input === chatInput) {
+    syncChatInputHeight();
     return;
   }
-  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
-  if (pipChatInput.value !== normalizedValue) {
-    pipChatInput.value = normalizedValue;
-  }
-  syncTextareaHeight(getAvatarDocumentPictureInPictureChatInput(), {
+  syncTextareaHeight(input, {
     minHeight: 44,
     maxHeight: 96,
   });
+}
+
+function setChatComposerInputValue(input, nextValue) {
+  if (!isTextAreaElement(input)) {
+    return;
+  }
+  const normalizedValue = typeof nextValue === "string" ? nextValue : "";
+  if (input.value !== normalizedValue) {
+    input.value = normalizedValue;
+  }
+  syncChatComposerInputHeight(input);
 }
 
 function syncAvatarDocumentPictureInPictureChatComposer() {
@@ -1805,7 +2431,11 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
     return;
   }
 
-  const { chatInput: pipChatInput, chatSendButton: pipChatSendButton } = avatarDocumentPictureInPictureElements;
+  const {
+    chatInput: pipChatInput,
+    chatSendButton: pipChatSendButton,
+    chatAttachments: pipChatAttachments,
+  } = avatarDocumentPictureInPictureElements;
   if (!isTextAreaElement(pipChatInput) || !isButtonElement(pipChatSendButton)) {
     return;
   }
@@ -1814,7 +2444,8 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   const disabledTitle = hasSession
     ? "Send message"
     : "Start a session before sending chat messages.";
-  const hasDraft = Boolean(String(pipChatInput.value || "").trim());
+  const pipAttachments = getChatComposerDraft("pip").attachments;
+  const hasDraft = hasChatComposerDraftValue(pipChatInput.value, pipAttachments);
   pipChatInput.disabled = !hasSession;
   pipChatInput.placeholder = hasSession ? "Message" : "Start a session to message";
   pipChatInput.title = disabledTitle;
@@ -1824,6 +2455,11 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   pipChatSendButton.setAttribute("aria-hidden", hasDraft ? "false" : "true");
   pipChatSendButton.title = hasSession ? "Send message" : disabledTitle;
   pipChatSendButton.setAttribute("aria-label", hasSession ? "Send message" : disabledTitle);
+  if (pipAttachments.length > 0) {
+    ensureAvatarDocumentPictureInPictureChatAttachmentsContainer();
+  } else if (pipChatAttachments) {
+    removeAvatarDocumentPictureInPictureChatAttachmentsContainer();
+  }
 }
 
 function syncAvatarDocumentPictureInPictureMedia() {
@@ -1957,6 +2593,9 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   const chatFormEl = pictureInPictureDocument.createElement("form");
   chatFormEl.className = "avatar-pip-chat-compose";
 
+  const chatInputRowEl = pictureInPictureDocument.createElement("div");
+  chatInputRowEl.className = "avatar-pip-chat-compose__row";
+
   const chatInputEl = pictureInPictureDocument.createElement("textarea");
   chatInputEl.rows = 1;
   chatInputEl.placeholder = "Message";
@@ -1982,6 +2621,11 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     syncTextareaHeight(chatInputEl, { minHeight: 44, maxHeight: 96 });
     syncAvatarDocumentPictureInPictureChatComposer();
   });
+  chatInputEl.addEventListener("paste", (event) => {
+    void addChatComposerAttachmentsFromClipboardEvent(event, "pip").catch((error) => {
+      setChatStatus(error instanceof Error ? error.message : "Failed to paste image.");
+    });
+  });
   chatInputEl.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
       return;
@@ -1991,10 +2635,11 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   });
   chatFormEl.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await submitChatMessage(chatInputEl.value, { sourceInput: chatInputEl });
+    await submitChatMessage(chatInputEl.value, { sourceInput: chatInputEl, sourceComposer: "pip" });
   });
 
-  chatFormEl.append(chatInputEl, chatSendButton);
+  chatInputRowEl.append(chatInputEl, chatSendButton);
+  chatFormEl.append(chatInputRowEl);
   mediaEl.appendChild(chatFormEl);
 
   paneEl.append(toolbarEl, mediaEl);
@@ -2002,8 +2647,10 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
 
   avatarDocumentPictureInPictureElements = {
     captureSourceVideo: null,
+    chatAttachments: null,
     chatForm: chatFormEl,
     chatInput: chatInputEl,
+    chatInputRow: chatInputRowEl,
     chatSendButton,
     endSessionButton,
     mediaEl,
@@ -2020,6 +2667,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     statusEl,
     videoEl,
   };
+  renderChatComposerAttachments();
 }
 
 function getAvatarVideoElement() {
@@ -2360,6 +3008,7 @@ function clearChatLog() {
   renderedVoiceUserRuns.clear();
   chatMessages.length = 0;
   chatAwaitingReply = false;
+  clearAllChatComposerAttachments();
   renderChatLog({ scrollToBottom: false });
 }
 
@@ -2500,10 +3149,46 @@ function createChatAvatar(roleClass) {
   return avatar;
 }
 
-function createChatBubble(text) {
+function createChatImageGallery(images) {
+  if (!Array.isArray(images) || images.length === 0) {
+    return null;
+  }
+  const gallery = document.createElement("div");
+  gallery.className = "chat-message-images";
+  for (const image of images) {
+    if (!image?.url) {
+      continue;
+    }
+    const imageEl = document.createElement("img");
+    imageEl.className = "chat-message-image";
+    imageEl.src = image.url;
+    imageEl.alt = image.alt || "Message image";
+    imageEl.loading = "lazy";
+    imageEl.decoding = "async";
+    imageEl.addEventListener("click", () => {
+      openChatImage(image.url);
+    });
+    gallery.appendChild(imageEl);
+  }
+  return gallery.childElementCount > 0 ? gallery : null;
+}
+
+function buildChatBubbleContent(message) {
+  const fragment = document.createDocumentFragment();
+  const gallery = createChatImageGallery(message?.images);
+  if (gallery) {
+    fragment.appendChild(gallery);
+  }
+  if (message?.text) {
+    fragment.appendChild(buildChatTextContent(message.text));
+  }
+  return fragment;
+}
+
+function createChatBubble(message) {
   const bubble = document.createElement("div");
   bubble.className = "chat-bubble fade-in";
-  bubble.appendChild(buildChatTextContent(text));
+  bubble.appendChild(buildChatBubbleContent(message));
   return bubble;
 }
 
@@ -2565,7 +3250,7 @@ function renderChatLog(options = {}) {
       messagesEl.className = "chat-group-messages";
 
       for (const message of group.messages) {
-        messagesEl.appendChild(createChatBubble(message.text));
+        messagesEl.appendChild(createChatBubble(message));
       }
 
       const footer = document.createElement("div");
@@ -2603,12 +3288,14 @@ function renderChatLog(options = {}) {
 function replaceChatLog(entries) {
   chatMessages.length = 0;
   for (const entry of entries) {
-    if (!entry || !entry.text) {
+    const hasImages = Array.isArray(entry?.images) && entry.images.length > 0;
+    if (!entry || (!entry.text && !hasImages)) {
       continue;
     }
     chatMessages.push({
       role: entry.role,
-      text: entry.text,
+      text: typeof entry.text === "string" ? entry.text : "",
+      images: hasImages ? entry.images : [],
       timestamp: resolveChatTimestamp(entry.timestamp) ?? Date.now(),
     });
   }
@@ -2625,13 +3312,26 @@ function setChatAwaitingReply(nextValue) {
   renderChatLog();
 }
 
-function appendChatLine(role, text, options = {}) {
-  if (!chatLogEl || !text) {
+function appendChatLine(role, textOrMessage, options = {}) {
+  if (!chatLogEl) {
+    return;
+  }
+  const content =
+    typeof textOrMessage === "string"
+      ? { text: String(textOrMessage), images: [] }
+      : textOrMessage && typeof textOrMessage === "object"
+        ? {
+            text: typeof textOrMessage.text === "string" ? textOrMessage.text : "",
+            images: Array.isArray(textOrMessage.images) ? textOrMessage.images : [],
+          }
+        : { text: "", images: [] };
+  if (!content.text && content.images.length === 0) {
     return;
   }
   chatMessages.push({
     role,
-    text: String(text),
+    text: content.text,
+    images: content.images,
     timestamp: resolveChatTimestamp(options.timestamp) ?? Date.now(),
   });
   if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
@@ -2641,45 +3341,11 @@ function appendChatLine(role, text, options = {}) {
 }
 
 function extractAssistantText(message) {
-  if (!message || typeof message !== "object") {
-    return "";
-  }
-  if (typeof message.text === "string" && message.text.trim()) {
-    return message.text.trim();
-  }
-  if (typeof message.content === "string" && message.content.trim()) {
-    return message.content.trim();
-  }
-  if (!Array.isArray(message.content)) {
-    return "";
-  }
-  const textBlocks = message.content
-    .filter((item) => item && typeof item === "object" && item.type === "text")
-    .map((item) => (typeof item.text === "string" ? item.text.trim() : ""))
-    .filter(Boolean);
-  return textBlocks.join("\n\n");
+  return extractChatMessageContent(message).text;
 }
 
 function extractUserText(message) {
-  if (!message || typeof message !== "object") {
-    return "";
-  }
-  if (typeof message.content === "string" && message.content.trim()) {
-    return message.content.trim();
-  }
-  if (Array.isArray(message.content)) {
-    const textBlocks = message.content
-      .filter((item) => item && typeof item === "object" && item.type === "text")
-      .map((item) => (typeof item.text === "string" ? item.text.trim() : ""))
-      .filter(Boolean);
-    if (textBlocks.length > 0) {
-      return textBlocks.join("\n\n");
-    }
-  }
-  if (typeof message.text === "string" && message.text.trim()) {
-    return message.text.trim();
-  }
-  return "";
+  return extractChatMessageContent(message).text;
 }
 
 function isVoiceRunId(runId) {
@@ -2771,6 +3437,11 @@ function updateChatControls() {
   const hasSession = Boolean(activeSession);
   chatInput.disabled = !hasSession;
   chatSendButton.disabled = !hasSession;
+  if (getChatComposerDraft("main").attachments.length > 0) {
+    ensureChatComposerAttachmentsContainer();
+  } else {
+    removeChatComposerAttachmentsContainer();
+  }
   syncChatInputHeight();
   syncAvatarDocumentPictureInPictureChatComposer();
 }
@@ -2817,11 +3488,16 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "final") {
-    const text = extractAssistantText(payload.message) || "[No text in final message]";
-    appendChatLine("assistant", text, {
-      awaitingReply: false,
-      timestamp: resolveMessageTimestamp(payload.message),
-    });
+    const content = extractChatMessageContent(payload.message);
+    const assistantMessage = content.text || content.images.length > 0 ? content : "[No text in final message]";
+    appendChatLine(
+      "assistant",
+      assistantMessage,
+      {
+        awaitingReply: false,
+        timestamp: resolveMessageTimestamp(payload.message),
+      },
+    );
     setChatStatus("Reply received.");
     return;
   }
@@ -3026,14 +3702,12 @@ async function loadChatHistory() {
     if (role !== "user" && role !== "assistant") {
       continue;
     }
-    const text =
-      role === "assistant"
-        ? extractAssistantText(message)
-        : extractUserText(message);
-    if (text) {
+    const content = extractChatMessageContent(message);
+    if (content.text || content.images.length > 0) {
       entries.push({
         role,
-        text,
+        text: content.text,
+        images: content.images,
         timestamp: resolveMessageTimestamp(message),
       });
       if (role === "user") {
@@ -3846,7 +4520,12 @@ if (ttsForm) {
 
 async function submitChatMessage(rawMessage, options = {}) {
   const message = String(rawMessage || "").trim();
-  if (!message) {
+  const sourceInput = isTextAreaElement(options.sourceInput) ? options.sourceInput : null;
+  const sourceComposer = normalizeChatComposerKey(options.sourceComposer);
+  const composerDraft = getChatComposerDraft(sourceComposer);
+  const sourceAttachmentsContainer = getChatComposerAttachmentsContainer(sourceComposer);
+  const attachments = composerDraft.attachments.map((attachment) => ({ ...attachment }));
+  if (!message && attachments.length === 0) {
     return false;
   }
 
@@ -3859,11 +4538,21 @@ async function submitChatMessage(rawMessage, options = {}) {
   }
 
   const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  const rpcAttachments = buildChatSendAttachments(attachments);
   setChatPaneOpen(true);
-  appendChatLine("user", message, { awaitingReply: true });
-  animateAvatarSentMessage(message, { sourceInput: options.sourceInput });
-  setMainChatComposerValue("");
-  setAvatarDocumentPictureInPictureChatComposerValue("");
+  appendChatLine("user", {
+    text: message,
+    images: attachments.map((attachment) => ({
+      url: attachment.dataUrl,
+      alt: attachment.name || "Pasted image",
+    })),
+  }, { awaitingReply: true });
+  animateAvatarSentMessage(message, {
+    sourceInput,
+    sourceAttachmentsContainer,
+  });
+  setChatComposerInputValue(sourceInput, "");
+  clearChatComposerAttachments(sourceComposer);
   syncAvatarDocumentPictureInPictureChatComposer();
   setChatStatus("Sending message...");
 
@@ -3871,12 +4560,17 @@ async function submitChatMessage(rawMessage, options = {}) {
     const response = await gatewayRpc("chat.send", {
       sessionKey,
       message,
+      ...(rpcAttachments.length > 0 ? { attachments: rpcAttachments } : {}),
       idempotencyKey,
     });
     setOutput({ action: "chat-sent", sessionKey, response });
     setChatStatus("Awaiting agent reply...");
     return true;
   } catch (error) {
+    setChatComposerInputValue(sourceInput, message);
+    composerDraft.attachments.push(...attachments);
+    renderChatComposerAttachments();
+    syncAvatarDocumentPictureInPictureChatComposer();
     appendChatLine("system", error instanceof Error ? error.message : "Chat send failed.", {
       awaitingReply: false,
     });
@@ -3891,6 +4585,12 @@ if (isTextAreaElement(chatInput)) {
     syncChatInputHeight();
   });
 
+  chatInput.addEventListener("paste", (event) => {
+    void addChatComposerAttachmentsFromClipboardEvent(event, "main").catch((error) => {
+      setChatStatus(error instanceof Error ? error.message : "Failed to paste image.");
+    });
+  });
+
   chatInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
       return;
@@ -3903,7 +4603,7 @@ if (isTextAreaElement(chatInput)) {
 if (chatForm) {
   chatForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await submitChatMessage(chatInput?.value, { sourceInput: chatInput });
+    await submitChatMessage(chatInput?.value, { sourceInput: chatInput, sourceComposer: "main" });
   });
 }
 
@@ -3976,6 +4676,7 @@ initThemeToggle();
 initConfigSectionFiltering();
 updateRoomButtons();
 updateChatControls();
+renderChatComposerAttachments();
 clearChatLog();
 updateAvatarUiState();
 
