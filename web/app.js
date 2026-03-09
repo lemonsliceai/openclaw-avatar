@@ -282,9 +282,9 @@ function ensureAvatarDocumentPictureInPictureChatAttachmentsContainer() {
       "chat-attachments",
     );
   }
-  const { chatAttachments, chatForm: pipChatForm, chatInput: pipChatInput } = avatarDocumentPictureInPictureElements;
+  const { chatAttachments, chatForm: pipChatForm, chatInputRow: pipChatInputRow } = avatarDocumentPictureInPictureElements;
   if (!chatAttachments.isConnected) {
-    pipChatForm.insertBefore(chatAttachments, pipChatInput || null);
+    pipChatForm.insertBefore(chatAttachments, pipChatInputRow || null);
   }
   return chatAttachments;
 }
@@ -1935,6 +1935,10 @@ function getAvatarDocumentPictureInPictureStyles() {
       box-shadow: none;
     }
 
+    .avatar-pip-chat-compose__row {
+      position: relative;
+    }
+
     .avatar-pip-chat-compose .chat-attachments {
       display: inline-flex;
       flex-wrap: wrap;
@@ -2039,7 +2043,7 @@ function getAvatarDocumentPictureInPictureStyles() {
       cursor: not-allowed;
     }
 
-    .avatar-pip-chat-compose button {
+    .avatar-pip-chat-compose__row button {
       position: absolute;
       right: 8px;
       top: 50%;
@@ -2063,13 +2067,13 @@ function getAvatarDocumentPictureInPictureStyles() {
         background 120ms ease;
     }
 
-    .avatar-pip-chat-compose button:not([hidden]):hover {
+    .avatar-pip-chat-compose__row button:not([hidden]):hover {
       border-color: rgba(56, 189, 248, 0.55);
       background: rgba(14, 165, 233, 0.18);
       color: #38bdf8;
     }
 
-    .avatar-pip-chat-compose button:not([hidden]):active {
+    .avatar-pip-chat-compose__row button:not([hidden]):active {
       transform: translateY(-50%) scale(0.96);
     }
 
@@ -2434,6 +2438,9 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   const chatFormEl = pictureInPictureDocument.createElement("form");
   chatFormEl.className = "avatar-pip-chat-compose";
 
+  const chatInputRowEl = pictureInPictureDocument.createElement("div");
+  chatInputRowEl.className = "avatar-pip-chat-compose__row";
+
   const chatInputEl = pictureInPictureDocument.createElement("textarea");
   chatInputEl.rows = 1;
   chatInputEl.placeholder = "Message";
@@ -2476,7 +2483,8 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     await submitChatMessage(chatInputEl.value, { sourceInput: chatInputEl });
   });
 
-  chatFormEl.append(chatInputEl, chatSendButton);
+  chatInputRowEl.append(chatInputEl, chatSendButton);
+  chatFormEl.append(chatInputRowEl);
   mediaEl.appendChild(chatFormEl);
 
   paneEl.append(toolbarEl, mediaEl);
@@ -2487,6 +2495,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
     chatAttachments: null,
     chatForm: chatFormEl,
     chatInput: chatInputEl,
+    chatInputRow: chatInputRowEl,
     chatSendButton,
     endSessionButton,
     mediaEl,
