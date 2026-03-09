@@ -62,6 +62,8 @@ const THEME_STORAGE_KEY = "videoChat.themePreference";
 const NAV_COLLAPSE_STORAGE_KEY = "videoChat.navCollapsed";
 const CHAT_PANE_STORAGE_KEY = "videoChat.chatPaneOpen";
 const CHAT_PANE_WIDTH_STORAGE_KEY = "videoChat.chatPaneWidth";
+const MIC_MUTED_STORAGE_KEY = "videoChat.microphoneMuted";
+const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -99,6 +101,7 @@ let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
+let preferredMicMuted = false;
 let avatarSpeakerMuted = false;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
@@ -257,6 +260,34 @@ function getGatewayToken() {
 
 function hasGatewayToken() {
   return getGatewayToken().trim().length > 0;
+}
+
+function getStoredBooleanPreference(key, fallback = false) {
+  try {
+    const stored = localStorage.getItem(key);
+    if (stored === "1" || stored === "true") {
+      return true;
+    }
+    if (stored === "0" || stored === "false") {
+      return false;
+    }
+  } catch {
+    // Ignore storage failures.
+  }
+  return fallback;
+}
+
+function persistBooleanPreference(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function loadMediaPreferences() {
+  preferredMicMuted = getStoredBooleanPreference(MIC_MUTED_STORAGE_KEY);
+  avatarSpeakerMuted = getStoredBooleanPreference(AVATAR_SPEAKER_MUTED_STORAGE_KEY);
 }
 
 function persistGatewayToken(token) {
@@ -2311,6 +2342,20 @@ function applyAvatarSpeakerMuteState() {
   toggleSpeakerButton.setAttribute("title", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
 }
 
+async function applyPreferredMicMuteState() {
+  if (!localAudioTrack) {
+    return;
+  }
+  if (Boolean(localAudioTrack.isMuted) === preferredMicMuted) {
+    return;
+  }
+  if (preferredMicMuted) {
+    await localAudioTrack.mute();
+    return;
+  }
+  await localAudioTrack.unmute();
+}
+
 function clearChatLog() {
   renderedVoiceUserRuns.clear();
   chatMessages.length = 0;
@@ -3128,7 +3173,7 @@ function updateRoomButtons() {
     leaveRoomButton.disabled = !hasRoom;
   }
   if (toggleMicButton) {
-    const micMuted = Boolean(localAudioTrack?.isMuted);
+    const micMuted = localAudioTrack ? Boolean(localAudioTrack.isMuted) : preferredMicMuted;
     toggleMicButton.disabled = !hasRoom || !localAudioTrack;
     toggleMicButton.classList.toggle("is-muted", micMuted);
     toggleMicButton.setAttribute("aria-label", micMuted ? "Unmute microphone" : "Mute microphone");
@@ -3161,10 +3206,15 @@ async function publishLocalTracks(room) {
     video: false,
   });
   for (const track of tracks) {
-    await room.localParticipant.publishTrack(track);
     if (track.kind === "audio") {
       localAudioTrack = track;
+      try {
+        await applyPreferredMicMuteState();
+      } catch (error) {
+        setOutput({ action: "mic-preference-apply-failed", error: String(error) });
+      }
     }
+    await room.localParticipant.publishTrack(track);
   }
 }
 
@@ -3666,11 +3716,14 @@ async function toggleMicrophone() {
     return;
   }
   try {
-    if (localAudioTrack.isMuted) {
-      await localAudioTrack.unmute();
-    } else {
+    const nextMuted = !localAudioTrack.isMuted;
+    if (nextMuted) {
       await localAudioTrack.mute();
+    } else {
+      await localAudioTrack.unmute();
     }
+    preferredMicMuted = nextMuted;
+    persistBooleanPreference(MIC_MUTED_STORAGE_KEY, nextMuted);
     updateRoomButtons();
   } catch (error) {
     setOutput({ action: "mic-toggle-failed", error: String(error) });
@@ -3679,6 +3732,7 @@ async function toggleMicrophone() {
 
 function toggleAvatarSpeaker() {
   avatarSpeakerMuted = !avatarSpeakerMuted;
+  persistBooleanPreference(AVATAR_SPEAKER_MUTED_STORAGE_KEY, avatarSpeakerMuted);
   applyAvatarSpeakerMuteState();
   updateRoomButtons();
 }
@@ -3912,6 +3966,7 @@ if (clearTokenButton) {
 }
 
 migrateLegacyGatewayTokenIfNeeded();
+loadMediaPreferences();
 initNavCollapseToggle();
 initChatPane();
 initAvatarPaneResize();
