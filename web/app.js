@@ -1395,8 +1395,8 @@ function getAvatarDocumentPictureInPictureStyles() {
     .avatar-toolbar {
       position: relative;
       display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
+      flex-direction: column;
+      align-items: stretch;
       gap: 12px;
       padding: 12px;
       background: linear-gradient(180deg, rgba(2, 6, 23, 0.94) 0%, rgba(2, 6, 23, 0.88) 100%);
@@ -1599,8 +1599,11 @@ function getAvatarDocumentPictureInPictureStyles() {
     }
 
     .avatar-controls {
-      display: inline-flex;
+      display: flex;
       align-items: center;
+      justify-content: flex-end;
+      align-self: stretch;
+      flex-wrap: wrap;
       gap: 10px;
     }
 
