@@ -2114,7 +2114,7 @@ function renderChatLog(options = {}) {
   if (!chatMessages.length && !chatAwaitingReply) {
     const emptyState = document.createElement("div");
     emptyState.className = "video-chat-chat-empty";
-    emptyState.textContent = "Chat history will appear here once the active session starts talking.";
+    emptyState.textContent = "Chat history will appear here once the active session starts.";
     chatLogEl.appendChild(emptyState);
   } else {
     const groups = [];
