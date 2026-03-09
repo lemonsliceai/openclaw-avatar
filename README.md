@@ -1,6 +1,6 @@
 # OpenClaw Claw Cast Plugin
 
-Standalone OpenClaw plugin that adds a LiveKit + LemonSlice Claw Cast experience with plugin-owned setup, browser session controls, text chat, speech-to-text, and text-to-speech.
+Standalone OpenClaw plugin that adds a LemonSlice + LiveKit + Eleven Labs Avatar Cast experience with plugin-owned setup, browser session controls, text chat, speech-to-text, and text-to-speech.
 
 ## What Ships
 
@@ -15,7 +15,7 @@ Standalone OpenClaw plugin that adds a LiveKit + LemonSlice Claw Cast experience
   - `web/settings.html`
   - `web/app.js`
   - `styles/`
-- Plugin manifest: `openclaw.plugin.json`
+- Plugin manifest: [`openclaw.plugin.json`](openclaw.plugin.json)
 
 `package.json` uses a `files` allowlist so `npm pack` only includes the runtime files above and excludes tests, local dependencies, and editor artifacts.
 
@@ -39,22 +39,20 @@ Standalone OpenClaw plugin that adds a LiveKit + LemonSlice Claw Cast experience
 - CLI command:
   - `video-chat-setup`
 
-## Configuration
+## Prerequisites
 
-The plugin persists its setup under the plugin entry in the OpenClaw config file:
+Before installing and running this plugin, you will need accounts with the following services:
 
-- `plugins.entries.video-chat.config.videoChat.provider`
-- `plugins.entries.video-chat.config.videoChat.lemonSlice.apiKey`
-- `plugins.entries.video-chat.config.videoChat.lemonSlice.imageUrl`
-- `plugins.entries.video-chat.config.videoChat.livekit.url`
-- `plugins.entries.video-chat.config.videoChat.livekit.apiKey`
-- `plugins.entries.video-chat.config.videoChat.livekit.apiSecret`
-- `plugins.entries.video-chat.config.messages.tts.elevenlabs.apiKey`
-- `plugins.entries.video-chat.config.messages.tts.elevenlabs.voiceId`
+- **LemonSlice** — provides the avatar/character rendering for the video chat experience.
+  Sign up at https://www.lemonslice.com
 
-OpenClaw typically stores that file at `~/.openclaw/openclaw.json`.
+- **ElevenLabs** — powers text-to-speech (TTS) voice synthesis.
+  Sign up at https://elevenlabs.io
 
-The browser UI stores the gateway token in `localStorage` under `openclaw.control.settings.v1`. Legacy `videoChat.gatewayToken` values are migrated automatically.
+- **LiveKit** — provides the real-time video/audio room infrastructure.
+  Sign up at https://livekit.io
+
+Once you have accounts, retrieve API keys from each service and supply them during plugin setup (via the browser config page or the `video-chat-setup` CLI command).
 
 ## Install
 
@@ -69,7 +67,7 @@ openclaw plugins list
 1. Start or restart the gateway:
 
 ```bash
-openclaw gateway run --force
+openclaw gateway run
 ```
 
 2. Open the plugin UI:
