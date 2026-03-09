@@ -778,10 +778,9 @@
             <section class="card stack video-chat-section avatar-card" id="avatar-card">
               <header class="video-chat-head">
                 <h2 class="card-title">Avatar</h2>
-                <p class="card-sub">Avatar stream appears after session start and keeps the full frame in view.</p>
               </header>
               <div id="room-status" class="callout info room-status" role="status" aria-live="polite">
-                <span class="room-status__text" id="room-status-text">No active room connection.</span>
+                <span class="room-status__text" id="room-status-text">Disconnected</span>
                 <span class="room-status__spinner" id="room-status-spinner" hidden aria-hidden="true"></span>
               </div>
               <div class="avatar-shell">
@@ -856,12 +855,19 @@
                   <div class="avatar-placeholder" id="avatar-placeholder" hidden>
                     <div class="avatar-placeholder__content">
                       <div class="avatar-placeholder__icon" aria-hidden="true"></div>
-                      <h3 class="avatar-placeholder__title">Avatar is in another window</h3>
+                      <h3 class="avatar-placeholder__title">Claw cast is in another window</h3>
                       <p class="avatar-placeholder__copy">
-                        Picture-in-picture is keeping the avatar available while you work in this tab.
+                        Picture-in-picture allows you to take your Claw Cast out of this tab.
                       </p>
                       <div class="avatar-placeholder__status" id="avatar-placeholder-status">
-                        No active room connection.
+                        <span class="avatar-toolbar__status-indicator">
+                          <span
+                            class="avatar-toolbar__status-dot warn"
+                            id="avatar-placeholder-status-dot"
+                            aria-hidden="true"
+                          ></span>
+                          <span class="avatar-toolbar__status" id="avatar-placeholder-status-text">Connecting...</span>
+                        </span>
                       </div>
                       <button class="btn primary" type="button" id="avatar-pip-return">
                         Bring the avatar back here

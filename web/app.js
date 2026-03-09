@@ -37,6 +37,8 @@ const avatarPaneEl = document.getElementById("avatar-pane");
 const avatarMediaEl = document.getElementById("avatar-media");
 const avatarPlaceholderEl = document.getElementById("avatar-placeholder");
 const avatarPlaceholderStatusEl = document.getElementById("avatar-placeholder-status");
+const avatarPlaceholderStatusDotEl = document.getElementById("avatar-placeholder-status-dot");
+const avatarPlaceholderStatusTextEl = document.getElementById("avatar-placeholder-status-text");
 const avatarPictureInPictureReturnButton = document.getElementById("avatar-pip-return");
 const avatarToolbarStatusDotEl = document.getElementById("avatar-toolbar-status-dot");
 const avatarToolbarStatusEl = document.getElementById("avatar-toolbar-status");
@@ -155,8 +157,15 @@ function setRoomStatus(text, options = {}) {
     avatarToolbarStatusEl.title = avatarToolbarStatus.text;
   }
   if (avatarPlaceholderStatusEl) {
-    avatarPlaceholderStatusEl.textContent = text;
-    avatarPlaceholderStatusEl.title = text;
+    avatarPlaceholderStatusEl.title = avatarToolbarStatus.text;
+  }
+  if (avatarPlaceholderStatusTextEl) {
+    avatarPlaceholderStatusTextEl.textContent = avatarToolbarStatus.text;
+    avatarPlaceholderStatusTextEl.title = avatarToolbarStatus.text;
+  }
+  if (avatarPlaceholderStatusDotEl) {
+    avatarPlaceholderStatusDotEl.classList.remove("ok", "warn", "danger");
+    avatarPlaceholderStatusDotEl.classList.add(avatarToolbarStatus.tone);
   }
   if (avatarDocumentPictureInPictureElements?.statusEl) {
     avatarDocumentPictureInPictureElements.statusEl.textContent = avatarToolbarStatus.text;
@@ -1876,11 +1885,7 @@ function updateRoomStatusState() {
       setRoomStatus(AVATAR_LOADING_STATUS, { loading: true });
       return;
     }
-    const roomName =
-      typeof activeSession?.roomName === "string" && activeSession.roomName.trim()
-        ? activeSession.roomName.trim()
-        : "room";
-    setRoomStatus(`Connected to ${roomName}`);
+    setRoomStatus("Connected");
     return;
   }
 
@@ -1901,7 +1906,7 @@ function updateRoomStatusState() {
     return;
   }
 
-  setRoomStatus("No active room connection.");
+  setRoomStatus("Disconnected");
 }
 
 function applyAvatarSpeakerMuteState() {
