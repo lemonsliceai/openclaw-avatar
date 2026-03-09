@@ -62,6 +62,8 @@ const THEME_STORAGE_KEY = "videoChat.themePreference";
 const NAV_COLLAPSE_STORAGE_KEY = "videoChat.navCollapsed";
 const CHAT_PANE_STORAGE_KEY = "videoChat.chatPaneOpen";
 const CHAT_PANE_WIDTH_STORAGE_KEY = "videoChat.chatPaneWidth";
+const MIC_MUTED_STORAGE_KEY = "videoChat.microphoneMuted";
+const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -75,13 +77,12 @@ const GATEWAY_WS_CLIENT = {
 const CHAT_PANE_MIN_WIDTH = 300;
 const CHAT_PANE_MAX_WIDTH = 640;
 const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
-const AVATAR_PANE_MIN_WIDTH = 320;
+const AVATAR_PANE_MIN_WIDTH = 0;
 const AVATAR_PANE_MAX_WIDTH = 1200;
 const AVATAR_PIP_DEFAULT_ASPECT_RATIO = 16 / 9;
 const AVATAR_PIP_HORIZONTAL_PADDING = 20;
 const AVATAR_PIP_VERTICAL_PADDING = 20;
 const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
-const AVATAR_PIP_MIN_VIDEO_HEIGHT = 220;
 const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
@@ -100,12 +101,11 @@ let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
+let preferredMicMuted = false;
 let avatarSpeakerMuted = false;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
 let avatarDocumentPictureInPictureElements = null;
-let avatarDocumentPictureInPictureResizeHandler = null;
-let avatarDocumentPictureInPictureIsAdjustingSize = false;
 let avatarPictureInPictureVideo = null;
 const avatarMessageOverlayState = {
   fadeFrame: null,
@@ -260,6 +260,34 @@ function getGatewayToken() {
 
 function hasGatewayToken() {
   return getGatewayToken().trim().length > 0;
+}
+
+function getStoredBooleanPreference(key, fallback = false) {
+  try {
+    const stored = localStorage.getItem(key);
+    if (stored === "1" || stored === "true") {
+      return true;
+    }
+    if (stored === "0" || stored === "false") {
+      return false;
+    }
+  } catch {
+    // Ignore storage failures.
+  }
+  return fallback;
+}
+
+function persistBooleanPreference(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function loadMediaPreferences() {
+  preferredMicMuted = getStoredBooleanPreference(MIC_MUTED_STORAGE_KEY);
+  avatarSpeakerMuted = getStoredBooleanPreference(AVATAR_SPEAKER_MUTED_STORAGE_KEY);
 }
 
 function persistGatewayToken(token) {
@@ -1348,10 +1376,6 @@ function getAvatarPictureInPictureWindowSize(options = {}) {
   if (!Number.isFinite(videoHeight) || videoHeight <= 0) {
     videoHeight = 280;
   }
-  if (videoHeight < AVATAR_PIP_MIN_VIDEO_HEIGHT) {
-    videoHeight = AVATAR_PIP_MIN_VIDEO_HEIGHT;
-    width = Math.round(videoHeight * aspectRatio);
-  }
   if (videoHeight > AVATAR_PIP_MAX_VIDEO_HEIGHT) {
     videoHeight = AVATAR_PIP_MAX_VIDEO_HEIGHT;
     width = Math.round(videoHeight * aspectRatio);
@@ -1361,38 +1385,6 @@ function getAvatarPictureInPictureWindowSize(options = {}) {
     width: width + AVATAR_PIP_HORIZONTAL_PADDING,
     height: videoHeight + AVATAR_PIP_TOOLBAR_HEIGHT + AVATAR_PIP_VERTICAL_PADDING,
   };
-}
-
-function syncAvatarDocumentPictureInPictureWindowSize(options = {}) {
-  const pictureInPictureWindow = avatarDocumentPictureInPictureWindow;
-  if (
-    !pictureInPictureWindow ||
-    pictureInPictureWindow.closed ||
-    typeof pictureInPictureWindow.resizeTo !== "function" ||
-    avatarDocumentPictureInPictureIsAdjustingSize
-  ) {
-    return;
-  }
-
-  const nextSize = getAvatarPictureInPictureWindowSize({
-    preferredWidth: options.preferredWidth ?? pictureInPictureWindow.innerWidth,
-    preferredHeight: options.preferredHeight ?? pictureInPictureWindow.innerHeight,
-  });
-  const widthDelta = Math.abs((pictureInPictureWindow.innerWidth || 0) - nextSize.width);
-  const heightDelta = Math.abs((pictureInPictureWindow.innerHeight || 0) - nextSize.height);
-  if (widthDelta < 2 && heightDelta < 2) {
-    return;
-  }
-
-  avatarDocumentPictureInPictureIsAdjustingSize = true;
-  try {
-    pictureInPictureWindow.resizeTo(nextSize.width, nextSize.height);
-  } catch {
-    // Ignore browsers that disallow script-driven resizing.
-  }
-  window.setTimeout(() => {
-    avatarDocumentPictureInPictureIsAdjustingSize = false;
-  }, 0);
 }
 
 function getAvatarDocumentPictureInPictureStyles() {
@@ -1434,8 +1426,8 @@ function getAvatarDocumentPictureInPictureStyles() {
     .avatar-toolbar {
       position: relative;
       display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
+      flex-direction: column;
+      align-items: stretch;
       gap: 12px;
       padding: 12px;
       background: linear-gradient(180deg, rgba(2, 6, 23, 0.94) 0%, rgba(2, 6, 23, 0.88) 100%);
@@ -1513,6 +1505,8 @@ function getAvatarDocumentPictureInPictureStyles() {
     .avatar-media video {
       width: 100%;
       height: 100%;
+      min-width: 0;
+      min-height: 0;
       display: block;
       object-fit: contain;
       background: #000;
@@ -1636,8 +1630,11 @@ function getAvatarDocumentPictureInPictureStyles() {
     }
 
     .avatar-controls {
-      display: inline-flex;
+      display: flex;
       align-items: center;
+      justify-content: flex-end;
+      align-self: stretch;
+      flex-wrap: wrap;
       gap: 10px;
     }
 
@@ -1876,9 +1873,6 @@ function cleanupAvatarDocumentPictureInPicture() {
   if (pictureInPictureWindow && avatarDocumentPictureInPictureCleanup) {
     pictureInPictureWindow.removeEventListener("pagehide", avatarDocumentPictureInPictureCleanup);
   }
-  if (pictureInPictureWindow && avatarDocumentPictureInPictureResizeHandler) {
-    pictureInPictureWindow.removeEventListener("resize", avatarDocumentPictureInPictureResizeHandler);
-  }
   if (avatarDocumentPictureInPictureElements?.videoEl) {
     avatarDocumentPictureInPictureElements.videoEl.pause?.();
     avatarDocumentPictureInPictureElements.videoEl.srcObject = null;
@@ -1892,8 +1886,6 @@ function cleanupAvatarDocumentPictureInPicture() {
   avatarDocumentPictureInPictureCleanup = null;
   avatarDocumentPictureInPictureWindow = null;
   avatarDocumentPictureInPictureElements = null;
-  avatarDocumentPictureInPictureResizeHandler = null;
-  avatarDocumentPictureInPictureIsAdjustingSize = false;
   updateAvatarUiState();
   updatePictureInPictureButtonState();
 }
@@ -2135,9 +2127,6 @@ async function enterAvatarDocumentPictureInPicture() {
 
   avatarDocumentPictureInPictureWindow = pictureInPictureWindow;
   avatarDocumentPictureInPictureCleanup = cleanupAvatarDocumentPictureInPicture;
-  avatarDocumentPictureInPictureResizeHandler = () => {
-    syncAvatarDocumentPictureInPictureWindowSize();
-  };
 
   pictureInPictureDocument.documentElement.lang = document.documentElement.lang || "en";
   pictureInPictureDocument.title = "Claw Cast";
@@ -2150,10 +2139,7 @@ async function enterAvatarDocumentPictureInPicture() {
 
   buildAvatarDocumentPictureInPictureView(pictureInPictureDocument);
   pictureInPictureWindow.addEventListener("pagehide", cleanupAvatarDocumentPictureInPicture);
-  pictureInPictureWindow.addEventListener("resize", avatarDocumentPictureInPictureResizeHandler);
   syncAvatarDocumentPictureInPicture();
-  syncAvatarDocumentPictureInPictureWindowSize();
-
   updateAvatarUiState();
   updatePictureInPictureButtonState();
 }
@@ -2354,6 +2340,20 @@ function applyAvatarSpeakerMuteState() {
   toggleSpeakerButton.classList.toggle("is-muted", avatarSpeakerMuted);
   toggleSpeakerButton.setAttribute("aria-label", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
   toggleSpeakerButton.setAttribute("title", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
+}
+
+async function applyPreferredMicMuteState() {
+  if (!localAudioTrack) {
+    return;
+  }
+  if (Boolean(localAudioTrack.isMuted) === preferredMicMuted) {
+    return;
+  }
+  if (preferredMicMuted) {
+    await localAudioTrack.mute();
+    return;
+  }
+  await localAudioTrack.unmute();
 }
 
 function clearChatLog() {
@@ -3109,7 +3109,6 @@ function attachTrackToContainer(track, container) {
       const updateRatio = () => {
         updateAvatarAspectRatio(element);
         syncAvatarDocumentPictureInPictureMedia();
-        syncAvatarDocumentPictureInPictureWindowSize();
       };
       element.addEventListener("loadedmetadata", updateRatio);
       element.addEventListener("resize", updateRatio);
@@ -3174,7 +3173,7 @@ function updateRoomButtons() {
     leaveRoomButton.disabled = !hasRoom;
   }
   if (toggleMicButton) {
-    const micMuted = Boolean(localAudioTrack?.isMuted);
+    const micMuted = localAudioTrack ? Boolean(localAudioTrack.isMuted) : preferredMicMuted;
     toggleMicButton.disabled = !hasRoom || !localAudioTrack;
     toggleMicButton.classList.toggle("is-muted", micMuted);
     toggleMicButton.setAttribute("aria-label", micMuted ? "Unmute microphone" : "Mute microphone");
@@ -3207,10 +3206,15 @@ async function publishLocalTracks(room) {
     video: false,
   });
   for (const track of tracks) {
-    await room.localParticipant.publishTrack(track);
     if (track.kind === "audio") {
       localAudioTrack = track;
+      try {
+        await applyPreferredMicMuteState();
+      } catch (error) {
+        setOutput({ action: "mic-preference-apply-failed", error: String(error) });
+      }
     }
+    await room.localParticipant.publishTrack(track);
   }
 }
 
@@ -3712,11 +3716,14 @@ async function toggleMicrophone() {
     return;
   }
   try {
-    if (localAudioTrack.isMuted) {
-      await localAudioTrack.unmute();
-    } else {
+    const nextMuted = !localAudioTrack.isMuted;
+    if (nextMuted) {
       await localAudioTrack.mute();
+    } else {
+      await localAudioTrack.unmute();
     }
+    preferredMicMuted = nextMuted;
+    persistBooleanPreference(MIC_MUTED_STORAGE_KEY, nextMuted);
     updateRoomButtons();
   } catch (error) {
     setOutput({ action: "mic-toggle-failed", error: String(error) });
@@ -3725,6 +3732,7 @@ async function toggleMicrophone() {
 
 function toggleAvatarSpeaker() {
   avatarSpeakerMuted = !avatarSpeakerMuted;
+  persistBooleanPreference(AVATAR_SPEAKER_MUTED_STORAGE_KEY, avatarSpeakerMuted);
   applyAvatarSpeakerMuteState();
   updateRoomButtons();
 }
@@ -3958,6 +3966,7 @@ if (clearTokenButton) {
 }
 
 migrateLegacyGatewayTokenIfNeeded();
+loadMediaPreferences();
 initNavCollapseToggle();
 initChatPane();
 initAvatarPaneResize();
