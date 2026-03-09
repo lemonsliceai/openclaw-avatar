@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
 import plugin from "./index.js";
@@ -11,6 +12,10 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 type RespondCall = [boolean, unknown?, { code: string; message: string }?];
+type RegisteredHttpRoute = {
+  path: string;
+  handler: (req: unknown, res: unknown) => Promise<boolean>;
+};
 
 const baseConfig = {
   session: { mainKey: "main" },
@@ -41,7 +46,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(normalized, "base64").toString("utf8")) as Record<string, unknown>;
 }
 
-function setup(config = baseConfig) {
+function setup(config: unknown = baseConfig) {
   const runtime = createPluginRuntimeMock();
   const methods = new Map<string, unknown>();
   const services: unknown[] = [];
@@ -88,6 +93,62 @@ function setup(config = baseConfig) {
   } as Parameters<typeof plugin.register>[0]);
 
   return { runtime, methods, services, httpRoutes, cliCommands };
+}
+
+class MockHttpResponse {
+  statusCode = 200;
+  headers = new Map<string, string>();
+  body = "";
+
+  setHeader(name: string, value: string) {
+    this.headers.set(name.toLowerCase(), value);
+  }
+
+  end(body = "") {
+    this.body += body;
+  }
+
+  header(name: string) {
+    return this.headers.get(name.toLowerCase()) ?? null;
+  }
+}
+
+async function invokeHttpRoute(
+  httpRoutes: unknown[],
+  routePath: string,
+  request: {
+    url: string;
+    method?: string;
+    body?: Record<string, unknown>;
+  },
+) {
+  const route = httpRoutes.find(
+    (entry): entry is RegisteredHttpRoute =>
+      Boolean(entry) &&
+      typeof entry === "object" &&
+      typeof (entry as RegisteredHttpRoute | null)?.path === "string" &&
+      typeof (entry as RegisteredHttpRoute | null)?.handler === "function" &&
+      (entry as RegisteredHttpRoute).path === routePath,
+  );
+  if (!route) {
+    throw new Error(`missing HTTP route ${routePath}`);
+  }
+
+  const req = new EventEmitter() as EventEmitter & { url?: string; method?: string };
+  req.url = request.url;
+  req.method = request.method ?? "GET";
+  const res = new MockHttpResponse();
+  const handledPromise = route.handler(req, res);
+
+  if (request.body !== undefined) {
+    queueMicrotask(() => {
+      req.emit("data", JSON.stringify(request.body));
+      req.emit("end");
+    });
+  }
+
+  const handled = await handledPromise;
+  return { handled, res };
 }
 
 async function invoke(
@@ -155,6 +216,34 @@ describe("video-chat plugin", () => {
     expect(
       (call?.[1] as { config?: { configured?: boolean } } | undefined)?.config?.configured,
     ).toBe(true);
+  });
+
+  it("reads plugin-owned config from the plugin entry overlay", async () => {
+    const { methods } = setup({
+      session: { mainKey: "main" },
+      plugins: {
+        entries: {
+          "video-chat": {
+            config: {
+              videoChat: baseConfig.videoChat,
+              messages: baseConfig.messages,
+            },
+          },
+        },
+      },
+    });
+
+    const respond = await invoke(methods, "videoChat.config", {});
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toMatchObject({
+      config: {
+        configured: true,
+        lemonSlice: {
+          imageUrl: "https://example.com/avatar.png",
+        },
+      },
+    });
   });
 
   it("mints a browser participant token for a session", async () => {
@@ -399,5 +488,30 @@ describe("video-chat plugin", () => {
     expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
       "hello from microphone",
     );
+  });
+
+  it("serves the shipped browser shell and setup API routes", async () => {
+    const { httpRoutes } = setup();
+
+    const page = await invokeHttpRoute(httpRoutes, "/plugins/video-chat", {
+      url: "/plugins/video-chat",
+    });
+    expect(page.handled).toBe(true);
+    expect(page.res.statusCode).toBe(200);
+    expect(page.res.header("content-type")).toBe("text/html; charset=utf-8");
+    expect(page.res.body).toContain("<title>Claw Cast</title>");
+
+    const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/setup",
+    });
+    expect(setupApi.handled).toBe(true);
+    expect(setupApi.res.statusCode).toBe(200);
+    expect(setupApi.res.header("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(setupApi.res.body)).toMatchObject({
+      success: true,
+      setup: {
+        configured: true,
+      },
+    });
   });
 });

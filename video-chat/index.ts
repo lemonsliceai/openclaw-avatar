@@ -179,6 +179,8 @@ function resolveEffectiveVideoChatConfig(config: OpenClawConfig): OpenClawConfig
   if (!pluginConfig) {
     return config;
   }
+  // Plugin-owned setup is persisted under plugins.entries.video-chat.config, but the rest of the
+  // runtime reads the effective top-level videoChat/messages branches.
   const effective: OpenClawConfig = { ...config };
   if (isObjectRecord(pluginConfig.videoChat)) {
     effective.videoChat = pluginConfig.videoChat as OpenClawConfig["videoChat"];
@@ -1401,6 +1403,8 @@ async function resolveSidecarLaunchCommand(
   entryScript: string | undefined,
 ): Promise<SidecarLaunchCommand | null> {
   const customRunnerPath = await resolveExistingFile([resolveCustomSidecarRunnerPath()]);
+  // The linked package can sit in several different workspace layouts, so runner discovery walks
+  // up from both the active entrypoint and the plugin module directory before falling back.
   const baseRunnerCandidates = collectRunnerCandidates({ entryScript }).filter((candidate) => {
     if (!customRunnerPath) {
       return true;
