@@ -5,9 +5,6 @@ import { pathToFileURL } from "node:url";
 
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
-const USER_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
-const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
-const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -118,33 +115,6 @@ function extractTextFromMessage(message) {
     }
   }
   return parts.length > 0 ? parts.join("\n\n") : null;
-}
-
-async function publishVoiceTranscriptEvent(params) {
-  const participant = params.room?.localParticipant;
-  if (!participant || typeof participant.publishData !== "function") {
-    return;
-  }
-  const text = typeof params.text === "string" ? params.text.trim() : "";
-  const sessionKey = typeof params.sessionKey === "string" ? params.sessionKey.trim() : "";
-  const idempotencyKey =
-    typeof params.idempotencyKey === "string" ? params.idempotencyKey.trim() : "";
-  if (!text || !sessionKey || !idempotencyKey) {
-    return;
-  }
-
-  const payload = new TextEncoder().encode(
-    JSON.stringify({
-      type: VOICE_TRANSCRIPT_EVENT_TYPE,
-      sessionKey,
-      idempotencyKey,
-      text,
-    }),
-  );
-  await participant.publishData(payload, {
-    reliable: true,
-    topic: VOICE_TRANSCRIPT_EVENT_TOPIC,
-  });
 }
 
 class GatewayWsClient {
@@ -345,21 +315,14 @@ async function runVideoChatAgentEntry(ctx) {
   const lemonSliceApiKey = requireEnv("OPENCLAW_VIDEO_CHAT_LEMONSLICE_API_KEY");
   const elevenLabsVoiceId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_VOICE_ID?.trim();
   const elevenLabsModelId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_MODEL_ID?.trim();
-  const sttModel = process.env.OPENCLAW_VIDEO_CHAT_STT_MODEL?.trim();
-  const sttLanguage = process.env.OPENCLAW_VIDEO_CHAT_STT_LANGUAGE?.trim();
 
   const tts = new deps.elevenlabs.TTS({
     apiKey: elevenLabsApiKey,
     ...(elevenLabsVoiceId ? { voiceId: elevenLabsVoiceId } : {}),
     ...(elevenLabsModelId ? { modelId: elevenLabsModelId } : {}),
   });
-  const stt = new deps.agents.inference.STT({
-    ...(sttModel ? { model: sttModel } : {}),
-    ...(sttLanguage ? { language: sttLanguage } : {}),
-  });
 
   const session = new deps.agents.voice.AgentSession({
-    stt,
     tts,
   });
   const agent = new deps.agents.voice.Agent({
@@ -368,8 +331,6 @@ async function runVideoChatAgentEntry(ctx) {
   });
 
   const spokenRuns = new Set();
-  let lastUserTranscript = "";
-  let lastUserTranscriptAt = 0;
   let gatewayClient = null;
 
   console.log("[video-chat-agent] connecting gateway bridge");
@@ -412,52 +373,6 @@ async function runVideoChatAgentEntry(ctx) {
         );
       }
     },
-  });
-
-  session.on("user_input_transcribed", async (event) => {
-    if (!event?.isFinal) {
-      return;
-    }
-    const transcript = typeof event.transcript === "string" ? event.transcript.trim() : "";
-    if (!transcript) {
-      return;
-    }
-    const duplicateTranscript =
-      lastUserTranscript &&
-      transcript.toLowerCase() === lastUserTranscript.toLowerCase() &&
-      Date.now() - lastUserTranscriptAt < USER_TRANSCRIPT_DUPLICATE_WINDOW_MS;
-    if (duplicateTranscript) {
-      return;
-    }
-    lastUserTranscript = transcript;
-    lastUserTranscriptAt = Date.now();
-
-    try {
-      console.log(`[video-chat-agent] forwarding user transcript: ${transcript}`);
-      const idempotencyKey = `video-chat-agent-${randomUUID()}`;
-      await session.interrupt({ force: true });
-      try {
-        await publishVoiceTranscriptEvent({
-          room: ctx.room,
-          sessionKey: metadata.sessionKey,
-          idempotencyKey,
-          text: transcript,
-        });
-      } catch (error) {
-        console.warn(
-          `[video-chat-agent] failed to publish live transcript event: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      await gatewayClient.request("chat.send", {
-        sessionKey: metadata.sessionKey,
-        message: transcript,
-        idempotencyKey,
-      });
-    } catch (error) {
-      console.error(
-        `[video-chat-agent] failed to forward user transcript: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
-      );
-    }
   });
 
   console.log("[video-chat-agent] connecting agent session to room");

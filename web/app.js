@@ -69,6 +69,8 @@ const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
+const BROWSER_SPEECH_RECOGNITION =
+  globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition || null;
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_WS_CLIENT = {
   id: "test",
@@ -94,6 +96,7 @@ const AVATAR_RECONNECTING_STATUS = "Reconnecting avatar...";
 const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
 const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
+const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
 const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
 const CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CHAT_SUPPORTED_IMAGE_MIME_TYPES = new Set([
@@ -107,6 +110,12 @@ const CHAT_SUPPORTED_IMAGE_MIME_TYPES = new Set([
 let activeSession = null;
 let activeRoom = null;
 let localAudioTrack = null;
+let browserSpeechRecognition = null;
+let browserSpeechRecognitionActive = false;
+let browserSpeechRecognitionShouldRun = false;
+let browserSpeechRecognitionRestartTimer = null;
+let lastBrowserSpeechTranscript = "";
+let lastBrowserSpeechTranscriptAt = 0;
 let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
@@ -842,6 +851,187 @@ function setChatStatus(text) {
   }
   chatStatusEl.textContent = text;
   chatStatusEl.title = text;
+}
+
+async function submitVoiceTranscript(rawTranscript) {
+  const transcript = typeof rawTranscript === "string" ? rawTranscript.trim() : "";
+  if (!transcript) {
+    return false;
+  }
+
+  const duplicateTranscript =
+    lastBrowserSpeechTranscript &&
+    transcript.toLowerCase() === lastBrowserSpeechTranscript.toLowerCase() &&
+    Date.now() - lastBrowserSpeechTranscriptAt < VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS;
+  if (duplicateTranscript) {
+    return false;
+  }
+  lastBrowserSpeechTranscript = transcript;
+  lastBrowserSpeechTranscriptAt = Date.now();
+
+  const sessionKey = resolveChatSessionKey();
+  if (!sessionKey) {
+    return false;
+  }
+
+  const idempotencyKey = `${VOICE_CHAT_RUN_ID_PREFIX}browser-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  setChatPaneOpen(true);
+  appendChatLine("user", transcript, {
+    awaitingReply: true,
+  });
+  setChatStatus("Sending message...");
+
+  try {
+    const response = await gatewayRpc("chat.send", {
+      sessionKey,
+      message: transcript,
+      idempotencyKey,
+    });
+    setOutput({
+      action: "voice-chat-sent",
+      sessionKey,
+      idempotencyKey,
+      response,
+    });
+    setChatStatus("Awaiting agent reply...");
+    return true;
+  } catch (error) {
+    appendChatLine("system", error instanceof Error ? error.message : "Voice chat send failed.", {
+      awaitingReply: false,
+    });
+    setOutput({ action: "voice-chat-send-failed", error: String(error) });
+    setChatStatus("Voice chat send failed.");
+    return false;
+  }
+}
+
+function browserSpeechRecognitionSupported() {
+  return typeof BROWSER_SPEECH_RECOGNITION === "function";
+}
+
+function clearBrowserSpeechRecognitionRestartTimer() {
+  if (browserSpeechRecognitionRestartTimer === null) {
+    return;
+  }
+  clearTimeout(browserSpeechRecognitionRestartTimer);
+  browserSpeechRecognitionRestartTimer = null;
+}
+
+function stopBrowserSpeechRecognition() {
+  browserSpeechRecognitionShouldRun = false;
+  clearBrowserSpeechRecognitionRestartTimer();
+  if (!browserSpeechRecognition || !browserSpeechRecognitionActive) {
+    return;
+  }
+  browserSpeechRecognitionActive = false;
+  try {
+    browserSpeechRecognition.stop();
+  } catch {}
+}
+
+function shouldRunBrowserSpeechRecognition() {
+  return Boolean(
+    activeSession &&
+      activeRoom &&
+      localAudioTrack &&
+      !localAudioTrack.isMuted &&
+      browserSpeechRecognitionSupported(),
+  );
+}
+
+function ensureBrowserSpeechRecognition() {
+  if (browserSpeechRecognition || !browserSpeechRecognitionSupported()) {
+    return browserSpeechRecognition;
+  }
+
+  const recognition = new BROWSER_SPEECH_RECOGNITION();
+  recognition.continuous = true;
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+  recognition.lang =
+    document.documentElement.lang ||
+    (typeof navigator?.language === "string" ? navigator.language : "") ||
+    "en-US";
+
+  recognition.addEventListener("result", (event) => {
+    if (!event?.results) {
+      return;
+    }
+    const finalized = [];
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const result = event.results[index];
+      if (!result?.isFinal) {
+        continue;
+      }
+      const transcript = typeof result[0]?.transcript === "string" ? result[0].transcript.trim() : "";
+      if (transcript) {
+        finalized.push(transcript);
+      }
+    }
+    if (finalized.length > 0) {
+      void submitVoiceTranscript(finalized.join(" ")).catch((error) => {
+        setOutput({ action: "voice-chat-transcript-submit-failed", error: String(error) });
+      });
+    }
+  });
+
+  recognition.addEventListener("error", (event) => {
+    browserSpeechRecognitionActive = false;
+    const code = typeof event?.error === "string" ? event.error : "unknown";
+    if (code === "aborted" || code === "no-speech") {
+      return;
+    }
+    if (code === "not-allowed" || code === "service-not-allowed") {
+      browserSpeechRecognitionShouldRun = false;
+      setChatStatus("Browser speech recognition permission was denied.");
+      return;
+    }
+    setOutput({
+      action: "browser-speech-recognition-error",
+      error: code,
+      message: typeof event?.message === "string" ? event.message : "",
+    });
+  });
+
+  recognition.addEventListener("end", () => {
+    browserSpeechRecognitionActive = false;
+    if (!browserSpeechRecognitionShouldRun) {
+      return;
+    }
+    clearBrowserSpeechRecognitionRestartTimer();
+    browserSpeechRecognitionRestartTimer = setTimeout(() => {
+      syncBrowserSpeechRecognition();
+    }, 750);
+  });
+
+  browserSpeechRecognition = recognition;
+  return recognition;
+}
+
+function syncBrowserSpeechRecognition() {
+  const shouldRun = shouldRunBrowserSpeechRecognition();
+  browserSpeechRecognitionShouldRun = shouldRun;
+  if (!shouldRun) {
+    stopBrowserSpeechRecognition();
+    return;
+  }
+  const recognition = ensureBrowserSpeechRecognition();
+  if (!recognition || browserSpeechRecognitionActive) {
+    return;
+  }
+  try {
+    recognition.lang =
+      document.documentElement.lang ||
+      (typeof navigator?.language === "string" ? navigator.language : "") ||
+      "en-US";
+    recognition.start();
+    browserSpeechRecognitionActive = true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.toLowerCase().includes("already started")) {
+      setOutput({ action: "browser-speech-recognition-start-failed", error: message });
+    }
+  }
 }
 
 function applyAvatarMessageOverlayStyles(element) {
@@ -3880,6 +4070,7 @@ function detachTrack(track) {
 }
 
 function releaseLocalTracks() {
+  stopBrowserSpeechRecognition();
   if (localAudioTrack) {
     try {
       localAudioTrack.stop();
@@ -3928,6 +4119,7 @@ function updateRoomButtons() {
   }
   updatePictureInPictureButtonState();
   syncAvatarDocumentPictureInPictureButtons();
+  syncBrowserSpeechRecognition();
 }
 
 function removeParticipantTile(participantIdentity) {
