@@ -1363,6 +1363,7 @@ type SidecarLaunchCommand = {
   executable: string;
   args: string[];
   description: string;
+  fallback?: SidecarLaunchCommand;
 };
 
 function resolveSidecarBridgeScriptPath(): string {
@@ -1445,6 +1446,12 @@ async function resolveSidecarLaunchCommand(
     };
   }
   if (baseRunnerPath) {
+    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
+    const bridgeCommand: SidecarLaunchCommand = {
+      executable: process.execPath,
+      args: [bridgeScriptPath, baseRunnerPath],
+      description: `node ${bridgeScriptPath} ${baseRunnerPath}`,
+    };
     const nativeGatewayEntrypoint = await resolveNativeGatewayEntrypoint(baseRunnerPath);
     const forceBridge = normalizeOptionalString(process.env.OPENCLAW_VIDEO_CHAT_FORCE_BRIDGE) === "1";
     if (nativeGatewayEntrypoint && !forceBridge) {
@@ -1452,14 +1459,10 @@ async function resolveSidecarLaunchCommand(
         executable: process.execPath,
         args: [nativeGatewayEntrypoint, "gateway", "video-chat-agent"],
         description: `node ${nativeGatewayEntrypoint} gateway video-chat-agent`,
+        fallback: bridgeCommand,
       };
     }
-    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
-    return {
-      executable: process.execPath,
-      args: [bridgeScriptPath, baseRunnerPath],
-      description: `node ${bridgeScriptPath} ${baseRunnerPath}`,
-    };
+    return bridgeCommand;
   }
   if (entryScript) {
     return {
@@ -1698,10 +1701,11 @@ async function startVideoChatAgentSidecar(params: {
   let stopping = false;
   const recentExits: number[] = [];
   let unsupportedLegacyCommand = false;
+  let activeLaunchCommand = launchCommand;
 
   const spawnChild = () => {
     unsupportedLegacyCommand = false;
-    const next = spawn(launchCommand.executable, launchCommand.args, {
+    const next = spawn(activeLaunchCommand.executable, activeLaunchCommand.args, {
       env: buildWorkerEnv({
         gateway: params.gateway,
         credentials,
@@ -1715,7 +1719,7 @@ async function startVideoChatAgentSidecar(params: {
     attachLineLogger(next.stdout, (message) => params.log.info(`[video-chat-agent] ${message}`));
     attachLineLogger(next.stderr, (message) => {
       if (
-        launchCommand.args[1] === "gateway" &&
+        activeLaunchCommand.args[1] === "gateway" &&
         message.includes("too many arguments for 'gateway'")
       ) {
         unsupportedLegacyCommand = true;
@@ -1728,9 +1732,18 @@ async function startVideoChatAgentSidecar(params: {
         return;
       }
       if (unsupportedLegacyCommand) {
-        params.log.error(
-          "Claw Cast agent sidecar launch command is unsupported by this OpenClaw CLI build; set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to a video-chat-agent-runner.js path",
+        const fallbackCommand = activeLaunchCommand.fallback;
+        if (!fallbackCommand) {
+          params.log.error(
+            "Claw Cast agent sidecar launch command is unsupported by this OpenClaw CLI build; set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to a video-chat-agent-runner.js path",
+          );
+          return;
+        }
+        params.log.warn(
+          `Claw Cast agent sidecar launch command is unsupported by this OpenClaw CLI build; falling back to ${fallbackCommand.description}`,
         );
+        activeLaunchCommand = fallbackCommand;
+        spawnChild();
         return;
       }
       const now = Date.now();
