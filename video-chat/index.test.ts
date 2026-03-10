@@ -257,7 +257,7 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
     expect(methods.has("videoChat.tts.generate")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(2);
+    expect(httpRoutes).toHaveLength(6);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -267,6 +267,26 @@ describe("video-chat plugin", () => {
         }),
         expect.objectContaining({
           path: "/plugins/video-chat",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/config",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/settings",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/app.js",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/styles",
           auth: "plugin",
           match: "prefix",
         }),

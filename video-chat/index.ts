@@ -1284,78 +1284,94 @@ function registerVideoChatHttpRoutes(
     },
   });
 
+  const uiHandler = async (req: IncomingMessage, res: ServerResponse) => {
+    const pathname = parseRequestPathname(req.url);
+    if (!pathname) {
+      return false;
+    }
+    const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/video-chat";
+    try {
+      if (normalizedPath.startsWith("/plugins/video-chat/styles/")) {
+        const assetPath = decodeURIComponent(
+          normalizedPath.slice("/plugins/video-chat/styles/".length),
+        );
+        const css = await readStyleAsset(assetPath);
+        sendHttpResponse(res, asTextResponse(css, "text/css; charset=utf-8"));
+        return true;
+      }
+      if (normalizedPath === "/plugins/video-chat") {
+        const html = await readWebAsset("index.html");
+        sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
+        return true;
+      }
+      if (
+        normalizedPath === "/plugins/video-chat/settings" ||
+        normalizedPath === "/plugins/video-chat/config"
+      ) {
+        const html = await readWebAsset("settings.html");
+        sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
+        return true;
+      }
+      if (normalizedPath === "/plugins/video-chat/app.js") {
+        const script = await readWebAsset("app.js");
+        sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
+        return true;
+      }
+      sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Claw Cast plugin page request failed";
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
+        return true;
+      }
+      sendHttpResponse(
+        res,
+        asJsonResponse(
+          {
+            success: false,
+            error: { code: "UNAVAILABLE", message },
+          },
+          503,
+        ),
+      );
+      return true;
+    }
+  };
+
   api.registerHttpRoute({
     path: "/plugins/video-chat",
     auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/config",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/settings",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/app.js",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/styles",
+    auth: "plugin",
     match: "prefix",
-    handler: async (req: IncomingMessage, res: ServerResponse) => {
-      const pathname = parseRequestPathname(req.url);
-      if (!pathname) {
-        return false;
-      }
-      const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/video-chat";
-      if (!normalizedPath.startsWith("/plugins/video-chat")) {
-        return false;
-      }
-      if (normalizedPath.startsWith("/plugins/video-chat/api")) {
-        return false;
-      }
-      try {
-        if (normalizedPath.startsWith("/plugins/video-chat/styles/")) {
-          const assetPath = decodeURIComponent(
-            normalizedPath.slice("/plugins/video-chat/styles/".length),
-          );
-          const css = await readStyleAsset(assetPath);
-          sendHttpResponse(res, asTextResponse(css, "text/css; charset=utf-8"));
-          return true;
-        }
-        if (normalizedPath === "/plugins/video-chat") {
-          const html = await readWebAsset("index.html");
-          sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
-          return true;
-        }
-        if (
-          normalizedPath === "/plugins/video-chat/settings" ||
-          normalizedPath === "/plugins/video-chat/config"
-        ) {
-          const html = await readWebAsset("settings.html");
-          sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
-          return true;
-        }
-        if (normalizedPath.startsWith("/plugins/video-chat/")) {
-          const assetPath = decodeURIComponent(normalizedPath.slice("/plugins/video-chat/".length));
-          if (assetPath.endsWith(".js")) {
-            const script = await readWebAsset(assetPath);
-            sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
-            return true;
-          }
-          if (assetPath.endsWith(".html")) {
-            const html = await readWebAsset(assetPath);
-            sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
-            return true;
-          }
-        }
-        sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
-        return true;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Claw Cast plugin page request failed";
-        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-          sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
-          return true;
-        }
-        sendHttpResponse(
-          res,
-          asJsonResponse(
-            {
-              success: false,
-              error: { code: "UNAVAILABLE", message },
-            },
-            503,
-          ),
-        );
-        return true;
-      }
-    },
+    handler: uiHandler,
   });
 }
 
