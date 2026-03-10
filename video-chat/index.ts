@@ -1444,6 +1444,7 @@ async function resolveSidecarLaunchCommand(
   entryScript: string | undefined,
 ): Promise<SidecarLaunchCommand | null> {
   const customRunnerPath = await resolveExistingFile([resolveCustomSidecarRunnerPath()]);
+  const bridgeScriptPath = resolveSidecarBridgeScriptPath();
   // The linked package can sit in several different workspace layouts, so runner discovery walks
   // up from both the active entrypoint and the plugin module directory before falling back.
   const baseRunnerCandidates = collectRunnerCandidates({ entryScript }).filter((candidate) => {
@@ -1453,16 +1454,18 @@ async function resolveSidecarLaunchCommand(
     return path.resolve(candidate) !== path.resolve(customRunnerPath);
   });
   const baseRunnerPath = await resolveExistingFile(baseRunnerCandidates);
-  if (customRunnerPath && baseRunnerPath) {
-    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
+  if (customRunnerPath) {
+    const args = [bridgeScriptPath, customRunnerPath];
+    if (baseRunnerPath) {
+      args.push(baseRunnerPath);
+    }
     return {
       executable: process.execPath,
-      args: [bridgeScriptPath, customRunnerPath, baseRunnerPath],
-      description: `node ${bridgeScriptPath} ${customRunnerPath} ${baseRunnerPath}`,
+      args,
+      description: `node ${args.join(" ")}`,
     };
   }
   if (baseRunnerPath) {
-    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
     const bridgeCommand: SidecarLaunchCommand = {
       executable: process.execPath,
       args: [bridgeScriptPath, baseRunnerPath],

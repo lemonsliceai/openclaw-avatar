@@ -295,10 +295,11 @@ describe("video-chat plugin", () => {
     expect(cliCommands).toHaveLength(1);
   });
 
-  it("falls back to the bridge runner when the OpenClaw CLI build rejects gateway video-chat-agent", async () => {
+  it("prefers the bundled bridge runner over the native gateway sidecar command", async () => {
     process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER = "/mock-openclaw/dist/video-chat-agent-runner.js";
     mockStat.mockImplementation(async (candidate: string) => {
       if (
+        candidate.endsWith("/video-chat/video-chat-agent-runner.js") ||
         candidate.endsWith("/mock-openclaw/dist/video-chat-agent-runner.js") ||
         candidate.endsWith("/mock-openclaw/index.js")
       ) {
@@ -306,9 +307,6 @@ describe("video-chat plugin", () => {
           isFile: () => true,
           isDirectory: () => false,
         };
-      }
-      if (candidate.endsWith("/video-chat/video-chat-agent-runner.js")) {
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       }
       if (!actualStatHolder.stat) {
         throw new Error("missing actual stat implementation");
@@ -324,17 +322,8 @@ describe("video-chat plugin", () => {
       | undefined;
     expect(service?.start).toBeTypeOf("function");
 
-    const firstChild = createSpawnedChild(4101);
-    const secondChild = createSpawnedChild(4102);
-
-    mockSpawn.mockImplementationOnce(() => {
-      queueMicrotask(() => {
-        firstChild.stderr.emit("data", "error: too many arguments for 'gateway'\n");
-        firstChild.emit("exit", 1, null);
-      });
-      return firstChild;
-    });
-    mockSpawn.mockImplementationOnce(() => secondChild);
+    const child = createSpawnedChild(4101);
+    mockSpawn.mockImplementationOnce(() => child);
 
     await service?.start?.({
       config: baseConfig,
@@ -346,14 +335,10 @@ describe("video-chat plugin", () => {
 
     await flushMicrotasks();
 
-    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
     expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
-      "/mock-openclaw/index.js",
-      "gateway",
-      "video-chat-agent",
-    ]);
-    expect(mockSpawn.mock.calls[1]?.[1]).toEqual([
       expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+      expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
       "/mock-openclaw/dist/video-chat-agent-runner.js",
     ]);
     await service?.stop?.();
