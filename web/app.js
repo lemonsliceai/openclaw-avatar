@@ -111,6 +111,7 @@ let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
 let activeAvatarParticipantIdentity = "";
+let activeAvatarAudioParticipantIdentity = "";
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let preferredMicMuted = false;
@@ -1911,8 +1912,17 @@ function rememberAvatarParticipantIdentity(participantIdentity) {
   activeAvatarParticipantIdentity = normalized;
 }
 
+function rememberAvatarAudioParticipantIdentity(participantIdentity) {
+  const normalized = typeof participantIdentity === "string" ? participantIdentity.trim() : "";
+  if (!normalized) {
+    return;
+  }
+  activeAvatarAudioParticipantIdentity = normalized;
+}
+
 function clearAvatarParticipantIdentity() {
   activeAvatarParticipantIdentity = "";
+  activeAvatarAudioParticipantIdentity = "";
 }
 
 function shouldTreatParticipantAsAvatar(participant, track = null) {
@@ -1936,6 +1946,33 @@ function shouldTreatParticipantAsAvatar(participant, track = null) {
   for (const publication of publications) {
     const kind = typeof publication?.kind === "string" ? publication.kind.trim().toLowerCase() : "";
     if (kind === "video" && publication.track) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldTreatParticipantAudioAsAvatar(participant, track = null) {
+  const identity = typeof participant?.identity === "string" ? participant.identity.trim() : "";
+  if (!identity || identity.toLowerCase().startsWith("control-ui-")) {
+    return false;
+  }
+  if (activeAvatarAudioParticipantIdentity && identity === activeAvatarAudioParticipantIdentity) {
+    return true;
+  }
+  if (activeAvatarParticipantIdentity && identity === activeAvatarParticipantIdentity) {
+    return true;
+  }
+  if (track?.kind === "audio") {
+    return true;
+  }
+  const publications = participant?.trackPublications?.values?.();
+  if (!publications) {
+    return false;
+  }
+  for (const publication of publications) {
+    const kind = typeof publication?.kind === "string" ? publication.kind.trim().toLowerCase() : "";
+    if (kind === "audio" && publication.track) {
       return true;
     }
   }
@@ -3859,7 +3896,24 @@ async function maybeStartAvatarPictureInPicture() {
 }
 
 function getRemoteMediaContainer(participant, track = null) {
-  if (!avatarMediaEl || !shouldTreatParticipantAsAvatar(participant, track)) {
+  if (!avatarMediaEl) {
+    return null;
+  }
+  if (track?.kind === "video") {
+    if (!shouldTreatParticipantAsAvatar(participant, track)) {
+      return null;
+    }
+    rememberAvatarParticipantIdentity(participant.identity);
+    return avatarMediaEl;
+  }
+  if (track?.kind === "audio") {
+    if (!shouldTreatParticipantAudioAsAvatar(participant, track)) {
+      return null;
+    }
+    rememberAvatarAudioParticipantIdentity(participant.identity);
+    return avatarMediaEl;
+  }
+  if (!shouldTreatParticipantAsAvatar(participant, track)) {
     return null;
   }
   rememberAvatarParticipantIdentity(participant.identity);
@@ -3964,10 +4018,18 @@ function updateRoomButtons() {
 }
 
 function removeParticipantTile(participantIdentity) {
-  if (!isAvatarParticipantIdentity(participantIdentity)) {
+  const normalized = typeof participantIdentity === "string" ? participantIdentity.trim() : "";
+  if (
+    !normalized ||
+    (!isAvatarParticipantIdentity(normalized) && normalized !== activeAvatarAudioParticipantIdentity)
+  ) {
     return;
   }
-  clearAvatarParticipantIdentity();
+  if (normalized === activeAvatarParticipantIdentity) {
+    clearAvatarParticipantIdentity();
+  } else if (normalized === activeAvatarAudioParticipantIdentity) {
+    activeAvatarAudioParticipantIdentity = "";
+  }
   markAvatarDisconnected();
   clearRemoteTiles({ keepDocumentPictureInPicture: Boolean(activeRoom || activeSession) });
 }
