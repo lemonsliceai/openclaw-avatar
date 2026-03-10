@@ -25,6 +25,7 @@ const VIDEO_CHAT_ROOM_PART_MAX_LENGTH = 48;
 const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
+const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
@@ -1017,12 +1018,21 @@ function moduleStylesRootCandidates(): string[] {
   ];
 }
 
+function modulePackageJsonCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "package.json"),
+    path.resolve(moduleDir, "..", "..", "package.json"),
+  ];
+}
+
 function registerVideoChatHttpRoutes(
   api: OpenClawPluginApi,
   sessionHandlers: VideoChatSessionHandlers,
 ): void {
   let cachedWebRootPath: string | null | undefined;
   let cachedStylesRootPath: string | null | undefined;
+  let cachedPackageVersion: string | undefined;
 
   const resolveWebRootPath = async (): Promise<string> => {
     if (cachedWebRootPath !== undefined) {
@@ -1063,6 +1073,41 @@ function registerVideoChatHttpRoutes(
       throw new Error("invalid web asset path");
     }
     return readFile(resolvedPath, "utf8");
+  };
+
+  const resolvePackageVersion = async (): Promise<string> => {
+    if (cachedPackageVersion !== undefined) {
+      return cachedPackageVersion;
+    }
+    const packageJsonPath = await resolveExistingFile([
+      api.resolvePath("package.json"),
+      api.resolvePath("./package.json"),
+      api.resolvePath("../package.json"),
+      ...modulePackageJsonCandidates(),
+    ]);
+    if (!packageJsonPath) {
+      cachedPackageVersion = "unknown";
+      return cachedPackageVersion;
+    }
+    try {
+      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+      cachedPackageVersion =
+        typeof packageJson.version === "string" && packageJson.version.trim()
+          ? packageJson.version.trim()
+          : "unknown";
+      return cachedPackageVersion;
+    } catch {
+      cachedPackageVersion = "unknown";
+      return cachedPackageVersion;
+    }
+  };
+
+  const readRenderedHtmlAsset = async (relativePath: string): Promise<string> => {
+    const [html, packageVersion] = await Promise.all([
+      readWebAsset(relativePath),
+      resolvePackageVersion(),
+    ]);
+    return html.replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion);
   };
 
   const resolveStylesRootPath = async (): Promise<string> => {
@@ -1300,7 +1345,7 @@ function registerVideoChatHttpRoutes(
         return true;
       }
       if (normalizedPath === "/plugins/video-chat") {
-        const html = await readWebAsset("index.html");
+        const html = await readRenderedHtmlAsset("index.html");
         sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
         return true;
       }
@@ -1308,7 +1353,7 @@ function registerVideoChatHttpRoutes(
         normalizedPath === "/plugins/video-chat/settings" ||
         normalizedPath === "/plugins/video-chat/config"
       ) {
-        const html = await readWebAsset("settings.html");
+        const html = await readRenderedHtmlAsset("settings.html");
         sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
         return true;
       }

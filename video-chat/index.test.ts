@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
 import plugin from "./index.js";
@@ -671,6 +672,9 @@ describe("video-chat plugin", () => {
 
   it("serves the shipped browser shell and setup API routes", async () => {
     const { httpRoutes } = setup();
+    const packageJson = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
 
     const page = await invokeHttpRoute(httpRoutes, "/plugins/video-chat", {
       url: "/plugins/video-chat",
@@ -679,6 +683,8 @@ describe("video-chat plugin", () => {
     expect(page.res.statusCode).toBe(200);
     expect(page.res.header("content-type")).toBe("text/html; charset=utf-8");
     expect(page.res.body).toContain("<title>Claw Cast</title>");
+    expect(page.res.body).toContain('id="package-version-value"');
+    expect(page.res.body).toContain(`>${packageJson.version}</span>`);
 
     const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/setup",
