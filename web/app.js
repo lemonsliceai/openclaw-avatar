@@ -3856,6 +3856,15 @@ function attachTrackToContainer(track, container) {
   }
   container.appendChild(element);
   applyAvatarSpeakerMuteState();
+  if (isMediaElement(element) && typeof element.play === "function") {
+    void element.play().catch((error) => {
+      setOutput({
+        action: "remote-media-play-failed",
+        kind: track.kind,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
   if (track.kind === "video") {
     markAvatarConnected();
   }

@@ -31,18 +31,42 @@ function createBaseResolver(baseRunnerPath) {
   return createRequire(path.join(path.dirname(baseRunnerPath), "__openclaw_video_chat__.js"));
 }
 
-async function importFromBase(baseRunnerPath, specifier) {
+function resolveSpecifierFromBase(baseRunnerPath, specifier) {
   const resolver = createBaseResolver(baseRunnerPath);
-  return import(pathToFileURL(resolver.resolve(specifier)).href);
+  return resolver.resolve(specifier);
+}
+
+function resolveSpecifierFromCandidates(baseRunnerPaths, specifier) {
+  let lastError = null;
+  for (const baseRunnerPath of baseRunnerPaths) {
+    try {
+      return resolveSpecifierFromBase(baseRunnerPath, specifier);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error(`Unable to resolve ${specifier}`);
+}
+
+async function importFromBase(baseRunnerPath, specifier) {
+  return import(pathToFileURL(resolveSpecifierFromBase(baseRunnerPath, specifier)).href);
+}
+
+async function importFromCandidates(baseRunnerPaths, specifier) {
+  return import(pathToFileURL(resolveSpecifierFromCandidates(baseRunnerPaths, specifier)).href);
 }
 
 async function loadDeps() {
+  const runnerPath = process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim();
   const baseRunnerPath = resolveDepsBaseRunnerPath();
+  const resolutionPaths = Array.from(
+    new Set([runnerPath, baseRunnerPath].filter((value) => typeof value === "string" && value.trim())),
+  );
   const [agentsModule, elevenlabsModule, lemonsliceModule, wsModule] = await Promise.all([
-    importFromBase(baseRunnerPath, "@livekit/agents"),
-    importFromBase(baseRunnerPath, "@livekit/agents-plugin-elevenlabs"),
-    importFromBase(baseRunnerPath, "@livekit/agents-plugin-lemonslice"),
-    importFromBase(baseRunnerPath, "ws"),
+    importFromCandidates(resolutionPaths, "@livekit/agents"),
+    importFromCandidates(resolutionPaths, "@livekit/agents-plugin-elevenlabs"),
+    importFromCandidates(resolutionPaths, "@livekit/agents-plugin-lemonslice"),
+    importFromCandidates(resolutionPaths, "ws"),
   ]);
 
   const WebSocket = wsModule?.WebSocket ?? wsModule?.default ?? wsModule;
@@ -352,9 +376,17 @@ async function runVideoChatAgentEntry(ctx) {
   gatewayClient = await connectGatewayBridge({
     WebSocket: deps.WebSocket,
     sessionKey: metadata.sessionKey,
-    onChatEvent: (event) => {
+    onChatEvent: async (event) => {
       const payload = event?.payload;
-      if (!payload || payload.sessionKey !== metadata.sessionKey || payload.state !== "final") {
+      const payloadSessionKey =
+        typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
+      const payloadState = typeof payload?.state === "string" ? payload.state.trim() : "";
+      if (payloadState) {
+        console.log(
+          `[video-chat-agent] received gateway chat event state=${payloadState} session=${payloadSessionKey || "unknown"}`,
+        );
+      }
+      if (!payload || payloadSessionKey !== metadata.sessionKey || payloadState !== "final") {
         return;
       }
       const runId = typeof payload.runId === "string" ? payload.runId : "";
@@ -368,8 +400,17 @@ async function runVideoChatAgentEntry(ctx) {
       if (runId) {
         spokenRuns.add(runId);
       }
-      console.log(`[video-chat-agent] speaking gateway reply${runId ? ` run=${runId}` : ""}`);
-      session.say(text, { allowInterruptions: false });
+      console.log(
+        `[video-chat-agent] speaking gateway reply${runId ? ` run=${runId}` : ""}: ${text}`,
+      );
+      try {
+        await session.say(text, { allowInterruptions: false });
+        console.log(`[video-chat-agent] finished speaking gateway reply${runId ? ` run=${runId}` : ""}`);
+      } catch (error) {
+        console.error(
+          `[video-chat-agent] failed to speak gateway reply${runId ? ` run=${runId}` : ""}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+        );
+      }
     },
   });
 

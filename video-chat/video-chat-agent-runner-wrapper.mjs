@@ -29,6 +29,23 @@ async function importFromBase(baseRunnerPath, specifier) {
   return import(pathToFileURL(resolved).href);
 }
 
+function resolveFromPath(baseRunnerPath, specifier, suffix = "__openclaw_runner__.js") {
+  const resolver = createRequire(path.join(path.dirname(baseRunnerPath), suffix));
+  return resolver.resolve(specifier);
+}
+
+function resolveFromCandidates(paths, specifier) {
+  let lastError = null;
+  for (const candidate of paths) {
+    try {
+      return resolveFromPath(candidate, specifier);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error(`Unable to resolve ${specifier}`);
+}
+
 function resolveFromBase(baseRunnerPath, specifier) {
   const resolver = createRequire(path.join(path.dirname(baseRunnerPath), "__openclaw_runner__.js"));
   return resolver.resolve(specifier);
@@ -47,7 +64,11 @@ function resolvePackageRootFromResolvedMain(mainPath) {
 }
 
 async function patchLemonSliceLogging(baseRunnerPath) {
-  const lemonSliceMainPath = resolveFromBase(baseRunnerPath, "@livekit/agents-plugin-lemonslice");
+  const resolutionPaths = Array.from(new Set([requireRunnerPath(), baseRunnerPath]));
+  const lemonSliceMainPath = resolveFromCandidates(
+    resolutionPaths,
+    "@livekit/agents-plugin-lemonslice",
+  );
   const lemonSlicePackageRoot = resolvePackageRootFromResolvedMain(lemonSliceMainPath);
   const avatarModulePath = lemonSlicePackageRoot
     ? path.join(lemonSlicePackageRoot, "dist", "avatar.js")
