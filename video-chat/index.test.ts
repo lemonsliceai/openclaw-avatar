@@ -3,6 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
 import plugin from "./index.js";
 
+const { mockSpawn, mockStat, actualStatHolder } = vi.hoisted(() => ({
+  mockSpawn: vi.fn(),
+  mockStat: vi.fn(),
+  actualStatHolder: { stat: null as null | ((path: string) => Promise<unknown>) },
+}));
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
@@ -10,6 +16,28 @@ vi.mock("node:fs", async (importOriginal) => {
     readFileSync: vi.fn(() => Buffer.from("audio-bytes")),
   };
 });
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: mockSpawn,
+  };
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  actualStatHolder.stat = actual.stat as unknown as (path: string) => Promise<unknown>;
+  return {
+    ...actual,
+    stat: mockStat,
+  };
+});
+
+vi.mock("./sidecar-process-control.js", () => ({
+  resetProcessGroupChildren: vi.fn().mockResolvedValue(undefined),
+  stopChildProcess: vi.fn().mockResolvedValue(undefined),
+}));
 
 type RespondCall = [boolean, unknown?, { code: string; message: string }?];
 type RegisteredHttpRoute = {
@@ -95,6 +123,28 @@ function setup(config: unknown = baseConfig) {
   return { runtime, methods, services, httpRoutes, cliCommands };
 }
 
+function createSpawnedChild(pid: number): EventEmitter & {
+  pid: number;
+  stdout: EventEmitter;
+  stderr: EventEmitter;
+} {
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number;
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+  };
+  child.pid = pid;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  return child;
+}
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => {
+    queueMicrotask(() => resolve());
+  });
+}
+
 class MockHttpResponse {
   statusCode = 200;
   headers = new Map<string, string>();
@@ -177,6 +227,24 @@ async function invoke(
 describe("video-chat plugin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
+    mockSpawn.mockImplementation(() => createSpawnedChild(4999));
+    mockStat.mockImplementation(async (candidate: string) => {
+      if (
+        candidate.endsWith("/video-chat/video-chat-agent-runner.js") ||
+        candidate.endsWith("/mock-openclaw/dist/video-chat-agent-runner.js") ||
+        candidate.endsWith("/mock-openclaw/index.js")
+      ) {
+        return {
+          isFile: () => true,
+          isDirectory: () => false,
+        };
+      }
+      if (!actualStatHolder.stat) {
+        throw new Error("missing actual stat implementation");
+      }
+      return actualStatHolder.stat(candidate);
+    });
   });
 
   it("registers Claw Cast gateway methods and sidecar service", () => {
@@ -205,6 +273,70 @@ describe("video-chat plugin", () => {
       ]),
     );
     expect(cliCommands).toHaveLength(1);
+  });
+
+  it("falls back to the bridge runner when the OpenClaw CLI build rejects gateway video-chat-agent", async () => {
+    process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER = "/mock-openclaw/dist/video-chat-agent-runner.js";
+    mockStat.mockImplementation(async (candidate: string) => {
+      if (
+        candidate.endsWith("/mock-openclaw/dist/video-chat-agent-runner.js") ||
+        candidate.endsWith("/mock-openclaw/index.js")
+      ) {
+        return {
+          isFile: () => true,
+          isDirectory: () => false,
+        };
+      }
+      if (candidate.endsWith("/video-chat/video-chat-agent-runner.js")) {
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+      if (!actualStatHolder.stat) {
+        throw new Error("missing actual stat implementation");
+      }
+      return actualStatHolder.stat(candidate);
+    });
+    const { services } = setup();
+    const service = services[0] as
+      | {
+          start?: (ctx: { config: typeof baseConfig; gateway: { port: number; auth: object } }) => Promise<void>;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+    expect(service?.start).toBeTypeOf("function");
+
+    const firstChild = createSpawnedChild(4101);
+    const secondChild = createSpawnedChild(4102);
+
+    mockSpawn.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        firstChild.stderr.emit("data", "error: too many arguments for 'gateway'\n");
+        firstChild.emit("exit", 1, null);
+      });
+      return firstChild;
+    });
+    mockSpawn.mockImplementationOnce(() => secondChild);
+
+    await service?.start?.({
+      config: baseConfig,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+
+    await flushMicrotasks();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      "/mock-openclaw/index.js",
+      "gateway",
+      "video-chat-agent",
+    ]);
+    expect(mockSpawn.mock.calls[1]?.[1]).toEqual([
+      expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+      "/mock-openclaw/dist/video-chat-agent-runner.js",
+    ]);
+    await service?.stop?.();
   });
 
   it("returns redacted Claw Cast config state", async () => {
