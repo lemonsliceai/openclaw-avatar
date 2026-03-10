@@ -110,6 +110,7 @@ let localAudioTrack = null;
 let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
+let activeAvatarParticipantIdentity = "";
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let preferredMicMuted = false;
@@ -1896,8 +1897,47 @@ function isAvatarParticipantIdentity(participantIdentity) {
   if (normalized === AVATAR_PARTICIPANT_IDENTITY) {
     return true;
   }
-  if (normalized.toLowerCase().includes("agent")) {
+  if (activeAvatarParticipantIdentity && normalized === activeAvatarParticipantIdentity) {
+    return true;
+  }
+  return false;
+}
+
+function rememberAvatarParticipantIdentity(participantIdentity) {
+  const normalized = typeof participantIdentity === "string" ? participantIdentity.trim() : "";
+  if (!normalized) {
+    return;
+  }
+  activeAvatarParticipantIdentity = normalized;
+}
+
+function clearAvatarParticipantIdentity() {
+  activeAvatarParticipantIdentity = "";
+}
+
+function shouldTreatParticipantAsAvatar(participant, track = null) {
+  const identity = typeof participant?.identity === "string" ? participant.identity.trim() : "";
+  if (!identity) {
     return false;
+  }
+  if (isAvatarParticipantIdentity(identity)) {
+    return true;
+  }
+  if (identity.toLowerCase().startsWith("control-ui-")) {
+    return false;
+  }
+  if (track?.kind === "video") {
+    return true;
+  }
+  const publications = participant?.trackPublications?.values?.();
+  if (!publications) {
+    return false;
+  }
+  for (const publication of publications) {
+    const kind = typeof publication?.kind === "string" ? publication.kind.trim().toLowerCase() : "";
+    if (kind === "video" && publication.track) {
+      return true;
+    }
   }
   return false;
 }
@@ -3808,27 +3848,21 @@ function clearRemoteTiles(options = {}) {
     }
     mediaElement.remove();
   }
+  clearAvatarParticipantIdentity();
   unbindAvatarPictureInPictureVideo();
   updateAvatarAspectRatio(null);
   updateAvatarUiState();
 }
 
 async function maybeStartAvatarPictureInPicture() {
-  if (!hasDocumentPictureInPictureSupport() || isAvatarPictureInPictureActive()) {
-    return false;
-  }
-  try {
-    await enterAvatarPictureInPicture();
-    return true;
-  } catch {
-    return false;
-  }
+  return false;
 }
 
-function getRemoteMediaContainer(participantIdentity) {
-  if (!avatarMediaEl || !isAvatarParticipantIdentity(participantIdentity)) {
+function getRemoteMediaContainer(participant, track = null) {
+  if (!avatarMediaEl || !shouldTreatParticipantAsAvatar(participant, track)) {
     return null;
   }
+  rememberAvatarParticipantIdentity(participant.identity);
   return avatarMediaEl;
 }
 
@@ -3933,6 +3967,7 @@ function removeParticipantTile(participantIdentity) {
   if (!isAvatarParticipantIdentity(participantIdentity)) {
     return;
   }
+  clearAvatarParticipantIdentity();
   markAvatarDisconnected();
   clearRemoteTiles({ keepDocumentPictureInPicture: Boolean(activeRoom || activeSession) });
 }
@@ -3969,7 +4004,7 @@ function bindRoomEvents(room) {
   });
   room.on(LIVEKIT.RoomEvent.TrackSubscribed, (track, publication, participant) => {
     void publication;
-    const container = getRemoteMediaContainer(participant.identity);
+    const container = getRemoteMediaContainer(participant, track);
     attachTrackToContainer(track, container);
     updateRoomButtons();
   });
@@ -3982,7 +4017,8 @@ function bindRoomEvents(room) {
     );
     if (!hasSubscribedTracks) {
       removeParticipantTile(participant.identity);
-    } else if (isAvatarParticipantIdentity(participant.identity) && !hasAvatarVideo()) {
+    } else if (shouldTreatParticipantAsAvatar(participant) && !hasAvatarVideo()) {
+      rememberAvatarParticipantIdentity(participant.identity);
       markAvatarDisconnected();
     }
   });
@@ -4081,7 +4117,7 @@ async function connectToRoom(options = {}) {
         if (!publication.track) {
           continue;
         }
-        const container = getRemoteMediaContainer(participant.identity);
+        const container = getRemoteMediaContainer(participant, publication.track);
         attachTrackToContainer(publication.track, container);
       }
     }
