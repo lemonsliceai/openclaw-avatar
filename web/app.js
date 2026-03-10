@@ -110,8 +110,6 @@ let localAudioTrack = null;
 let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
-let activeAvatarParticipantIdentity = "";
-let activeAvatarAudioParticipantIdentity = "";
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let preferredMicMuted = false;
@@ -1898,83 +1896,8 @@ function isAvatarParticipantIdentity(participantIdentity) {
   if (normalized === AVATAR_PARTICIPANT_IDENTITY) {
     return true;
   }
-  if (activeAvatarParticipantIdentity && normalized === activeAvatarParticipantIdentity) {
-    return true;
-  }
-  return false;
-}
-
-function rememberAvatarParticipantIdentity(participantIdentity) {
-  const normalized = typeof participantIdentity === "string" ? participantIdentity.trim() : "";
-  if (!normalized) {
-    return;
-  }
-  activeAvatarParticipantIdentity = normalized;
-}
-
-function rememberAvatarAudioParticipantIdentity(participantIdentity) {
-  const normalized = typeof participantIdentity === "string" ? participantIdentity.trim() : "";
-  if (!normalized) {
-    return;
-  }
-  activeAvatarAudioParticipantIdentity = normalized;
-}
-
-function clearAvatarParticipantIdentity() {
-  activeAvatarParticipantIdentity = "";
-  activeAvatarAudioParticipantIdentity = "";
-}
-
-function shouldTreatParticipantAsAvatar(participant, track = null) {
-  const identity = typeof participant?.identity === "string" ? participant.identity.trim() : "";
-  if (!identity) {
+  if (normalized.toLowerCase().includes("agent")) {
     return false;
-  }
-  if (isAvatarParticipantIdentity(identity)) {
-    return true;
-  }
-  if (identity.toLowerCase().startsWith("control-ui-")) {
-    return false;
-  }
-  if (track?.kind === "video") {
-    return true;
-  }
-  const publications = participant?.trackPublications?.values?.();
-  if (!publications) {
-    return false;
-  }
-  for (const publication of publications) {
-    const kind = typeof publication?.kind === "string" ? publication.kind.trim().toLowerCase() : "";
-    if (kind === "video" && publication.track) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function shouldTreatParticipantAudioAsAvatar(participant, track = null) {
-  const identity = typeof participant?.identity === "string" ? participant.identity.trim() : "";
-  if (!identity || identity.toLowerCase().startsWith("control-ui-")) {
-    return false;
-  }
-  if (activeAvatarAudioParticipantIdentity && identity === activeAvatarAudioParticipantIdentity) {
-    return true;
-  }
-  if (activeAvatarParticipantIdentity && identity === activeAvatarParticipantIdentity) {
-    return true;
-  }
-  if (track?.kind === "audio") {
-    return true;
-  }
-  const publications = participant?.trackPublications?.values?.();
-  if (!publications) {
-    return false;
-  }
-  for (const publication of publications) {
-    const kind = typeof publication?.kind === "string" ? publication.kind.trim().toLowerCase() : "";
-    if (kind === "audio" && publication.track) {
-      return true;
-    }
   }
   return false;
 }
@@ -3885,7 +3808,6 @@ function clearRemoteTiles(options = {}) {
     }
     mediaElement.remove();
   }
-  clearAvatarParticipantIdentity();
   unbindAvatarPictureInPictureVideo();
   updateAvatarAspectRatio(null);
   updateAvatarUiState();
@@ -3895,28 +3817,10 @@ async function maybeStartAvatarPictureInPicture() {
   return false;
 }
 
-function getRemoteMediaContainer(participant, track = null) {
-  if (!avatarMediaEl) {
+function getRemoteMediaContainer(participantIdentity) {
+  if (!avatarMediaEl || !isAvatarParticipantIdentity(participantIdentity)) {
     return null;
   }
-  if (track?.kind === "video") {
-    if (!shouldTreatParticipantAsAvatar(participant, track)) {
-      return null;
-    }
-    rememberAvatarParticipantIdentity(participant.identity);
-    return avatarMediaEl;
-  }
-  if (track?.kind === "audio") {
-    if (!shouldTreatParticipantAudioAsAvatar(participant, track)) {
-      return null;
-    }
-    rememberAvatarAudioParticipantIdentity(participant.identity);
-    return avatarMediaEl;
-  }
-  if (!shouldTreatParticipantAsAvatar(participant, track)) {
-    return null;
-  }
-  rememberAvatarParticipantIdentity(participant.identity);
   return avatarMediaEl;
 }
 
@@ -4018,17 +3922,8 @@ function updateRoomButtons() {
 }
 
 function removeParticipantTile(participantIdentity) {
-  const normalized = typeof participantIdentity === "string" ? participantIdentity.trim() : "";
-  if (
-    !normalized ||
-    (!isAvatarParticipantIdentity(normalized) && normalized !== activeAvatarAudioParticipantIdentity)
-  ) {
+  if (!isAvatarParticipantIdentity(participantIdentity)) {
     return;
-  }
-  if (normalized === activeAvatarParticipantIdentity) {
-    clearAvatarParticipantIdentity();
-  } else if (normalized === activeAvatarAudioParticipantIdentity) {
-    activeAvatarAudioParticipantIdentity = "";
   }
   markAvatarDisconnected();
   clearRemoteTiles({ keepDocumentPictureInPicture: Boolean(activeRoom || activeSession) });
@@ -4066,7 +3961,7 @@ function bindRoomEvents(room) {
   });
   room.on(LIVEKIT.RoomEvent.TrackSubscribed, (track, publication, participant) => {
     void publication;
-    const container = getRemoteMediaContainer(participant, track);
+    const container = getRemoteMediaContainer(participant.identity);
     attachTrackToContainer(track, container);
     updateRoomButtons();
   });
@@ -4079,8 +3974,7 @@ function bindRoomEvents(room) {
     );
     if (!hasSubscribedTracks) {
       removeParticipantTile(participant.identity);
-    } else if (shouldTreatParticipantAsAvatar(participant) && !hasAvatarVideo()) {
-      rememberAvatarParticipantIdentity(participant.identity);
+    } else if (isAvatarParticipantIdentity(participant.identity) && !hasAvatarVideo()) {
       markAvatarDisconnected();
     }
   });
@@ -4179,7 +4073,7 @@ async function connectToRoom(options = {}) {
         if (!publication.track) {
           continue;
         }
-        const container = getRemoteMediaContainer(participant, publication.track);
+        const container = getRemoteMediaContainer(participant.identity);
         attachTrackToContainer(publication.track, container);
       }
     }
