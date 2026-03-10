@@ -89,6 +89,7 @@ const AVATAR_PIP_VERTICAL_PADDING = 20;
 const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
 const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
+const AVATAR_AUTO_START_IN_PIP = true;
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
@@ -4004,7 +4005,15 @@ function clearRemoteTiles(options = {}) {
 }
 
 async function maybeStartAvatarPictureInPicture() {
-  return false;
+  if (!AVATAR_AUTO_START_IN_PIP || !hasDocumentPictureInPictureSupport() || isAvatarPictureInPictureActive()) {
+    return false;
+  }
+  try {
+    await enterAvatarPictureInPicture();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getRemoteMediaContainer(participantIdentity) {
