@@ -5,6 +5,7 @@ const setupRawForm = document.getElementById("setup-raw-form");
 const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
 const sessionForm = document.getElementById("session-form");
+const startInPictureInPictureCheckbox = document.getElementById("start-in-pip");
 const ttsForm = document.getElementById("tts-form");
 const ttsTextInput = document.getElementById("tts-text");
 const ttsGenerateButton = document.getElementById("tts-generate");
@@ -66,6 +67,7 @@ const CHAT_PANE_STORAGE_KEY = "videoChat.chatPaneOpen";
 const CHAT_PANE_WIDTH_STORAGE_KEY = "videoChat.chatPaneWidth";
 const MIC_MUTED_STORAGE_KEY = "videoChat.microphoneMuted";
 const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
+const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "videoChat.avatarAutoStartInPictureInPicture";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -89,7 +91,6 @@ const AVATAR_PIP_VERTICAL_PADDING = 20;
 const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
 const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
-const AVATAR_AUTO_START_IN_PIP = true;
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
@@ -124,6 +125,7 @@ let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let preferredMicMuted = false;
 let avatarSpeakerMuted = false;
+let avatarAutoStartInPictureInPicture = true;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
 let avatarDocumentPictureInPictureElements = null;
@@ -777,6 +779,10 @@ function persistBooleanPreference(key, value) {
 function loadMediaPreferences() {
   preferredMicMuted = getStoredBooleanPreference(MIC_MUTED_STORAGE_KEY);
   avatarSpeakerMuted = getStoredBooleanPreference(AVATAR_SPEAKER_MUTED_STORAGE_KEY);
+  avatarAutoStartInPictureInPicture = getStoredBooleanPreference(AVATAR_AUTO_START_IN_PIP_STORAGE_KEY, true);
+  if (startInPictureInPictureCheckbox) {
+    startInPictureInPictureCheckbox.checked = avatarAutoStartInPictureInPicture;
+  }
 }
 
 function persistGatewayToken(token) {
@@ -4005,7 +4011,11 @@ function clearRemoteTiles(options = {}) {
 }
 
 async function maybeStartAvatarPictureInPicture() {
-  if (!AVATAR_AUTO_START_IN_PIP || !hasDocumentPictureInPictureSupport() || isAvatarPictureInPictureActive()) {
+  if (
+    !avatarAutoStartInPictureInPicture ||
+    !hasDocumentPictureInPictureSupport() ||
+    isAvatarPictureInPictureActive()
+  ) {
     return false;
   }
   try {
@@ -4667,6 +4677,13 @@ if (sessionForm) {
 if (stopSessionButton) {
   stopSessionButton.addEventListener("click", async () => {
     await stopActiveSession();
+  });
+}
+
+if (startInPictureInPictureCheckbox) {
+  startInPictureInPictureCheckbox.addEventListener("change", () => {
+    avatarAutoStartInPictureInPicture = startInPictureInPictureCheckbox.checked;
+    persistBooleanPreference(AVATAR_AUTO_START_IN_PIP_STORAGE_KEY, avatarAutoStartInPictureInPicture);
   });
 }
 
