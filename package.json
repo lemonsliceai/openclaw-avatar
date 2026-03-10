@@ -24,6 +24,12 @@
   "peerDependencies": {
     "openclaw": ">=2026.0.0"
   },
+  "dependencies": {
+    "@livekit/agents": "^1.2.0",
+    "@livekit/agents-plugin-elevenlabs": "^1.2.0",
+    "@livekit/agents-plugin-lemonslice": "^1.2.0",
+    "ws": "^8.18.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.0.0",
