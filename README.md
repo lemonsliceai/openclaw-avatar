@@ -81,7 +81,7 @@ Once you have accounts, retrieve API keys from each service and supply them duri
 
 ## Install
 
-For local development against the checked-out source tree:
+Verify published plugin installation:
 
 ```bash
 openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
@@ -89,6 +89,15 @@ openclaw plugins list
 ```
 
 Verify that ClawCast is listed. 
+
+Local development from source:
+
+```bash
+openclaw plugins install .
+openclaw plugins list
+```
+
+Verify that ClawCast is listed and resolves to the local checkout.
 
 `@livekit/agents` loads `@livekit/rtc-node` at runtime, so a fresh `npm install` is required after pulling dependency changes before starting the gateway or packing the plugin.
 

@@ -2134,6 +2134,7 @@ function clearAvatarParticipantIdentity() {
 }
 
 function shouldTreatParticipantAsAvatar(participant, track = null) {
+  void track;
   const identity = typeof participant?.identity === "string" ? participant.identity.trim() : "";
   if (!identity) {
     return false;
@@ -2143,19 +2144,6 @@ function shouldTreatParticipantAsAvatar(participant, track = null) {
   }
   if (identity.toLowerCase().startsWith("control-ui-")) {
     return false;
-  }
-  if (track?.kind === "video") {
-    return true;
-  }
-  const publications = participant?.trackPublications?.values?.();
-  if (!publications) {
-    return false;
-  }
-  for (const publication of publications) {
-    const kind = typeof publication?.kind === "string" ? publication.kind.trim().toLowerCase() : "";
-    if (kind === "video" && publication.track) {
-      return true;
-    }
   }
   return false;
 }
@@ -4251,7 +4239,7 @@ async function publishLocalTracks(room) {
       error: error instanceof Error ? error.message : String(error),
     });
     updateRoomButtons();
-    return;
+    throw error;
   }
   for (const track of tracks) {
     if (track.kind === "audio") {

@@ -342,15 +342,15 @@ async function runVideoChatAgentEntry(ctx) {
       const payloadSessionKey =
         typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
       const payloadState = typeof payload?.state === "string" ? payload.state.trim() : "";
+      const runId = typeof payload?.runId === "string" ? payload.runId : "";
       if (payloadState) {
         console.log(
-          `[video-chat-agent] received gateway chat event state=${payloadState} session=${payloadSessionKey || "unknown"}`,
+          `[video-chat-agent] received gateway chat event state=${payloadState}${runId ? ` run=${runId}` : ""}`,
         );
       }
       if (!payload || payloadSessionKey !== metadata.sessionKey || payloadState !== "final") {
         return;
       }
-      const runId = typeof payload.runId === "string" ? payload.runId : "";
       if (runId && spokenRuns.has(runId)) {
         return;
       }
@@ -358,14 +358,14 @@ async function runVideoChatAgentEntry(ctx) {
       if (!text) {
         return;
       }
-      if (runId) {
-        spokenRuns.add(runId);
-      }
       console.log(
-        `[video-chat-agent] speaking gateway reply${runId ? ` run=${runId}` : ""}: ${text}`,
+        `[video-chat-agent] speaking gateway reply${runId ? ` run=${runId}` : ""} length=${text.length}`,
       );
       try {
         await session.say(text, { allowInterruptions: false });
+        if (runId) {
+          spokenRuns.add(runId);
+        }
         console.log(`[video-chat-agent] finished speaking gateway reply${runId ? ` run=${runId}` : ""}`);
       } catch (error) {
         console.error(
