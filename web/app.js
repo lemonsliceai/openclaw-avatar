@@ -696,6 +696,99 @@ function debugLog(event, details = {}) {
   });
 }
 
+function summarizeTrackPublication(publication) {
+  if (!publication || typeof publication !== "object") {
+    return null;
+  }
+  return {
+    sid: typeof publication.trackSid === "string" ? publication.trackSid : "",
+    source: typeof publication.source === "string" ? publication.source : "",
+    kind: typeof publication.kind === "string" ? publication.kind : "",
+    trackName: typeof publication.trackName === "string" ? publication.trackName : "",
+    isSubscribed: Boolean(publication.isSubscribed),
+    isMuted: Boolean(publication.isMuted),
+    hasTrack: Boolean(publication.track),
+  };
+}
+
+function summarizeParticipantState(participant) {
+  if (!participant || typeof participant !== "object") {
+    return null;
+  }
+  return {
+    identity: typeof participant.identity === "string" ? participant.identity : "",
+    sid: typeof participant.sid === "string" ? participant.sid : "",
+    publicationCount: Array.from(participant.trackPublications?.values?.() || []).length,
+    publications: Array.from(participant.trackPublications?.values?.() || [])
+      .map((publication) => summarizeTrackPublication(publication))
+      .filter(Boolean),
+  };
+}
+
+function summarizeRoomState(room = activeRoom) {
+  if (!room || typeof room !== "object") {
+    return null;
+  }
+  return {
+    name: typeof room.name === "string" ? room.name : "",
+    connectionState:
+      typeof room.state === "string"
+        ? room.state
+        : typeof room.connectionState === "string"
+          ? room.connectionState
+          : roomConnectionState,
+    localParticipant: summarizeParticipantState(room.localParticipant),
+    remoteParticipants: Array.from(room.remoteParticipants?.values?.() || [])
+      .map((participant) => summarizeParticipantState(participant))
+      .filter(Boolean),
+    attachedMediaElements: avatarMediaEl
+      ? Array.from(avatarMediaEl.querySelectorAll("audio, video")).map((element) => ({
+          tagName: element.tagName.toLowerCase(),
+          muted: Boolean(element.muted),
+          paused: Boolean(element.paused),
+          readyState:
+            typeof element.readyState === "number" && Number.isFinite(element.readyState)
+              ? element.readyState
+              : null,
+          srcObjectTracks:
+            element.srcObject && typeof element.srcObject.getTracks === "function"
+              ? element.srcObject.getTracks().map((track) => ({
+                  kind: track.kind,
+                  enabled: track.enabled,
+                  muted: track.muted,
+                  readyState: track.readyState,
+                }))
+              : [],
+        }))
+      : [],
+  };
+}
+
+function debugLogRoomState(event, room = activeRoom, details = {}) {
+  debugLog(event, {
+    ...details,
+    roomState: summarizeRoomState(room),
+  });
+}
+
+function syncVideoChatDebugGlobals() {
+  try {
+    globalThis.__videoChatDebug = {
+      get entries() {
+        return debugLogEntries.slice();
+      },
+      get roomState() {
+        return summarizeRoomState();
+      },
+      dumpRoomState() {
+        const snapshot = summarizeRoomState();
+        console.log("[video-chat-ui]", { event: "manual-room-state", roomState: snapshot });
+        return snapshot;
+      },
+    };
+  } catch {}
+}
+
 function isVideoChatDebugLoggingEnabled() {
   if (VIDEO_CHAT_DEBUG_LOGGING) {
     return true;
@@ -721,6 +814,8 @@ function isVideoChatDebugLoggingEnabled() {
   } catch {}
   return false;
 }
+
+syncVideoChatDebugGlobals();
 
 function sanitizeDebugLogValue(key, value) {
   if (value === null || value === undefined) {
@@ -4526,6 +4621,10 @@ function attachTrackToContainer(track, container) {
     return;
   }
   const element = track.attach();
+  debugLog("livekit:track-attached", {
+    trackKind: track?.kind ?? "",
+    elementTag: element?.tagName?.toLowerCase?.() ?? "",
+  });
   element.autoplay = true;
   element.playsInline = true;
   if (track.kind === "video") {
@@ -4565,6 +4664,10 @@ function attachTrackToContainer(track, container) {
   if (track.kind === "video") {
     markAvatarConnected();
   }
+  debugLogRoomState("livekit:track-attached-state", activeRoom, {
+    trackKind: track?.kind ?? "",
+    elementTag: element?.tagName?.toLowerCase?.() ?? "",
+  });
   updateAvatarUiState();
 }
 
@@ -4670,6 +4773,9 @@ async function publishLocalTracks(room) {
       }
     }
     await room.localParticipant.publishTrack(track);
+    debugLogRoomState("livekit:local-track-published", room, {
+      trackKind: track.kind,
+    });
   }
 }
 
@@ -4682,30 +4788,59 @@ function bindRoomEvents(room) {
       participantIdentity: participant?.identity ?? "",
       publicationCount: Array.from(participant?.trackPublications?.values?.() || []).length,
     });
+    debugLogRoomState("livekit:participant-connected-state", room, {
+      participantIdentity: participant?.identity ?? "",
+    });
   });
   room.on(LIVEKIT.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
     void participant;
     void kind;
     handleLiveKitDataMessage(payload, topic);
   });
+  room.on?.(LIVEKIT.RoomEvent.TrackPublished, (publication, participant) => {
+    debugLog("livekit:track-published", {
+      participantIdentity: participant?.identity ?? "",
+      publication: summarizeTrackPublication(publication),
+    });
+    debugLogRoomState("livekit:track-published-state", room, {
+      participantIdentity: participant?.identity ?? "",
+    });
+  });
+  room.on?.(LIVEKIT.RoomEvent.TrackUnpublished, (publication, participant) => {
+    debugLog("livekit:track-unpublished", {
+      participantIdentity: participant?.identity ?? "",
+      publication: summarizeTrackPublication(publication),
+    });
+    debugLogRoomState("livekit:track-unpublished-state", room, {
+      participantIdentity: participant?.identity ?? "",
+    });
+  });
   room.on(LIVEKIT.RoomEvent.TrackSubscribed, (track, publication, participant) => {
-    void publication;
     debugLog("livekit:track-subscribed", {
       participantIdentity: participant?.identity ?? "",
       trackKind: track?.kind ?? "",
       publicationCount: Array.from(participant?.trackPublications?.values?.() || []).length,
+      publication: summarizeTrackPublication(publication),
     });
     const container = getRemoteMediaContainer(participant, track);
     attachTrackToContainer(track, container);
-    updateRoomButtons();
-  });
-  room.on(LIVEKIT.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-    void publication;
-    debugLog("livekit:track-unsubscribed", {
+    debugLogRoomState("livekit:track-subscribed-state", room, {
       participantIdentity: participant?.identity ?? "",
       trackKind: track?.kind ?? "",
     });
+    updateRoomButtons();
+  });
+  room.on(LIVEKIT.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+    debugLog("livekit:track-unsubscribed", {
+      participantIdentity: participant?.identity ?? "",
+      trackKind: track?.kind ?? "",
+      publication: summarizeTrackPublication(publication),
+    });
     detachTrack(track);
+    debugLogRoomState("livekit:track-unsubscribed-state", room, {
+      participantIdentity: participant?.identity ?? "",
+      trackKind: track?.kind ?? "",
+    });
     updateAvatarUiState();
     const hasSubscribedTracks = Array.from(participant.trackPublications.values()).some(
       (item) => Boolean(item.track),
@@ -4721,6 +4856,9 @@ function bindRoomEvents(room) {
     debugLog("livekit:participant-disconnected", {
       participantIdentity: participant?.identity ?? "",
     });
+    debugLogRoomState("livekit:participant-disconnected-state", room, {
+      participantIdentity: participant?.identity ?? "",
+    });
     removeParticipantTile(participant.identity);
   });
   room.on(LIVEKIT.RoomEvent.ConnectionStateChanged, (state) => {
@@ -4730,6 +4868,9 @@ function bindRoomEvents(room) {
       state: roomConnectionState,
       activeSessionKey: activeSession?.sessionKey ?? "",
     });
+    debugLogRoomState("livekit:connection-state-snapshot", room, {
+      state: roomConnectionState,
+    });
     if (roomConnectionState !== "connected") {
       setAvatarConnectionState(activeSession ? "connecting" : "idle");
     }
@@ -4738,6 +4879,9 @@ function bindRoomEvents(room) {
   });
   room.on(LIVEKIT.RoomEvent.Disconnected, () => {
     debugLog("livekit:room-disconnected", {
+      activeSessionKey: activeSession?.sessionKey ?? "",
+    });
+    debugLogRoomState("livekit:room-disconnected-state", room, {
       activeSessionKey: activeSession?.sessionKey ?? "",
     });
     if (activeRoom !== room) {
@@ -4794,6 +4938,9 @@ async function connectToRoom(options = {}) {
       remoteParticipantCount: room.remoteParticipants.size,
       roomName: activeSession.roomName ?? "",
     });
+    debugLogRoomState("livekit:connect-success-state", room, {
+      remoteParticipantCount: room.remoteParticipants.size,
+    });
     if (connectGeneration !== roomConnectGeneration || !activeSession) {
       try {
         room.disconnect();
@@ -4844,6 +4991,7 @@ async function connectToRoom(options = {}) {
         attachTrackToContainer(publication.track, container);
       }
     }
+    debugLogRoomState("livekit:post-connect-room-state", room);
     updateRoomButtons();
   } catch (error) {
     debugLog("livekit:connect-failed", {
