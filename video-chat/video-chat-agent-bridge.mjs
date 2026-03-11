@@ -23,17 +23,27 @@ function resolveDepsBaseRunnerPath(argv, runnerPath) {
   return candidate ? path.resolve(candidate) : runnerPath;
 }
 
-async function loadAgentsModule(baseRunnerPath) {
-  const resolver = createRequire(path.join(path.dirname(baseRunnerPath), "__openclaw_sidecar__.js"));
-  let agentsEntryPath;
-  try {
-    agentsEntryPath = resolver.resolve("@livekit/agents");
-  } catch (error) {
-    throw new Error(
-      `Unable to resolve @livekit/agents from runner path ${baseRunnerPath}. Ensure LiveKit deps are installed alongside OpenClaw. ${String(error)}`,
-      { cause: error },
-    );
+function createResolver(basePath, suffix = "__openclaw_sidecar__.js") {
+  return createRequire(path.join(path.dirname(basePath), suffix));
+}
+
+function resolveFromCandidates(paths, specifier) {
+  let lastError = null;
+  for (const basePath of paths) {
+    try {
+      return createResolver(basePath).resolve(specifier);
+    } catch (error) {
+      lastError = error;
+    }
   }
+  throw new Error(
+    `Unable to resolve ${specifier} from runner paths ${paths.join(", ")}. Ensure LiveKit deps are installed alongside the plugin or OpenClaw. ${String(lastError)}`,
+    { cause: lastError ?? undefined },
+  );
+}
+
+async function loadAgentsModule(paths) {
+  const agentsEntryPath = resolveFromCandidates(paths, "@livekit/agents");
   return import(pathToFileURL(agentsEntryPath).href);
 }
 
@@ -82,7 +92,8 @@ async function main() {
     path.dirname(fileURLToPath(import.meta.url)),
     "video-chat-agent-runner-wrapper.mjs",
   );
-  const agentsModule = await loadAgentsModule(depsBaseRunnerPath);
+  const depResolutionPaths = Array.from(new Set([runnerPath, depsBaseRunnerPath]));
+  const agentsModule = await loadAgentsModule(depResolutionPaths);
   const AgentServer = getExport(agentsModule, "AgentServer");
   const ServerOptions = getExport(agentsModule, "ServerOptions");
   const initializeLogger = getExport(agentsModule, "initializeLogger");

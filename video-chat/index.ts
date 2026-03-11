@@ -25,6 +25,7 @@ const VIDEO_CHAT_ROOM_PART_MAX_LENGTH = 48;
 const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
+const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
@@ -950,6 +951,16 @@ function asTextResponse(body: string, contentType: string, status = 200): HttpRe
   };
 }
 
+function withBrowserShellHeaders(payload: HttpResponsePayload): HttpResponsePayload {
+  return {
+    ...payload,
+    headers: {
+      ...(payload.headers ?? {}),
+      "permissions-policy": "microphone=(self)",
+    },
+  };
+}
+
 function parseRequestPathname(urlValue: string | undefined): string | null {
   if (!urlValue) {
     return null;
@@ -1017,12 +1028,21 @@ function moduleStylesRootCandidates(): string[] {
   ];
 }
 
+function modulePackageJsonCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "package.json"),
+    path.resolve(moduleDir, "..", "..", "package.json"),
+  ];
+}
+
 function registerVideoChatHttpRoutes(
   api: OpenClawPluginApi,
   sessionHandlers: VideoChatSessionHandlers,
 ): void {
   let cachedWebRootPath: string | null | undefined;
   let cachedStylesRootPath: string | null | undefined;
+  let cachedPackageVersion: string | undefined;
 
   const resolveWebRootPath = async (): Promise<string> => {
     if (cachedWebRootPath !== undefined) {
@@ -1063,6 +1083,41 @@ function registerVideoChatHttpRoutes(
       throw new Error("invalid web asset path");
     }
     return readFile(resolvedPath, "utf8");
+  };
+
+  const resolvePackageVersion = async (): Promise<string> => {
+    if (cachedPackageVersion !== undefined) {
+      return cachedPackageVersion;
+    }
+    const packageJsonPath = await resolveExistingFile([
+      api.resolvePath("package.json"),
+      api.resolvePath("./package.json"),
+      api.resolvePath("../package.json"),
+      ...modulePackageJsonCandidates(),
+    ]);
+    if (!packageJsonPath) {
+      cachedPackageVersion = "unknown";
+      return cachedPackageVersion;
+    }
+    try {
+      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+      cachedPackageVersion =
+        typeof packageJson.version === "string" && packageJson.version.trim()
+          ? packageJson.version.trim()
+          : "unknown";
+      return cachedPackageVersion;
+    } catch {
+      cachedPackageVersion = "unknown";
+      return cachedPackageVersion;
+    }
+  };
+
+  const readRenderedHtmlAsset = async (relativePath: string): Promise<string> => {
+    const [html, packageVersion] = await Promise.all([
+      readWebAsset(relativePath),
+      resolvePackageVersion(),
+    ]);
+    return html.replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion);
   };
 
   const resolveStylesRootPath = async (): Promise<string> => {
@@ -1284,78 +1339,94 @@ function registerVideoChatHttpRoutes(
     },
   });
 
+  const uiHandler = async (req: IncomingMessage, res: ServerResponse) => {
+    const pathname = parseRequestPathname(req.url);
+    if (!pathname) {
+      return false;
+    }
+    const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/video-chat";
+    try {
+      if (normalizedPath.startsWith("/plugins/video-chat/styles/")) {
+        const assetPath = decodeURIComponent(
+          normalizedPath.slice("/plugins/video-chat/styles/".length),
+        );
+        const css = await readStyleAsset(assetPath);
+        sendHttpResponse(res, asTextResponse(css, "text/css; charset=utf-8"));
+        return true;
+      }
+      if (normalizedPath === "/plugins/video-chat") {
+        const html = await readRenderedHtmlAsset("index.html");
+        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        return true;
+      }
+      if (
+        normalizedPath === "/plugins/video-chat/settings" ||
+        normalizedPath === "/plugins/video-chat/config"
+      ) {
+        const html = await readRenderedHtmlAsset("settings.html");
+        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        return true;
+      }
+      if (normalizedPath === "/plugins/video-chat/app.js") {
+        const script = await readWebAsset("app.js");
+        sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
+        return true;
+      }
+      sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Claw Cast plugin page request failed";
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
+        return true;
+      }
+      sendHttpResponse(
+        res,
+        asJsonResponse(
+          {
+            success: false,
+            error: { code: "UNAVAILABLE", message },
+          },
+          503,
+        ),
+      );
+      return true;
+    }
+  };
+
   api.registerHttpRoute({
     path: "/plugins/video-chat",
     auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/config",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/settings",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/app.js",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/styles",
+    auth: "plugin",
     match: "prefix",
-    handler: async (req: IncomingMessage, res: ServerResponse) => {
-      const pathname = parseRequestPathname(req.url);
-      if (!pathname) {
-        return false;
-      }
-      const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/video-chat";
-      if (!normalizedPath.startsWith("/plugins/video-chat")) {
-        return false;
-      }
-      if (normalizedPath.startsWith("/plugins/video-chat/api")) {
-        return false;
-      }
-      try {
-        if (normalizedPath.startsWith("/plugins/video-chat/styles/")) {
-          const assetPath = decodeURIComponent(
-            normalizedPath.slice("/plugins/video-chat/styles/".length),
-          );
-          const css = await readStyleAsset(assetPath);
-          sendHttpResponse(res, asTextResponse(css, "text/css; charset=utf-8"));
-          return true;
-        }
-        if (normalizedPath === "/plugins/video-chat") {
-          const html = await readWebAsset("index.html");
-          sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
-          return true;
-        }
-        if (
-          normalizedPath === "/plugins/video-chat/settings" ||
-          normalizedPath === "/plugins/video-chat/config"
-        ) {
-          const html = await readWebAsset("settings.html");
-          sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
-          return true;
-        }
-        if (normalizedPath.startsWith("/plugins/video-chat/")) {
-          const assetPath = decodeURIComponent(normalizedPath.slice("/plugins/video-chat/".length));
-          if (assetPath.endsWith(".js")) {
-            const script = await readWebAsset(assetPath);
-            sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
-            return true;
-          }
-          if (assetPath.endsWith(".html")) {
-            const html = await readWebAsset(assetPath);
-            sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
-            return true;
-          }
-        }
-        sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
-        return true;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Claw Cast plugin page request failed";
-        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-          sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
-          return true;
-        }
-        sendHttpResponse(
-          res,
-          asJsonResponse(
-            {
-              success: false,
-              error: { code: "UNAVAILABLE", message },
-            },
-            503,
-          ),
-        );
-        return true;
-      }
-    },
+    handler: uiHandler,
   });
 }
 
@@ -1428,6 +1499,7 @@ async function resolveSidecarLaunchCommand(
   entryScript: string | undefined,
 ): Promise<SidecarLaunchCommand | null> {
   const customRunnerPath = await resolveExistingFile([resolveCustomSidecarRunnerPath()]);
+  const bridgeScriptPath = resolveSidecarBridgeScriptPath();
   // The linked package can sit in several different workspace layouts, so runner discovery walks
   // up from both the active entrypoint and the plugin module directory before falling back.
   const baseRunnerCandidates = collectRunnerCandidates({ entryScript }).filter((candidate) => {
@@ -1437,16 +1509,18 @@ async function resolveSidecarLaunchCommand(
     return path.resolve(candidate) !== path.resolve(customRunnerPath);
   });
   const baseRunnerPath = await resolveExistingFile(baseRunnerCandidates);
-  if (customRunnerPath && baseRunnerPath) {
-    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
+  if (customRunnerPath) {
+    const args = [bridgeScriptPath, customRunnerPath];
+    if (baseRunnerPath) {
+      args.push(baseRunnerPath);
+    }
     return {
       executable: process.execPath,
-      args: [bridgeScriptPath, customRunnerPath, baseRunnerPath],
-      description: `node ${bridgeScriptPath} ${customRunnerPath} ${baseRunnerPath}`,
+      args,
+      description: `node ${args.join(" ")}`,
     };
   }
   if (baseRunnerPath) {
-    const bridgeScriptPath = resolveSidecarBridgeScriptPath();
     const bridgeCommand: SidecarLaunchCommand = {
       executable: process.execPath,
       args: [bridgeScriptPath, baseRunnerPath],

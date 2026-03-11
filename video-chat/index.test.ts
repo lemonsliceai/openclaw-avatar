@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
 import plugin from "./index.js";
@@ -257,7 +258,7 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
     expect(methods.has("videoChat.tts.generate")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(2);
+    expect(httpRoutes).toHaveLength(6);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -268,6 +269,26 @@ describe("video-chat plugin", () => {
         expect.objectContaining({
           path: "/plugins/video-chat",
           auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/config",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/settings",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/app.js",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/styles",
+          auth: "plugin",
           match: "prefix",
         }),
       ]),
@@ -275,10 +296,11 @@ describe("video-chat plugin", () => {
     expect(cliCommands).toHaveLength(1);
   });
 
-  it("falls back to the bridge runner when the OpenClaw CLI build rejects gateway video-chat-agent", async () => {
+  it("prefers the bundled bridge runner over the native gateway sidecar command", async () => {
     process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER = "/mock-openclaw/dist/video-chat-agent-runner.js";
     mockStat.mockImplementation(async (candidate: string) => {
       if (
+        candidate.endsWith("/video-chat/video-chat-agent-runner.js") ||
         candidate.endsWith("/mock-openclaw/dist/video-chat-agent-runner.js") ||
         candidate.endsWith("/mock-openclaw/index.js")
       ) {
@@ -286,9 +308,6 @@ describe("video-chat plugin", () => {
           isFile: () => true,
           isDirectory: () => false,
         };
-      }
-      if (candidate.endsWith("/video-chat/video-chat-agent-runner.js")) {
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       }
       if (!actualStatHolder.stat) {
         throw new Error("missing actual stat implementation");
@@ -304,17 +323,8 @@ describe("video-chat plugin", () => {
       | undefined;
     expect(service?.start).toBeTypeOf("function");
 
-    const firstChild = createSpawnedChild(4101);
-    const secondChild = createSpawnedChild(4102);
-
-    mockSpawn.mockImplementationOnce(() => {
-      queueMicrotask(() => {
-        firstChild.stderr.emit("data", "error: too many arguments for 'gateway'\n");
-        firstChild.emit("exit", 1, null);
-      });
-      return firstChild;
-    });
-    mockSpawn.mockImplementationOnce(() => secondChild);
+    const child = createSpawnedChild(4101);
+    mockSpawn.mockImplementationOnce(() => child);
 
     await service?.start?.({
       config: baseConfig,
@@ -326,14 +336,10 @@ describe("video-chat plugin", () => {
 
     await flushMicrotasks();
 
-    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
     expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
-      "/mock-openclaw/index.js",
-      "gateway",
-      "video-chat-agent",
-    ]);
-    expect(mockSpawn.mock.calls[1]?.[1]).toEqual([
       expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+      expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
       "/mock-openclaw/dist/video-chat-agent-runner.js",
     ]);
     await service?.stop?.();
@@ -666,6 +672,9 @@ describe("video-chat plugin", () => {
 
   it("serves the shipped browser shell and setup API routes", async () => {
     const { httpRoutes } = setup();
+    const packageJson = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
 
     const page = await invokeHttpRoute(httpRoutes, "/plugins/video-chat", {
       url: "/plugins/video-chat",
@@ -673,7 +682,10 @@ describe("video-chat plugin", () => {
     expect(page.handled).toBe(true);
     expect(page.res.statusCode).toBe(200);
     expect(page.res.header("content-type")).toBe("text/html; charset=utf-8");
+    expect(page.res.header("permissions-policy")).toBe("microphone=(self)");
     expect(page.res.body).toContain("<title>Claw Cast</title>");
+    expect(page.res.body).toContain('id="package-version-value"');
+    expect(page.res.body).toContain(`>${packageJson.version}</span>`);
 
     const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/setup",

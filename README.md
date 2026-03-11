@@ -19,6 +19,31 @@ Standalone OpenClaw plugin that adds a LemonSlice + LiveKit + Eleven Labs Avatar
 
 `package.json` uses a `files` allowlist so `npm pack` only includes the runtime files above and excludes tests, local dependencies, and editor artifacts.
 
+## About The Install Warning
+
+OpenClaw may show a warning like this during install:
+
+```text
+WARNING: Plugin "video-chat" contains dangerous code patterns: Shell command execution detected (child_process) (.../video-chat/index.ts:1727); Environment variable access combined with network send — possible credential harvesting (.../video-chat/index.ts:212)
+```
+
+That warning is expected for this plugin. It is flagging two real implementation details:
+
+- `child_process` in `video-chat/index.ts` is used to start a local sidecar worker for the `video-chat-agent` service. That worker runs the long-lived LiveKit agent runtime in a separate process so it can be started, stopped, restarted, and isolated from the main gateway process.
+- `process.env` plus network activity in `video-chat/index.ts` is used to read setup defaults and plugin-specific runtime variables, then connect to the local OpenClaw gateway and the configured LiveKit, ElevenLabs, and LemonSlice services that power the plugin.
+
+What this plugin is not doing:
+
+- It does not execute arbitrary shell snippets from user input.
+- The plugin does not scan unrelated environment variables and send them to a third-party endpoint.
+- Outbound connections are limited to the services required for the video chat flow and the local OpenClaw gateway bridge.
+
+What it does do:
+
+- Launch a local worker process for the avatar agent runtime.
+- Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
+- Send audio, transcript, and session traffic only to the configured providers needed for Claw Cast to function.
+
 ## Runtime Surface
 
 - Gateway methods:
@@ -56,11 +81,25 @@ Once you have accounts, retrieve API keys from each service and supply them duri
 
 ## Install
 
+Verify published plugin installation:
+
 ```bash
-npm install --legacy-peer-deps
-openclaw plugins install --link /Users/scott/Documents/GitHub/videoChatPlugin
+openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
 openclaw plugins list
 ```
+
+Verify that ClawCast is listed. 
+
+Local development from source:
+
+```bash
+openclaw plugins install .
+openclaw plugins list
+```
+
+Verify that ClawCast is listed and resolves to the local checkout.
+
+`@livekit/agents` loads `@livekit/rtc-node` at runtime, so a fresh `npm install` is required after pulling dependency changes before starting the gateway or packing the plugin.
 
 ## Run
 
