@@ -35,8 +35,8 @@ That warning is expected for this plugin. It is flagging two real implementation
 What this plugin is not doing:
 
 - It does not execute arbitrary shell snippets from user input.
-- It does not scan unrelated environment variables and send them to a third-party endpoint.
-- It does not open outbound connections except to the services required for the video chat flow and the local OpenClaw gateway bridge.
+- The plugin does not scan unrelated environment variables and send them to a third-party endpoint.
+- Outbound connections are limited to the services required for the video chat flow and the local OpenClaw gateway bridge.
 
 What it does do:
 

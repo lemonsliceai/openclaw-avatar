@@ -57,7 +57,11 @@ async function loadDeps() {
   const runnerPath = process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim();
   const baseRunnerPath = resolveDepsBaseRunnerPath();
   const resolutionPaths = Array.from(
-    new Set([runnerPath, baseRunnerPath].filter((value) => typeof value === "string" && value.trim())),
+    new Set(
+      [runnerPath ? path.resolve(process.cwd(), runnerPath) : "", baseRunnerPath].filter(
+        (value) => typeof value === "string" && value.trim(),
+      ),
+    ),
   );
   const [agentsModule, elevenlabsModule, lemonsliceModule, wsModule] = await Promise.all([
     importFromCandidates(resolutionPaths, "@livekit/agents"),

@@ -85,7 +85,11 @@ const CHAT_PANE_MAX_WIDTH = 640;
 const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
 const AVATAR_PANE_MIN_WIDTH = 0;
 const AVATAR_PANE_MAX_WIDTH = 1200;
-const VIDEO_CHAT_DEBUG_LOGGING = true;
+// Debug logging is opt-in because even sanitized entries can still expose session timing and flow details.
+// Enable with `?videoChatDebug=1` or `localStorage.setItem("videoChat.debugLogging", "true")`.
+const VIDEO_CHAT_DEBUG_LOGGING = false;
+const VIDEO_CHAT_DEBUG_LOGGING_QUERY_PARAM = "videoChatDebug";
+const VIDEO_CHAT_DEBUG_LOGGING_STORAGE_KEY = "videoChat.debugLogging";
 const AVATAR_PIP_DEFAULT_ASPECT_RATIO = 16 / 9;
 const AVATAR_PIP_HORIZONTAL_PADDING = 20;
 const AVATAR_PIP_VERTICAL_PADDING = 20;
@@ -100,6 +104,7 @@ const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
 const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
+const VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH = 12;
 const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
 const CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CHAT_SUPPORTED_IMAGE_MIME_TYPES = new Set([
@@ -117,8 +122,7 @@ let browserSpeechRecognition = null;
 let browserSpeechRecognitionActive = false;
 let browserSpeechRecognitionShouldRun = false;
 let browserSpeechRecognitionRestartTimer = null;
-let lastBrowserSpeechTranscript = "";
-let lastBrowserSpeechTranscriptAt = 0;
+const lastBrowserSpeechTranscriptByConnection = new Map();
 let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
@@ -652,13 +656,13 @@ function setOutput(value) {
 }
 
 function debugLog(event, details = {}) {
-  if (!VIDEO_CHAT_DEBUG_LOGGING) {
+  if (!isVideoChatDebugLoggingEnabled()) {
     return;
   }
   const entry = {
     at: new Date().toISOString(),
     event,
-    ...details,
+    ...sanitizeDebugLogDetails(details),
   };
   debugLogEntries.push(entry);
   if (debugLogEntries.length > 30) {
@@ -668,6 +672,65 @@ function debugLog(event, details = {}) {
   setOutput({
     debug: debugLogEntries,
   });
+}
+
+function isVideoChatDebugLoggingEnabled() {
+  if (VIDEO_CHAT_DEBUG_LOGGING) {
+    return true;
+  }
+  try {
+    const params = new URLSearchParams(globalThis.location?.search || "");
+    const queryValue = params.get(VIDEO_CHAT_DEBUG_LOGGING_QUERY_PARAM);
+    if (typeof queryValue === "string") {
+      const normalized = queryValue.trim().toLowerCase();
+      if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+        return true;
+      }
+    }
+  } catch {}
+  try {
+    const storedValue = globalThis.localStorage?.getItem(VIDEO_CHAT_DEBUG_LOGGING_STORAGE_KEY);
+    if (typeof storedValue === "string") {
+      const normalized = storedValue.trim().toLowerCase();
+      return (
+        normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on"
+      );
+    }
+  } catch {}
+  return false;
+}
+
+function sanitizeDebugLogValue(key, value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  const normalizedKey = typeof key === "string" ? key.trim().toLowerCase() : "";
+  if (
+    normalizedKey === "livekiturl" ||
+    normalizedKey === "sessionkey" ||
+    normalizedKey === "activesessionkey" ||
+    normalizedKey === "participantidentity" ||
+    normalizedKey === "roomname" ||
+    normalizedKey === "participanttoken"
+  ) {
+    return "[redacted]";
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeDebugLogValue("", item));
+  }
+  if (value && typeof value === "object") {
+    return sanitizeDebugLogDetails(value);
+  }
+  return value;
+}
+
+function sanitizeDebugLogDetails(details) {
+  if (!details || typeof details !== "object") {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(details).map(([key, value]) => [key, sanitizeDebugLogValue(key, value)]),
+  );
 }
 
 function setRoomStatus(text, options = {}) {
@@ -888,20 +951,25 @@ async function submitVoiceTranscript(rawTranscript) {
     return false;
   }
 
-  const duplicateTranscript =
-    lastBrowserSpeechTranscript &&
-    transcript.toLowerCase() === lastBrowserSpeechTranscript.toLowerCase() &&
-    Date.now() - lastBrowserSpeechTranscriptAt < VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS;
-  if (duplicateTranscript) {
-    return false;
-  }
-  lastBrowserSpeechTranscript = transcript;
-  lastBrowserSpeechTranscriptAt = Date.now();
-
   const sessionKey = resolveChatSessionKey();
   if (!sessionKey) {
     return false;
   }
+
+  const dedupeKey = getVoiceTranscriptDeduplicationKey(sessionKey);
+  const priorTranscriptEntry = lastBrowserSpeechTranscriptByConnection.get(dedupeKey);
+  const duplicateTranscript =
+    transcript.length >= VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH &&
+    priorTranscriptEntry &&
+    transcript.toLowerCase() === priorTranscriptEntry.transcript &&
+    Date.now() - priorTranscriptEntry.at < VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS;
+  if (duplicateTranscript) {
+    return false;
+  }
+  lastBrowserSpeechTranscriptByConnection.set(dedupeKey, {
+    transcript: transcript.toLowerCase(),
+    at: Date.now(),
+  });
 
   const idempotencyKey = `${VOICE_CHAT_RUN_ID_PREFIX}browser-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   setChatPaneOpen(true);
@@ -2182,6 +2250,14 @@ function hasDocumentPictureInPictureSupport() {
     globalThis.documentPictureInPicture &&
       typeof globalThis.documentPictureInPicture.requestWindow === "function",
   );
+}
+
+function resetVoiceTranscriptDeduplication() {
+  lastBrowserSpeechTranscriptByConnection.clear();
+}
+
+function getVoiceTranscriptDeduplicationKey(sessionKey) {
+  return `${sessionKey}:${roomConnectGeneration}`;
 }
 
 function isAvatarDocumentPictureInPictureActive() {
@@ -4063,12 +4139,12 @@ function clearRemoteTiles(options = {}) {
 async function maybeStartAvatarPictureInPicture() {
   if (
     !avatarAutoStartInPictureInPicture ||
-    !hasDocumentPictureInPictureSupport() ||
+    !hasPictureInPictureBrowserSupport() ||
     isAvatarPictureInPictureActive()
   ) {
     debugLog("pip:auto-start-skipped", {
       enabled: avatarAutoStartInPictureInPicture,
-      hasDocumentPictureInPictureSupport: hasDocumentPictureInPictureSupport(),
+      hasPictureInPictureBrowserSupport: hasPictureInPictureBrowserSupport(),
       alreadyActive: isAvatarPictureInPictureActive(),
     });
     return false;
@@ -4449,6 +4525,7 @@ async function connectToRoom(options = {}) {
 function disconnectRoom(options = {}) {
   const keepDocumentPictureInPicture = options.keepDocumentPictureInPicture === true;
   roomConnectGeneration += 1;
+  resetVoiceTranscriptDeduplication();
   roomConnectionState = "disconnected";
   setAvatarLoadingState(false);
   setAvatarConnectionState(activeSession ? "disconnected" : "idle");
@@ -4494,6 +4571,7 @@ async function reconnectAvatarSession() {
       body: JSON.stringify({ sessionKey: priorSessionKey }),
     });
     activeSession = payload.session;
+    resetVoiceTranscriptDeduplication();
     setChatPaneOpen(true);
     updateRoomButtons();
     updateChatControls();
@@ -4519,6 +4597,7 @@ async function stopActiveSession() {
   const session = activeSession;
   disconnectRoom();
   activeSession = null;
+  resetVoiceTranscriptDeduplication();
   setAvatarConnectionState("idle");
   updateAvatarUiState();
   updateRoomButtons();
@@ -4783,6 +4862,7 @@ if (sessionForm) {
         body: JSON.stringify({ sessionKey }),
       });
       activeSession = payload.session;
+      resetVoiceTranscriptDeduplication();
       setChatPaneOpen(true);
       setOutput({ action: "session-started", session: activeSession });
       updateRoomButtons();
