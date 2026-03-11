@@ -728,6 +728,37 @@ describe("video-chat plugin", () => {
     expect((requestBody as FormData).get("file")).toBeTruthy();
   });
 
+  it("retries transient ElevenLabs transcription failures", async () => {
+    const { methods } = setup();
+    mockFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: "temporary upstream issue" }), {
+          status: 503,
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ text: "hello after retry" }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+      );
+
+    const respond = await invoke(methods, "videoChat.audio.transcribe", {
+      mimeType: "audio/webm;codecs=opus",
+      data: Buffer.from("audio-bytes").toString("base64"),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe("hello after retry");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("serves the shipped browser shell and setup API routes", async () => {
     const { httpRoutes } = setup();
     const packageJson = JSON.parse(

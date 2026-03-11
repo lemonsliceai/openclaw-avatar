@@ -27,6 +27,7 @@ const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
+const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
@@ -354,6 +355,70 @@ function extensionForAudioMimeType(mimeType: string | undefined): string {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function truncateForLog(value: string, maxLength = 240): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+function parseElevenLabsErrorMessage(rawBody: string, status: number): string {
+  const trimmed = rawBody.trim();
+  if (!trimmed) {
+    return `Claw Cast transcription failed: ElevenLabs returned ${status}`;
+  }
+
+  try {
+    const payload = JSON.parse(trimmed) as Record<string, unknown>;
+    const detail = payload.detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail.trim();
+    }
+    if (Array.isArray(detail)) {
+      const detailMessage = detail
+        .map((entry) => {
+          if (typeof entry === "string" && entry.trim()) {
+            return entry.trim();
+          }
+          if (
+            entry &&
+            typeof entry === "object" &&
+            typeof (entry as { msg?: unknown }).msg === "string" &&
+            (entry as { msg: string }).msg.trim()
+          ) {
+            return (entry as { msg: string }).msg.trim();
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("; ");
+      if (detailMessage) {
+        return detailMessage;
+      }
+    }
+    if (typeof payload.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+    if (
+      payload.error &&
+      typeof payload.error === "object" &&
+      typeof (payload.error as { message?: unknown }).message === "string" &&
+      (payload.error as { message: string }).message.trim()
+    ) {
+      return (payload.error as { message: string }).message.trim();
+    }
+  } catch {}
+
+  return `Claw Cast transcription failed: ElevenLabs returned ${status} (${truncateForLog(trimmed)})`;
+}
+
 function sanitizeVideoChatRoomPart(value: string): string {
   const normalized = value
     .trim()
@@ -637,6 +702,7 @@ async function writeConfigFile(api: OpenClawPluginApi, config: OpenClawConfig): 
 
 async function transcribeVideoChatAudio(params: {
   runtime: OpenClawPluginApi["runtime"];
+  logger: OpenClawPluginApi["logger"];
   cfg: OpenClawConfig;
   base64Data: string;
   mimeType?: unknown;
@@ -670,49 +736,73 @@ async function transcribeVideoChatAudio(params: {
   }
 
   const mimeType = normalizeMimeType(params.mimeType);
-  const form = new FormData();
-  form.append("model_id", ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID);
-  form.append(
-    "file",
-    new Blob([new Uint8Array(audioBuffer)], { type: mimeType ?? "application/octet-stream" }),
-    `input${extensionForAudioMimeType(mimeType)}`,
-  );
+  const fileName = `input${extensionForAudioMimeType(mimeType)}`;
 
-  const response = await fetch(ELEVENLABS_SPEECH_TO_TEXT_API_URL, {
-    method: "POST",
-    headers: {
-      "xi-api-key": elevenLabsApiKey,
-    },
-    body: form,
-  });
+  for (let attempt = 1; attempt <= ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS; attempt += 1) {
+    const form = new FormData();
+    form.append("model_id", ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID);
+    form.append(
+      "file",
+      new Blob([new Uint8Array(audioBuffer)], { type: mimeType ?? "application/octet-stream" }),
+      fileName,
+    );
 
-  const rawBody = await response.text();
-  let payload: Record<string, unknown> | null = null;
-  if (rawBody.trim()) {
     try {
-      payload = JSON.parse(rawBody) as Record<string, unknown>;
-    } catch {
-      payload = null;
+      const response = await fetch(ELEVENLABS_SPEECH_TO_TEXT_API_URL, {
+        method: "POST",
+        headers: {
+          "xi-api-key": elevenLabsApiKey,
+        },
+        body: form,
+      });
+
+      const rawBody = await response.text();
+      if (!response.ok) {
+        const message = parseElevenLabsErrorMessage(rawBody, response.status);
+        const retryable = response.status === 429 || response.status >= 500;
+        params.logger.warn(
+          `Claw Cast transcription attempt ${attempt}/${ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS} failed with status=${response.status}: ${message}`,
+        );
+        if (retryable && attempt < ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS) {
+          await sleep(250 * attempt);
+          continue;
+        }
+        throw new Error(message);
+      }
+
+      let payload: Record<string, unknown> | null = null;
+      if (rawBody.trim()) {
+        try {
+          payload = JSON.parse(rawBody) as Record<string, unknown>;
+        } catch {
+          payload = null;
+        }
+      }
+
+      const transcript = typeof payload?.text === "string" ? payload.text.trim() : "";
+      if (!transcript) {
+        throw new Error("Claw Cast transcription returned no text");
+      }
+      return { transcript };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const networkError =
+        message === "fetch failed" ||
+        message.includes("ECONNRESET") ||
+        message.includes("ETIMEDOUT") ||
+        message.includes("ENOTFOUND");
+      if (networkError && attempt < ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS) {
+        params.logger.warn(
+          `Claw Cast transcription attempt ${attempt}/${ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS} errored: ${message}`,
+        );
+        await sleep(250 * attempt);
+        continue;
+      }
+      throw error;
     }
   }
-  if (!response.ok) {
-    const detail = payload?.detail;
-    const detailMessage =
-      typeof detail === "string"
-        ? detail
-        : detail && typeof detail === "object" && typeof (detail as { message?: unknown }).message === "string"
-          ? ((detail as { message: string }).message)
-          : null;
-    throw new Error(
-      detailMessage ?? `Claw Cast transcription failed: ElevenLabs returned ${response.status}`,
-    );
-  }
 
-  const transcript = typeof payload?.text === "string" ? payload.text.trim() : "";
-  if (!transcript) {
-    throw new Error("Claw Cast transcription returned no text");
-  }
-  return { transcript };
+  throw new Error("Claw Cast transcription failed after retries");
 }
 
 async function generateVideoChatSpeech(params: {
@@ -1315,6 +1405,7 @@ function registerVideoChatHttpRoutes(
           const cfg = api.runtime.config.loadConfig();
           const result = await transcribeVideoChatAudio({
             runtime: api.runtime,
+            logger: api.logger,
             cfg,
             base64Data: params.data,
             mimeType: params.mimeType,
@@ -2123,6 +2214,7 @@ const videoChatPlugin = {
           const cfg = api.runtime.config.loadConfig();
           const result = await transcribeVideoChatAudio({
             runtime: api.runtime,
+            logger: api.logger,
             cfg,
             base64Data: params.data,
             mimeType: params.mimeType,
