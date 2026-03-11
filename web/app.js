@@ -4236,10 +4236,23 @@ async function publishLocalTracks(room) {
   if (!LIVEKIT) {
     throw new Error("LiveKit client library did not load");
   }
-  const tracks = await LIVEKIT.createLocalTracks({
-    audio: true,
-    video: false,
-  });
+  let tracks = [];
+  try {
+    tracks = await LIVEKIT.createLocalTracks({
+      audio: true,
+      video: false,
+    });
+  } catch (error) {
+    debugLog("livekit:local-audio-unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    setOutput({
+      action: "microphone-unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    updateRoomButtons();
+    return;
+  }
   for (const track of tracks) {
     if (track.kind === "audio") {
       localAudioTrack = track;

@@ -682,6 +682,7 @@ describe("video-chat plugin", () => {
     expect(page.handled).toBe(true);
     expect(page.res.statusCode).toBe(200);
     expect(page.res.header("content-type")).toBe("text/html; charset=utf-8");
+    expect(page.res.header("permissions-policy")).toBe("microphone=(self)");
     expect(page.res.body).toContain("<title>Claw Cast</title>");
     expect(page.res.body).toContain('id="package-version-value"');
     expect(page.res.body).toContain(`>${packageJson.version}</span>`);

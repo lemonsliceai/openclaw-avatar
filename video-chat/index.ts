@@ -951,6 +951,16 @@ function asTextResponse(body: string, contentType: string, status = 200): HttpRe
   };
 }
 
+function withBrowserShellHeaders(payload: HttpResponsePayload): HttpResponsePayload {
+  return {
+    ...payload,
+    headers: {
+      ...(payload.headers ?? {}),
+      "permissions-policy": "microphone=(self)",
+    },
+  };
+}
+
 function parseRequestPathname(urlValue: string | undefined): string | null {
   if (!urlValue) {
     return null;
@@ -1346,7 +1356,7 @@ function registerVideoChatHttpRoutes(
       }
       if (normalizedPath === "/plugins/video-chat") {
         const html = await readRenderedHtmlAsset("index.html");
-        sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
+        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
         return true;
       }
       if (
@@ -1354,7 +1364,7 @@ function registerVideoChatHttpRoutes(
         normalizedPath === "/plugins/video-chat/config"
       ) {
         const html = await readRenderedHtmlAsset("settings.html");
-        sendHttpResponse(res, asTextResponse(html, "text/html; charset=utf-8"));
+        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
         return true;
       }
       if (normalizedPath === "/plugins/video-chat/app.js") {
