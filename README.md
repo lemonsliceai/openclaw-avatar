@@ -71,7 +71,7 @@ Before installing and running this plugin, you will need accounts with the follo
 - **LemonSlice** — provides the avatar/character rendering for the video chat experience.
   Sign up at https://www.lemonslice.com
 
-- **ElevenLabs** — powers text-to-speech (TTS) voice synthesis.
+- **ElevenLabs** — powers plugin-owned speech-to-text (STT) and text-to-speech (TTS).
   Sign up at https://elevenlabs.io
 
 - **LiveKit** — provides the real-time video/audio room infrastructure.

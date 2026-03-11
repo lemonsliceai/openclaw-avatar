@@ -121,6 +121,50 @@ function extractTextFromMessage(message) {
   return parts.length > 0 ? parts.join("\n\n") : null;
 }
 
+function summarizeTrackPublication(publication) {
+  if (!publication || typeof publication !== "object") {
+    return null;
+  }
+  return {
+    sid: typeof publication.sid === "string" ? publication.sid : "",
+    trackSid: typeof publication.trackSid === "string" ? publication.trackSid : "",
+    source: typeof publication.source === "string" ? publication.source : "",
+    kind: typeof publication.kind === "string" ? publication.kind : "",
+    name: typeof publication.trackName === "string" ? publication.trackName : "",
+    subscribed: Boolean(publication.subscribed ?? publication.isSubscribed),
+    hasTrack: Boolean(publication.track),
+  };
+}
+
+function summarizeParticipant(participant) {
+  if (!participant || typeof participant !== "object") {
+    return null;
+  }
+  return {
+    identity: typeof participant.identity === "string" ? participant.identity : "",
+    sid: typeof participant.sid === "string" ? participant.sid : "",
+    publications: Array.from(participant.trackPublications?.values?.() || [])
+      .map((publication) => summarizeTrackPublication(publication))
+      .filter(Boolean),
+  };
+}
+
+function logRoomSnapshot(label, room) {
+  if (!room || typeof room !== "object") {
+    console.log(`[video-chat-agent] ${label} room snapshot unavailable`);
+    return;
+  }
+  console.log(
+    `[video-chat-agent] ${label} room snapshot ${JSON.stringify({
+      roomName: typeof room.name === "string" ? room.name : "",
+      localParticipant: summarizeParticipant(room.localParticipant),
+      remoteParticipants: Array.from(room.remoteParticipants?.values?.() || [])
+        .map((participant) => summarizeParticipant(participant))
+        .filter(Boolean),
+    })}`,
+  );
+}
+
 class GatewayWsClient {
   constructor(params) {
     this.WebSocket = params.WebSocket;
@@ -365,16 +409,19 @@ async function runVideoChatAgentEntry(ctx) {
       console.log(
         `[video-chat-agent] speaking gateway reply${runId ? ` run=${runId}` : ""} length=${text.length}`,
       );
+      logRoomSnapshot("before-session-say", ctx.room);
       try {
         await session.say(text, { allowInterruptions: false });
         if (runId) {
           spokenRuns.add(runId);
         }
         console.log(`[video-chat-agent] finished speaking gateway reply${runId ? ` run=${runId}` : ""}`);
+        logRoomSnapshot("after-session-say", ctx.room);
       } catch (error) {
         console.error(
           `[video-chat-agent] failed to speak gateway reply${runId ? ` run=${runId}` : ""}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
         );
+        logRoomSnapshot("session-say-failed", ctx.room);
       }
     },
   });
@@ -390,6 +437,7 @@ async function runVideoChatAgentEntry(ctx) {
     outputOptions: { audioEnabled: true },
   });
   console.log("[video-chat-agent] agent session connected");
+  logRoomSnapshot("after-agent-session-start", ctx.room);
 
   const avatar = new deps.lemonslice.AvatarSession({
     apiKey: lemonSliceApiKey,
@@ -398,6 +446,7 @@ async function runVideoChatAgentEntry(ctx) {
   console.log("[video-chat-agent] starting lemonslice avatar session");
   await avatar.start(session, ctx.room);
   console.log("[video-chat-agent] lemonslice avatar session started");
+  logRoomSnapshot("after-avatar-session-start", ctx.room);
 
   await new Promise((resolve) => {
     const room = ctx.room;

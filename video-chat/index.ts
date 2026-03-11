@@ -1,9 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -26,6 +25,9 @@ const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
+const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
+const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
+const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
@@ -353,6 +355,70 @@ function extensionForAudioMimeType(mimeType: string | undefined): string {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function truncateForLog(value: string, maxLength = 240): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+function parseElevenLabsErrorMessage(rawBody: string, status: number): string {
+  const trimmed = rawBody.trim();
+  if (!trimmed) {
+    return `Claw Cast transcription failed: ElevenLabs returned ${status}`;
+  }
+
+  try {
+    const payload = JSON.parse(trimmed) as Record<string, unknown>;
+    const detail = payload.detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail.trim();
+    }
+    if (Array.isArray(detail)) {
+      const detailMessage = detail
+        .map((entry) => {
+          if (typeof entry === "string" && entry.trim()) {
+            return entry.trim();
+          }
+          if (
+            entry &&
+            typeof entry === "object" &&
+            typeof (entry as { msg?: unknown }).msg === "string" &&
+            (entry as { msg: string }).msg.trim()
+          ) {
+            return (entry as { msg: string }).msg.trim();
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("; ");
+      if (detailMessage) {
+        return detailMessage;
+      }
+    }
+    if (typeof payload.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+    if (
+      payload.error &&
+      typeof payload.error === "object" &&
+      typeof (payload.error as { message?: unknown }).message === "string" &&
+      (payload.error as { message: string }).message.trim()
+    ) {
+      return (payload.error as { message: string }).message.trim();
+    }
+  } catch {}
+
+  return `Claw Cast transcription failed: ElevenLabs returned ${status} (${truncateForLog(trimmed)})`;
+}
+
 function sanitizeVideoChatRoomPart(value: string): string {
   const normalized = value
     .trim()
@@ -636,6 +702,7 @@ async function writeConfigFile(api: OpenClawPluginApi, config: OpenClawConfig): 
 
 async function transcribeVideoChatAudio(params: {
   runtime: OpenClawPluginApi["runtime"];
+  logger: OpenClawPluginApi["logger"];
   cfg: OpenClawConfig;
   base64Data: string;
   mimeType?: unknown;
@@ -659,25 +726,83 @@ async function transcribeVideoChatAudio(params: {
     throw new Error("audio payload is too large");
   }
 
-  const mimeType = normalizeMimeType(params.mimeType);
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-video-chat-audio-"));
-  const audioPath = path.join(tempDir, `input${extensionForAudioMimeType(mimeType)}`);
-
-  try {
-    await writeFile(audioPath, audioBuffer);
-    const result = await params.runtime.stt.transcribeAudioFile({
-      filePath: audioPath,
-      cfg: params.cfg,
-      mime: mimeType,
-    });
-    const transcript = result.text?.trim();
-    if (!transcript) {
-      throw new Error("Claw Cast transcription returned no text");
-    }
-    return { transcript };
-  } finally {
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  const effectiveConfig = resolveEffectiveVideoChatConfig(params.cfg);
+  const elevenLabsApiKey = normalizeResolvedSecretInputString({
+    value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
+    path: "messages.tts.elevenlabs.apiKey",
+  });
+  if (!elevenLabsApiKey) {
+    throw new Error("Claw Cast transcription is unavailable: missing ElevenLabs API key");
   }
+
+  const mimeType = normalizeMimeType(params.mimeType);
+  const fileName = `input${extensionForAudioMimeType(mimeType)}`;
+
+  for (let attempt = 1; attempt <= ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS; attempt += 1) {
+    const form = new FormData();
+    form.append("model_id", ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID);
+    form.append(
+      "file",
+      new Blob([new Uint8Array(audioBuffer)], { type: mimeType ?? "application/octet-stream" }),
+      fileName,
+    );
+
+    try {
+      const response = await fetch(ELEVENLABS_SPEECH_TO_TEXT_API_URL, {
+        method: "POST",
+        headers: {
+          "xi-api-key": elevenLabsApiKey,
+        },
+        body: form,
+      });
+
+      const rawBody = await response.text();
+      if (!response.ok) {
+        const message = parseElevenLabsErrorMessage(rawBody, response.status);
+        const retryable = response.status === 429 || response.status >= 500;
+        params.logger.warn(
+          `Claw Cast transcription attempt ${attempt}/${ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS} failed with status=${response.status}: ${message}`,
+        );
+        if (retryable && attempt < ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS) {
+          await sleep(250 * attempt);
+          continue;
+        }
+        throw new Error(message);
+      }
+
+      let payload: Record<string, unknown> | null = null;
+      if (rawBody.trim()) {
+        try {
+          payload = JSON.parse(rawBody) as Record<string, unknown>;
+        } catch {
+          payload = null;
+        }
+      }
+
+      const transcript = typeof payload?.text === "string" ? payload.text.trim() : "";
+      if (!transcript) {
+        throw new Error("Claw Cast transcription returned no text");
+      }
+      return { transcript };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const networkError =
+        message === "fetch failed" ||
+        message.includes("ECONNRESET") ||
+        message.includes("ETIMEDOUT") ||
+        message.includes("ENOTFOUND");
+      if (networkError && attempt < ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS) {
+        params.logger.warn(
+          `Claw Cast transcription attempt ${attempt}/${ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS} errored: ${message}`,
+        );
+        await sleep(250 * attempt);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Claw Cast transcription failed after retries");
 }
 
 async function generateVideoChatSpeech(params: {
@@ -1280,6 +1405,7 @@ function registerVideoChatHttpRoutes(
           const cfg = api.runtime.config.loadConfig();
           const result = await transcribeVideoChatAudio({
             runtime: api.runtime,
+            logger: api.logger,
             cfg,
             base64Data: params.data,
             mimeType: params.mimeType,
@@ -1487,21 +1613,13 @@ function collectRunnerCandidates(params: { entryScript?: string }): string[] {
   return candidates;
 }
 
-async function resolveNativeGatewayEntrypoint(runnerPath: string): Promise<string | null> {
-  const runnerDir = path.dirname(path.resolve(runnerPath));
-  return resolveExistingFile([
-    path.join(runnerDir, "index.js"),
-    path.join(path.dirname(runnerDir), "index.js"),
-  ]);
-}
-
 async function resolveSidecarLaunchCommand(
   entryScript: string | undefined,
 ): Promise<SidecarLaunchCommand | null> {
   const customRunnerPath = await resolveExistingFile([resolveCustomSidecarRunnerPath()]);
   const bridgeScriptPath = resolveSidecarBridgeScriptPath();
-  // The linked package can sit in several different workspace layouts, so runner discovery walks
-  // up from both the active entrypoint and the plugin module directory before falling back.
+  // Always prefer the bundled bridge so the plugin uses its own dependency tree instead of the
+  // host OpenClaw install's agent runtime.
   const baseRunnerCandidates = collectRunnerCandidates({ entryScript }).filter((candidate) => {
     if (!customRunnerPath) {
       return true;
@@ -1521,22 +1639,11 @@ async function resolveSidecarLaunchCommand(
     };
   }
   if (baseRunnerPath) {
-    const bridgeCommand: SidecarLaunchCommand = {
+    return {
       executable: process.execPath,
       args: [bridgeScriptPath, baseRunnerPath],
       description: `node ${bridgeScriptPath} ${baseRunnerPath}`,
     };
-    const nativeGatewayEntrypoint = await resolveNativeGatewayEntrypoint(baseRunnerPath);
-    const forceBridge = normalizeOptionalString(process.env.OPENCLAW_VIDEO_CHAT_FORCE_BRIDGE) === "1";
-    if (nativeGatewayEntrypoint && !forceBridge) {
-      return {
-        executable: process.execPath,
-        args: [nativeGatewayEntrypoint, "gateway", "video-chat-agent"],
-        description: `node ${nativeGatewayEntrypoint} gateway video-chat-agent`,
-        fallback: bridgeCommand,
-      };
-    }
-    return bridgeCommand;
   }
   if (entryScript) {
     return {
@@ -2107,6 +2214,7 @@ const videoChatPlugin = {
           const cfg = api.runtime.config.loadConfig();
           const result = await transcribeVideoChatAudio({
             runtime: api.runtime,
+            logger: api.logger,
             cfg,
             base64Data: params.data,
             mimeType: params.mimeType,

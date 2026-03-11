@@ -105,6 +105,11 @@ const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
 const VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH = 12;
+const SERVER_SPEECH_SILENCE_MS = 1_200;
+const SERVER_SPEECH_MAX_SEGMENT_MS = 9_000;
+const SERVER_SPEECH_MONITOR_INTERVAL_MS = 150;
+const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
+const SERVER_SPEECH_MIN_SEGMENT_BYTES = 1_024;
 const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
 const CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CHAT_SUPPORTED_IMAGE_MIME_TYPES = new Set([
@@ -122,7 +127,22 @@ let browserSpeechRecognition = null;
 let browserSpeechRecognitionActive = false;
 let browserSpeechRecognitionShouldRun = false;
 let browserSpeechRecognitionRestartTimer = null;
-const lastBrowserSpeechTranscriptByConnection = new Map();
+const lastVoiceTranscriptByConnection = new Map();
+let serverSpeechTranscriptionForced = false;
+let serverSpeechRecorder = null;
+let serverSpeechRecorderMimeType = "";
+let serverSpeechRecorderChunks = [];
+let serverSpeechRecorderSegmentActive = false;
+let serverSpeechRecorderSegmentStartedAt = 0;
+let serverSpeechRecorderLastSpeechAt = 0;
+let serverSpeechRecorderStopReason = "";
+let serverSpeechRecorderMonitorTimer = null;
+let serverSpeechRecorderAudioContext = null;
+let serverSpeechRecorderSourceNode = null;
+let serverSpeechRecorderAnalyser = null;
+let serverSpeechRecorderAnalyserBuffer = null;
+let serverSpeechRecorderStartPromise = null;
+let serverSpeechTranscriptionQueue = Promise.resolve();
 let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
@@ -674,6 +694,99 @@ function debugLog(event, details = {}) {
   });
 }
 
+function summarizeTrackPublication(publication) {
+  if (!publication || typeof publication !== "object") {
+    return null;
+  }
+  return {
+    sid: typeof publication.trackSid === "string" ? publication.trackSid : "",
+    source: typeof publication.source === "string" ? publication.source : "",
+    kind: typeof publication.kind === "string" ? publication.kind : "",
+    trackName: typeof publication.trackName === "string" ? publication.trackName : "",
+    isSubscribed: Boolean(publication.isSubscribed),
+    isMuted: Boolean(publication.isMuted),
+    hasTrack: Boolean(publication.track),
+  };
+}
+
+function summarizeParticipantState(participant) {
+  if (!participant || typeof participant !== "object") {
+    return null;
+  }
+  return {
+    identity: typeof participant.identity === "string" ? participant.identity : "",
+    sid: typeof participant.sid === "string" ? participant.sid : "",
+    publicationCount: Array.from(participant.trackPublications?.values?.() || []).length,
+    publications: Array.from(participant.trackPublications?.values?.() || [])
+      .map((publication) => summarizeTrackPublication(publication))
+      .filter(Boolean),
+  };
+}
+
+function summarizeRoomState(room = activeRoom) {
+  if (!room || typeof room !== "object") {
+    return null;
+  }
+  return {
+    name: typeof room.name === "string" ? room.name : "",
+    connectionState:
+      typeof room.state === "string"
+        ? room.state
+        : typeof room.connectionState === "string"
+          ? room.connectionState
+          : roomConnectionState,
+    localParticipant: summarizeParticipantState(room.localParticipant),
+    remoteParticipants: Array.from(room.remoteParticipants?.values?.() || [])
+      .map((participant) => summarizeParticipantState(participant))
+      .filter(Boolean),
+    attachedMediaElements: avatarMediaEl
+      ? Array.from(avatarMediaEl.querySelectorAll("audio, video")).map((element) => ({
+          tagName: element.tagName.toLowerCase(),
+          muted: Boolean(element.muted),
+          paused: Boolean(element.paused),
+          readyState:
+            typeof element.readyState === "number" && Number.isFinite(element.readyState)
+              ? element.readyState
+              : null,
+          srcObjectTracks:
+            element.srcObject && typeof element.srcObject.getTracks === "function"
+              ? element.srcObject.getTracks().map((track) => ({
+                  kind: track.kind,
+                  enabled: track.enabled,
+                  muted: track.muted,
+                  readyState: track.readyState,
+                }))
+              : [],
+        }))
+      : [],
+  };
+}
+
+function debugLogRoomState(event, room = activeRoom, details = {}) {
+  debugLog(event, {
+    ...details,
+    roomState: summarizeRoomState(room),
+  });
+}
+
+function syncVideoChatDebugGlobals() {
+  try {
+    globalThis.__videoChatDebug = {
+      get entries() {
+        return debugLogEntries.slice();
+      },
+      get roomState() {
+        return summarizeRoomState();
+      },
+      dumpRoomState() {
+        const snapshot = summarizeRoomState();
+        console.log("[video-chat-ui]", { event: "manual-room-state", roomState: snapshot });
+        return snapshot;
+      },
+    };
+  } catch {}
+}
+
 function isVideoChatDebugLoggingEnabled() {
   if (VIDEO_CHAT_DEBUG_LOGGING) {
     return true;
@@ -699,6 +812,8 @@ function isVideoChatDebugLoggingEnabled() {
   } catch {}
   return false;
 }
+
+syncVideoChatDebugGlobals();
 
 function sanitizeDebugLogValue(key, value) {
   if (value === null || value === undefined) {
@@ -957,7 +1072,7 @@ async function submitVoiceTranscript(rawTranscript) {
   }
 
   const dedupeKey = getVoiceTranscriptDeduplicationKey(sessionKey);
-  const priorTranscriptEntry = lastBrowserSpeechTranscriptByConnection.get(dedupeKey);
+  const priorTranscriptEntry = lastVoiceTranscriptByConnection.get(dedupeKey);
   const duplicateTranscript =
     transcript.length >= VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH &&
     priorTranscriptEntry &&
@@ -966,7 +1081,7 @@ async function submitVoiceTranscript(rawTranscript) {
   if (duplicateTranscript) {
     return false;
   }
-  lastBrowserSpeechTranscriptByConnection.set(dedupeKey, {
+  lastVoiceTranscriptByConnection.set(dedupeKey, {
     transcript: transcript.toLowerCase(),
     at: Date.now(),
   });
@@ -1006,6 +1121,39 @@ function browserSpeechRecognitionSupported() {
   return typeof BROWSER_SPEECH_RECOGNITION === "function";
 }
 
+function serverSpeechTranscriptionSupported() {
+  const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
+  return Boolean(
+    typeof globalThis.MediaRecorder === "function" &&
+      mediaStreamTrack &&
+      typeof MediaStream === "function" &&
+      typeof FileReader === "function",
+  );
+}
+
+function shouldRunVoiceTranscription() {
+  return Boolean(activeSession && activeRoom && localAudioTrack && !localAudioTrack.isMuted);
+}
+
+function shouldPreferBrowserSpeechRecognition() {
+  return Boolean(
+    shouldRunVoiceTranscription() &&
+      browserSpeechRecognitionSupported() &&
+      !serverSpeechTranscriptionForced,
+  );
+}
+
+function setServerSpeechTranscriptionFallback(reason) {
+  if (serverSpeechTranscriptionForced) {
+    return;
+  }
+  serverSpeechTranscriptionForced = true;
+  setOutput({
+    action: "voice-chat-server-transcription-fallback",
+    reason,
+  });
+}
+
 function clearBrowserSpeechRecognitionRestartTimer() {
   if (browserSpeechRecognitionRestartTimer === null) {
     return;
@@ -1026,14 +1174,300 @@ function stopBrowserSpeechRecognition() {
   } catch {}
 }
 
-function shouldRunBrowserSpeechRecognition() {
-  return Boolean(
-    activeSession &&
-      activeRoom &&
-      localAudioTrack &&
-      !localAudioTrack.isMuted &&
-      browserSpeechRecognitionSupported(),
-  );
+function pickServerSpeechRecorderMimeType() {
+  if (typeof globalThis.MediaRecorder?.isTypeSupported !== "function") {
+    return "audio/webm;codecs=opus";
+  }
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/ogg",
+    "audio/mp4",
+  ];
+  for (const candidate of candidates) {
+    if (globalThis.MediaRecorder.isTypeSupported(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function measureServerSpeechLevel() {
+  if (!serverSpeechRecorderAnalyser || !serverSpeechRecorderAnalyserBuffer) {
+    return 0;
+  }
+  serverSpeechRecorderAnalyser.getByteTimeDomainData(serverSpeechRecorderAnalyserBuffer);
+  let total = 0;
+  for (const sample of serverSpeechRecorderAnalyserBuffer) {
+    const normalized = (sample - 128) / 128;
+    total += normalized * normalized;
+  }
+  return Math.sqrt(total / serverSpeechRecorderAnalyserBuffer.length);
+}
+
+function readBlobAsBase64(blob) {
+  return new Promise((resolve, reject) => {
+    if (!(blob instanceof Blob)) {
+      reject(new Error("Audio payload is not a Blob."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      const commaIndex = dataUrl.indexOf(",");
+      resolve(commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl);
+    });
+    reader.addEventListener("error", () => {
+      reject(reader.error || new Error("Failed to read recorded audio."));
+    });
+    reader.readAsDataURL(blob);
+  });
+}
+
+function resetServerSpeechRecorderSegment() {
+  serverSpeechRecorderSegmentActive = false;
+  serverSpeechRecorderSegmentStartedAt = 0;
+  serverSpeechRecorderLastSpeechAt = 0;
+  serverSpeechRecorderStopReason = "";
+}
+
+function queueServerSpeechSegmentTranscription(segmentBlob, reason) {
+  const mimeType = segmentBlob.type || serverSpeechRecorderMimeType || "audio/webm";
+  const segmentBytes = segmentBlob.size;
+  const task = serverSpeechTranscriptionQueue
+    .catch(() => {})
+    .then(async () => {
+      const data = await readBlobAsBase64(segmentBlob);
+      if (!data) {
+        return false;
+      }
+      const payload = await requestJson("/plugins/video-chat/api/transcribe", {
+        method: "POST",
+        body: JSON.stringify({
+          mimeType,
+          data,
+        }),
+      });
+      const transcript = typeof payload?.transcript === "string" ? payload.transcript.trim() : "";
+      if (!transcript) {
+        return false;
+      }
+      await submitVoiceTranscript(transcript);
+      setOutput({
+        action: "server-speech-transcribed",
+        reason,
+        mimeType,
+        bytes: segmentBytes,
+      });
+      return true;
+    })
+    .catch((error) => {
+      setOutput({
+        action: "server-speech-transcription-failed",
+        error: error instanceof Error ? error.message : String(error),
+        reason,
+        mimeType,
+        bytes: segmentBytes,
+      });
+      return false;
+    });
+  serverSpeechTranscriptionQueue = task;
+  return task;
+}
+
+function finalizeServerSpeechRecorderSegment(reason) {
+  const segmentChunks = serverSpeechRecorderChunks.slice();
+  serverSpeechRecorderChunks = [];
+  const mimeType = serverSpeechRecorderMimeType || segmentChunks[0]?.blob?.type || "audio/webm";
+  serverSpeechRecorderMimeType = "";
+  resetServerSpeechRecorderSegment();
+  if (reason === "discard" || segmentChunks.length === 0) {
+    return;
+  }
+  const segmentBlob = new Blob(segmentChunks.map((chunk) => chunk.blob), {
+    type: mimeType,
+  });
+  if (segmentBlob.size < SERVER_SPEECH_MIN_SEGMENT_BYTES) {
+    return;
+  }
+  void queueServerSpeechSegmentTranscription(segmentBlob, reason);
+}
+
+function stopServerSpeechRecorderSegment(reason) {
+  if (!serverSpeechRecorder) {
+    finalizeServerSpeechRecorderSegment(reason);
+    return;
+  }
+  if (serverSpeechRecorder.state === "inactive") {
+    finalizeServerSpeechRecorderSegment(reason);
+    return;
+  }
+  serverSpeechRecorderStopReason = reason;
+  try {
+    serverSpeechRecorder.stop();
+  } catch (error) {
+    setOutput({
+      action: "server-speech-recorder-stop-failed",
+      error: error instanceof Error ? error.message : String(error),
+      reason,
+    });
+    finalizeServerSpeechRecorderSegment(reason);
+  }
+}
+
+function startServerSpeechRecorderSegment(now) {
+  const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
+  if (!mediaStreamTrack || serverSpeechRecorder) {
+    return;
+  }
+  const mimeType = pickServerSpeechRecorderMimeType();
+  const stream = new MediaStream([mediaStreamTrack]);
+  const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  serverSpeechRecorderChunks = [];
+  serverSpeechRecorder = recorder;
+  serverSpeechRecorderMimeType = recorder.mimeType || mimeType || "audio/webm";
+  serverSpeechRecorderSegmentActive = true;
+  serverSpeechRecorderSegmentStartedAt = now;
+  serverSpeechRecorderLastSpeechAt = now;
+  serverSpeechRecorderStopReason = "";
+
+  recorder.addEventListener("dataavailable", (event) => {
+    if (!(event.data instanceof Blob) || event.data.size === 0) {
+      return;
+    }
+    serverSpeechRecorderChunks.push({
+      blob: event.data,
+      at: Date.now(),
+    });
+  });
+  recorder.addEventListener("error", (event) => {
+    setOutput({
+      action: "server-speech-recorder-error",
+      error:
+        event?.error instanceof Error
+          ? event.error.message
+          : typeof event?.error === "string"
+            ? event.error
+            : "Unknown MediaRecorder error",
+    });
+    stopServerSpeechRecorderSegment("discard");
+  });
+  recorder.addEventListener("stop", () => {
+    const reason = serverSpeechRecorderStopReason || "stop";
+    serverSpeechRecorder = null;
+    finalizeServerSpeechRecorderSegment(reason);
+  });
+
+  recorder.start();
+  setOutput({
+    action: "server-speech-segment-recording-started",
+    mimeType: serverSpeechRecorderMimeType,
+  });
+}
+
+function monitorServerSpeechRecorder() {
+  if (!serverSpeechRecorderAnalyser || !serverSpeechRecorderAnalyserBuffer) {
+    return;
+  }
+  const now = Date.now();
+  const level = measureServerSpeechLevel();
+  const speaking = level >= SERVER_SPEECH_LEVEL_THRESHOLD;
+  if (speaking) {
+    if (!serverSpeechRecorderSegmentActive) {
+      startServerSpeechRecorderSegment(now);
+    } else {
+      serverSpeechRecorderLastSpeechAt = now;
+    }
+  }
+  if (!serverSpeechRecorderSegmentActive) {
+    return;
+  }
+  const segmentAge = now - serverSpeechRecorderSegmentStartedAt;
+  const silenceDuration = serverSpeechRecorderLastSpeechAt > 0 ? now - serverSpeechRecorderLastSpeechAt : 0;
+  if (segmentAge >= SERVER_SPEECH_MAX_SEGMENT_MS) {
+    stopServerSpeechRecorderSegment("max-duration");
+    return;
+  }
+  if (!speaking && silenceDuration >= SERVER_SPEECH_SILENCE_MS) {
+    stopServerSpeechRecorderSegment("silence");
+  }
+}
+
+function stopServerSpeechTranscription(options = {}) {
+  if (serverSpeechRecorderMonitorTimer !== null) {
+    clearInterval(serverSpeechRecorderMonitorTimer);
+    serverSpeechRecorderMonitorTimer = null;
+  }
+  stopServerSpeechRecorderSegment(options.flush === true ? "stop" : "discard");
+  if (serverSpeechRecorderSourceNode) {
+    try {
+      serverSpeechRecorderSourceNode.disconnect();
+    } catch {}
+  }
+  if (serverSpeechRecorderAnalyser) {
+    try {
+      serverSpeechRecorderAnalyser.disconnect();
+    } catch {}
+  }
+  if (serverSpeechRecorderAudioContext) {
+    void serverSpeechRecorderAudioContext.close().catch(() => {});
+  }
+  serverSpeechRecorderAudioContext = null;
+  serverSpeechRecorderSourceNode = null;
+  serverSpeechRecorderAnalyser = null;
+  serverSpeechRecorderAnalyserBuffer = null;
+  serverSpeechRecorderStartPromise = null;
+}
+
+async function startServerSpeechTranscription() {
+  if (serverSpeechRecorder || serverSpeechRecorderStartPromise || !serverSpeechTranscriptionSupported()) {
+    return;
+  }
+  const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
+  if (!mediaStreamTrack) {
+    return;
+  }
+  serverSpeechRecorderStartPromise = (async () => {
+    const AudioContextCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (typeof AudioContextCtor !== "function") {
+      throw new Error("AudioContext is unavailable for server speech transcription.");
+    }
+    const mimeType = pickServerSpeechRecorderMimeType();
+    const stream = new MediaStream([mediaStreamTrack]);
+    const audioContext = new AudioContextCtor();
+    const sourceNode = audioContext.createMediaStreamSource(stream);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.2;
+    sourceNode.connect(analyser);
+    try {
+      await audioContext.resume();
+    } catch {}
+    serverSpeechRecorderAudioContext = audioContext;
+    serverSpeechRecorderSourceNode = sourceNode;
+    serverSpeechRecorderAnalyser = analyser;
+    serverSpeechRecorderAnalyserBuffer = new Uint8Array(analyser.fftSize);
+    resetServerSpeechRecorderSegment();
+    serverSpeechRecorderMonitorTimer = setInterval(
+      monitorServerSpeechRecorder,
+      SERVER_SPEECH_MONITOR_INTERVAL_MS,
+    );
+    setOutput({
+      action: "server-speech-transcription-ready",
+      mimeType,
+    });
+  })()
+    .catch((error) => {
+      setOutput({
+        action: "server-speech-recorder-start-failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      serverSpeechRecorderStartPromise = null;
+    });
+  await serverSpeechRecorderStartPromise;
 }
 
 function ensureBrowserSpeechRecognition() {
@@ -1081,6 +1515,8 @@ function ensureBrowserSpeechRecognition() {
     if (code === "not-allowed" || code === "service-not-allowed") {
       browserSpeechRecognitionShouldRun = false;
       setChatStatus("Browser speech recognition permission was denied.");
+      setServerSpeechTranscriptionFallback(code);
+      syncVoiceTranscription();
       return;
     }
     setOutput({
@@ -1088,6 +1524,8 @@ function ensureBrowserSpeechRecognition() {
       error: code,
       message: typeof event?.message === "string" ? event.message : "",
     });
+    setServerSpeechTranscriptionFallback(code);
+    syncVoiceTranscription();
   });
 
   recognition.addEventListener("end", () => {
@@ -1097,7 +1535,7 @@ function ensureBrowserSpeechRecognition() {
     }
     clearBrowserSpeechRecognitionRestartTimer();
     browserSpeechRecognitionRestartTimer = setTimeout(() => {
-      syncBrowserSpeechRecognition();
+      syncVoiceTranscription();
     }, 750);
   });
 
@@ -1105,30 +1543,46 @@ function ensureBrowserSpeechRecognition() {
   return recognition;
 }
 
-function syncBrowserSpeechRecognition() {
-  const shouldRun = shouldRunBrowserSpeechRecognition();
-  browserSpeechRecognitionShouldRun = shouldRun;
+function syncVoiceTranscription() {
+  const shouldRun = shouldRunVoiceTranscription();
+  browserSpeechRecognitionShouldRun = shouldRun && shouldPreferBrowserSpeechRecognition();
+
   if (!shouldRun) {
     stopBrowserSpeechRecognition();
+    stopServerSpeechTranscription();
     return;
   }
-  const recognition = ensureBrowserSpeechRecognition();
-  if (!recognition || browserSpeechRecognitionActive) {
-    return;
-  }
-  try {
-    recognition.lang =
-      document.documentElement.lang ||
-      (typeof navigator?.language === "string" ? navigator.language : "") ||
-      "en-US";
-    recognition.start();
-    browserSpeechRecognitionActive = true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.toLowerCase().includes("already started")) {
-      setOutput({ action: "browser-speech-recognition-start-failed", error: message });
+
+  if (shouldPreferBrowserSpeechRecognition()) {
+    stopServerSpeechTranscription();
+    const recognition = ensureBrowserSpeechRecognition();
+    if (!recognition || browserSpeechRecognitionActive) {
+      return;
     }
+    try {
+      recognition.lang =
+        document.documentElement.lang ||
+        (typeof navigator?.language === "string" ? navigator.language : "") ||
+        "en-US";
+      recognition.start();
+      browserSpeechRecognitionActive = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.toLowerCase().includes("already started")) {
+        setOutput({ action: "browser-speech-recognition-start-failed", error: message });
+        setServerSpeechTranscriptionFallback("start-failed");
+        void startServerSpeechTranscription();
+      }
+    }
+    return;
   }
+
+  stopBrowserSpeechRecognition();
+  void startServerSpeechTranscription();
+}
+
+function syncBrowserSpeechRecognition() {
+  syncVoiceTranscription();
 }
 
 function applyAvatarMessageOverlayStyles(element) {
@@ -2253,7 +2707,7 @@ function hasDocumentPictureInPictureSupport() {
 }
 
 function resetVoiceTranscriptDeduplication() {
-  lastBrowserSpeechTranscriptByConnection.clear();
+  lastVoiceTranscriptByConnection.clear();
 }
 
 function getVoiceTranscriptDeduplicationKey(sessionKey) {
@@ -4184,6 +4638,10 @@ function attachTrackToContainer(track, container) {
     return;
   }
   const element = track.attach();
+  debugLog("livekit:track-attached", {
+    trackKind: track?.kind ?? "",
+    elementTag: element?.tagName?.toLowerCase?.() ?? "",
+  });
   element.autoplay = true;
   element.playsInline = true;
   if (track.kind === "video") {
@@ -4223,6 +4681,10 @@ function attachTrackToContainer(track, container) {
   if (track.kind === "video") {
     markAvatarConnected();
   }
+  debugLogRoomState("livekit:track-attached-state", activeRoom, {
+    trackKind: track?.kind ?? "",
+    elementTag: element?.tagName?.toLowerCase?.() ?? "",
+  });
   updateAvatarUiState();
 }
 
@@ -4236,6 +4698,7 @@ function detachTrack(track) {
 
 function releaseLocalTracks() {
   stopBrowserSpeechRecognition();
+  stopServerSpeechTranscription();
   if (localAudioTrack) {
     try {
       localAudioTrack.stop();
@@ -4327,6 +4790,9 @@ async function publishLocalTracks(room) {
       }
     }
     await room.localParticipant.publishTrack(track);
+    debugLogRoomState("livekit:local-track-published", room, {
+      trackKind: track.kind,
+    });
   }
 }
 
@@ -4339,30 +4805,59 @@ function bindRoomEvents(room) {
       participantIdentity: participant?.identity ?? "",
       publicationCount: Array.from(participant?.trackPublications?.values?.() || []).length,
     });
+    debugLogRoomState("livekit:participant-connected-state", room, {
+      participantIdentity: participant?.identity ?? "",
+    });
   });
   room.on(LIVEKIT.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
     void participant;
     void kind;
     handleLiveKitDataMessage(payload, topic);
   });
+  room.on?.(LIVEKIT.RoomEvent.TrackPublished, (publication, participant) => {
+    debugLog("livekit:track-published", {
+      participantIdentity: participant?.identity ?? "",
+      publication: summarizeTrackPublication(publication),
+    });
+    debugLogRoomState("livekit:track-published-state", room, {
+      participantIdentity: participant?.identity ?? "",
+    });
+  });
+  room.on?.(LIVEKIT.RoomEvent.TrackUnpublished, (publication, participant) => {
+    debugLog("livekit:track-unpublished", {
+      participantIdentity: participant?.identity ?? "",
+      publication: summarizeTrackPublication(publication),
+    });
+    debugLogRoomState("livekit:track-unpublished-state", room, {
+      participantIdentity: participant?.identity ?? "",
+    });
+  });
   room.on(LIVEKIT.RoomEvent.TrackSubscribed, (track, publication, participant) => {
-    void publication;
     debugLog("livekit:track-subscribed", {
       participantIdentity: participant?.identity ?? "",
       trackKind: track?.kind ?? "",
       publicationCount: Array.from(participant?.trackPublications?.values?.() || []).length,
+      publication: summarizeTrackPublication(publication),
     });
     const container = getRemoteMediaContainer(participant, track);
     attachTrackToContainer(track, container);
-    updateRoomButtons();
-  });
-  room.on(LIVEKIT.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-    void publication;
-    debugLog("livekit:track-unsubscribed", {
+    debugLogRoomState("livekit:track-subscribed-state", room, {
       participantIdentity: participant?.identity ?? "",
       trackKind: track?.kind ?? "",
     });
+    updateRoomButtons();
+  });
+  room.on(LIVEKIT.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+    debugLog("livekit:track-unsubscribed", {
+      participantIdentity: participant?.identity ?? "",
+      trackKind: track?.kind ?? "",
+      publication: summarizeTrackPublication(publication),
+    });
     detachTrack(track);
+    debugLogRoomState("livekit:track-unsubscribed-state", room, {
+      participantIdentity: participant?.identity ?? "",
+      trackKind: track?.kind ?? "",
+    });
     updateAvatarUiState();
     const hasSubscribedTracks = Array.from(participant.trackPublications.values()).some(
       (item) => Boolean(item.track),
@@ -4378,6 +4873,9 @@ function bindRoomEvents(room) {
     debugLog("livekit:participant-disconnected", {
       participantIdentity: participant?.identity ?? "",
     });
+    debugLogRoomState("livekit:participant-disconnected-state", room, {
+      participantIdentity: participant?.identity ?? "",
+    });
     removeParticipantTile(participant.identity);
   });
   room.on(LIVEKIT.RoomEvent.ConnectionStateChanged, (state) => {
@@ -4387,6 +4885,9 @@ function bindRoomEvents(room) {
       state: roomConnectionState,
       activeSessionKey: activeSession?.sessionKey ?? "",
     });
+    debugLogRoomState("livekit:connection-state-snapshot", room, {
+      state: roomConnectionState,
+    });
     if (roomConnectionState !== "connected") {
       setAvatarConnectionState(activeSession ? "connecting" : "idle");
     }
@@ -4395,6 +4896,9 @@ function bindRoomEvents(room) {
   });
   room.on(LIVEKIT.RoomEvent.Disconnected, () => {
     debugLog("livekit:room-disconnected", {
+      activeSessionKey: activeSession?.sessionKey ?? "",
+    });
+    debugLogRoomState("livekit:room-disconnected-state", room, {
       activeSessionKey: activeSession?.sessionKey ?? "",
     });
     if (activeRoom !== room) {
@@ -4451,6 +4955,9 @@ async function connectToRoom(options = {}) {
       remoteParticipantCount: room.remoteParticipants.size,
       roomName: activeSession.roomName ?? "",
     });
+    debugLogRoomState("livekit:connect-success-state", room, {
+      remoteParticipantCount: room.remoteParticipants.size,
+    });
     if (connectGeneration !== roomConnectGeneration || !activeSession) {
       try {
         room.disconnect();
@@ -4501,6 +5008,7 @@ async function connectToRoom(options = {}) {
         attachTrackToContainer(publication.track, container);
       }
     }
+    debugLogRoomState("livekit:post-connect-room-state", room);
     updateRoomButtons();
   } catch (error) {
     debugLog("livekit:connect-failed", {
