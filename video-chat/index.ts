@@ -1,9 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -26,6 +25,8 @@ const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
+const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
+const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
@@ -659,25 +660,59 @@ async function transcribeVideoChatAudio(params: {
     throw new Error("audio payload is too large");
   }
 
-  const mimeType = normalizeMimeType(params.mimeType);
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-video-chat-audio-"));
-  const audioPath = path.join(tempDir, `input${extensionForAudioMimeType(mimeType)}`);
-
-  try {
-    await writeFile(audioPath, audioBuffer);
-    const result = await params.runtime.stt.transcribeAudioFile({
-      filePath: audioPath,
-      cfg: params.cfg,
-      mime: mimeType,
-    });
-    const transcript = result.text?.trim();
-    if (!transcript) {
-      throw new Error("Claw Cast transcription returned no text");
-    }
-    return { transcript };
-  } finally {
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  const effectiveConfig = resolveEffectiveVideoChatConfig(params.cfg);
+  const elevenLabsApiKey = normalizeResolvedSecretInputString({
+    value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
+    path: "messages.tts.elevenlabs.apiKey",
+  });
+  if (!elevenLabsApiKey) {
+    throw new Error("Claw Cast transcription is unavailable: missing ElevenLabs API key");
   }
+
+  const mimeType = normalizeMimeType(params.mimeType);
+  const form = new FormData();
+  form.append("model_id", ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID);
+  form.append(
+    "file",
+    new Blob([new Uint8Array(audioBuffer)], { type: mimeType ?? "application/octet-stream" }),
+    `input${extensionForAudioMimeType(mimeType)}`,
+  );
+
+  const response = await fetch(ELEVENLABS_SPEECH_TO_TEXT_API_URL, {
+    method: "POST",
+    headers: {
+      "xi-api-key": elevenLabsApiKey,
+    },
+    body: form,
+  });
+
+  const rawBody = await response.text();
+  let payload: Record<string, unknown> | null = null;
+  if (rawBody.trim()) {
+    try {
+      payload = JSON.parse(rawBody) as Record<string, unknown>;
+    } catch {
+      payload = null;
+    }
+  }
+  if (!response.ok) {
+    const detail = payload?.detail;
+    const detailMessage =
+      typeof detail === "string"
+        ? detail
+        : detail && typeof detail === "object" && typeof (detail as { message?: unknown }).message === "string"
+          ? ((detail as { message: string }).message)
+          : null;
+    throw new Error(
+      detailMessage ?? `Claw Cast transcription failed: ElevenLabs returned ${response.status}`,
+    );
+  }
+
+  const transcript = typeof payload?.text === "string" ? payload.text.trim() : "";
+  if (!transcript) {
+    throw new Error("Claw Cast transcription returned no text");
+  }
+  return { transcript };
 }
 
 async function generateVideoChatSpeech(params: {

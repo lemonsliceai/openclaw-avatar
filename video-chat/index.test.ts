@@ -4,10 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
 import plugin from "./index.js";
 
-const { mockSpawn, mockStat, actualStatHolder } = vi.hoisted(() => ({
+const { mockSpawn, mockStat, actualStatHolder, mockFetch } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockStat: vi.fn(),
   actualStatHolder: { stat: null as null | ((path: string) => Promise<unknown>) },
+  mockFetch: vi.fn(),
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -228,8 +229,17 @@ async function invoke(
 describe("video-chat plugin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal("fetch", mockFetch);
     delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
     mockSpawn.mockImplementation(() => createSpawnedChild(4999));
+    mockFetch.mockResolvedValue(
+      new Response(JSON.stringify({ text: "hello from microphone" }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
     mockStat.mockImplementation(async (candidate: string) => {
       if (
         candidate.endsWith("/video-chat/video-chat-agent-runner.js") ||
@@ -656,7 +666,10 @@ describe("video-chat plugin", () => {
   });
 
   it("transcribes uploaded browser audio", async () => {
-    const { methods } = setup();
+    const { methods, runtime } = setup();
+    vi.mocked(runtime.stt.transcribeAudioFile).mockRejectedValue(
+      new Error("runtime STT should not be used"),
+    );
     const respond = await invoke(methods, "videoChat.audio.transcribe", {
       sessionKey: "agent:main/main",
       mimeType: "audio/webm;codecs=opus",
@@ -668,6 +681,19 @@ describe("video-chat plugin", () => {
     expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
       "hello from microphone",
     );
+    expect(runtime.stt.transcribeAudioFile).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0]?.[0]).toBe("https://api.elevenlabs.io/v1/speech-to-text");
+    expect(mockFetch.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      headers: {
+        "xi-api-key": "eleven-key",
+      },
+    });
+    const requestBody = mockFetch.mock.calls[0]?.[1]?.body;
+    expect(requestBody).toBeInstanceOf(FormData);
+    expect((requestBody as FormData).get("model_id")).toBe("scribe_v1");
+    expect((requestBody as FormData).get("file")).toBeTruthy();
   });
 
   it("serves the shipped browser shell and setup API routes", async () => {
