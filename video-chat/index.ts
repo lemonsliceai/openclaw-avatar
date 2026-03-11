@@ -1522,21 +1522,13 @@ function collectRunnerCandidates(params: { entryScript?: string }): string[] {
   return candidates;
 }
 
-async function resolveNativeGatewayEntrypoint(runnerPath: string): Promise<string | null> {
-  const runnerDir = path.dirname(path.resolve(runnerPath));
-  return resolveExistingFile([
-    path.join(runnerDir, "index.js"),
-    path.join(path.dirname(runnerDir), "index.js"),
-  ]);
-}
-
 async function resolveSidecarLaunchCommand(
   entryScript: string | undefined,
 ): Promise<SidecarLaunchCommand | null> {
   const customRunnerPath = await resolveExistingFile([resolveCustomSidecarRunnerPath()]);
   const bridgeScriptPath = resolveSidecarBridgeScriptPath();
-  // The linked package can sit in several different workspace layouts, so runner discovery walks
-  // up from both the active entrypoint and the plugin module directory before falling back.
+  // Always prefer the bundled bridge so the plugin uses its own dependency tree instead of the
+  // host OpenClaw install's agent runtime.
   const baseRunnerCandidates = collectRunnerCandidates({ entryScript }).filter((candidate) => {
     if (!customRunnerPath) {
       return true;
@@ -1556,22 +1548,11 @@ async function resolveSidecarLaunchCommand(
     };
   }
   if (baseRunnerPath) {
-    const bridgeCommand: SidecarLaunchCommand = {
+    return {
       executable: process.execPath,
       args: [bridgeScriptPath, baseRunnerPath],
       description: `node ${bridgeScriptPath} ${baseRunnerPath}`,
     };
-    const nativeGatewayEntrypoint = await resolveNativeGatewayEntrypoint(baseRunnerPath);
-    const forceBridge = normalizeOptionalString(process.env.OPENCLAW_VIDEO_CHAT_FORCE_BRIDGE) === "1";
-    if (nativeGatewayEntrypoint && !forceBridge) {
-      return {
-        executable: process.execPath,
-        args: [nativeGatewayEntrypoint, "gateway", "video-chat-agent"],
-        description: `node ${nativeGatewayEntrypoint} gateway video-chat-agent`,
-        fallback: bridgeCommand,
-      };
-    }
-    return bridgeCommand;
   }
   if (entryScript) {
     return {

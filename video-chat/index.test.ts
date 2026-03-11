@@ -355,6 +355,38 @@ describe("video-chat plugin", () => {
     await service?.stop?.();
   });
 
+  it("uses the bundled bridge for the packaged runner by default", async () => {
+    const { services } = setup();
+    const service = services[0] as
+      | {
+          start?: (ctx: { config: typeof baseConfig; gateway: { port: number; auth: object } }) => Promise<void>;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+    expect(service?.start).toBeTypeOf("function");
+
+    const child = createSpawnedChild(4102);
+    mockSpawn.mockImplementationOnce(() => child);
+
+    await service?.start?.({
+      config: baseConfig,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+
+    await flushMicrotasks();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+      expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
+      expect.stringContaining("/openclaw/dist/video-chat-agent-runner.js"),
+    ]);
+    await service?.stop?.();
+  });
+
   it("returns redacted Claw Cast config state", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.config", {});
