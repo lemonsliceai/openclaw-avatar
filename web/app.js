@@ -105,11 +105,9 @@ const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
 const VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH = 12;
-const SERVER_SPEECH_PREROLL_MS = 500;
 const SERVER_SPEECH_SILENCE_MS = 1_200;
 const SERVER_SPEECH_MAX_SEGMENT_MS = 9_000;
 const SERVER_SPEECH_MONITOR_INTERVAL_MS = 150;
-const SERVER_SPEECH_RECORDER_TIMESLICE_MS = 250;
 const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
 const SERVER_SPEECH_MIN_SEGMENT_BYTES = 1_024;
 const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
@@ -134,10 +132,10 @@ let serverSpeechTranscriptionForced = false;
 let serverSpeechRecorder = null;
 let serverSpeechRecorderMimeType = "";
 let serverSpeechRecorderChunks = [];
-let serverSpeechRecorderRecentChunks = [];
 let serverSpeechRecorderSegmentActive = false;
 let serverSpeechRecorderSegmentStartedAt = 0;
 let serverSpeechRecorderLastSpeechAt = 0;
+let serverSpeechRecorderStopReason = "";
 let serverSpeechRecorderMonitorTimer = null;
 let serverSpeechRecorderAudioContext = null;
 let serverSpeechRecorderSourceNode = null;
@@ -1195,12 +1193,6 @@ function pickServerSpeechRecorderMimeType() {
   return "";
 }
 
-function trimServerSpeechRecentChunks(now = Date.now()) {
-  serverSpeechRecorderRecentChunks = serverSpeechRecorderRecentChunks.filter(
-    (chunk) => now - chunk.at <= SERVER_SPEECH_PREROLL_MS,
-  );
-}
-
 function measureServerSpeechLevel() {
   if (!serverSpeechRecorderAnalyser || !serverSpeechRecorderAnalyserBuffer) {
     return 0;
@@ -1234,17 +1226,10 @@ function readBlobAsBase64(blob) {
 }
 
 function resetServerSpeechRecorderSegment() {
-  serverSpeechRecorderChunks = [];
   serverSpeechRecorderSegmentActive = false;
   serverSpeechRecorderSegmentStartedAt = 0;
   serverSpeechRecorderLastSpeechAt = 0;
-}
-
-function startServerSpeechRecorderSegment(now) {
-  serverSpeechRecorderSegmentActive = true;
-  serverSpeechRecorderSegmentStartedAt = now;
-  serverSpeechRecorderLastSpeechAt = now;
-  serverSpeechRecorderChunks = serverSpeechRecorderRecentChunks.slice();
+  serverSpeechRecorderStopReason = "";
 }
 
 function queueServerSpeechSegmentTranscription(segmentBlob, reason) {
@@ -1291,15 +1276,17 @@ function queueServerSpeechSegmentTranscription(segmentBlob, reason) {
   return task;
 }
 
-function flushServerSpeechRecorderSegment(reason) {
-  if (!serverSpeechRecorderSegmentActive || serverSpeechRecorderChunks.length === 0) {
-    resetServerSpeechRecorderSegment();
+function finalizeServerSpeechRecorderSegment(reason) {
+  const segmentChunks = serverSpeechRecorderChunks.slice();
+  serverSpeechRecorderChunks = [];
+  const mimeType = serverSpeechRecorderMimeType || segmentChunks[0]?.blob?.type || "audio/webm";
+  serverSpeechRecorderMimeType = "";
+  resetServerSpeechRecorderSegment();
+  if (reason === "discard" || segmentChunks.length === 0) {
     return;
   }
-  const segmentChunks = serverSpeechRecorderChunks.slice();
-  resetServerSpeechRecorderSegment();
   const segmentBlob = new Blob(segmentChunks.map((chunk) => chunk.blob), {
-    type: serverSpeechRecorderMimeType || segmentChunks[0]?.blob?.type || "audio/webm",
+    type: mimeType,
   });
   if (segmentBlob.size < SERVER_SPEECH_MIN_SEGMENT_BYTES) {
     return;
@@ -1307,12 +1294,83 @@ function flushServerSpeechRecorderSegment(reason) {
   void queueServerSpeechSegmentTranscription(segmentBlob, reason);
 }
 
-function monitorServerSpeechRecorder() {
+function stopServerSpeechRecorderSegment(reason) {
   if (!serverSpeechRecorder) {
+    finalizeServerSpeechRecorderSegment(reason);
+    return;
+  }
+  if (serverSpeechRecorder.state === "inactive") {
+    finalizeServerSpeechRecorderSegment(reason);
+    return;
+  }
+  serverSpeechRecorderStopReason = reason;
+  try {
+    serverSpeechRecorder.stop();
+  } catch (error) {
+    setOutput({
+      action: "server-speech-recorder-stop-failed",
+      error: error instanceof Error ? error.message : String(error),
+      reason,
+    });
+    finalizeServerSpeechRecorderSegment(reason);
+  }
+}
+
+function startServerSpeechRecorderSegment(now) {
+  const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
+  if (!mediaStreamTrack || serverSpeechRecorder) {
+    return;
+  }
+  const mimeType = pickServerSpeechRecorderMimeType();
+  const stream = new MediaStream([mediaStreamTrack]);
+  const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  serverSpeechRecorderChunks = [];
+  serverSpeechRecorder = recorder;
+  serverSpeechRecorderMimeType = recorder.mimeType || mimeType || "audio/webm";
+  serverSpeechRecorderSegmentActive = true;
+  serverSpeechRecorderSegmentStartedAt = now;
+  serverSpeechRecorderLastSpeechAt = now;
+  serverSpeechRecorderStopReason = "";
+
+  recorder.addEventListener("dataavailable", (event) => {
+    if (!(event.data instanceof Blob) || event.data.size === 0) {
+      return;
+    }
+    serverSpeechRecorderChunks.push({
+      blob: event.data,
+      at: Date.now(),
+    });
+  });
+  recorder.addEventListener("error", (event) => {
+    setOutput({
+      action: "server-speech-recorder-error",
+      error:
+        event?.error instanceof Error
+          ? event.error.message
+          : typeof event?.error === "string"
+            ? event.error
+            : "Unknown MediaRecorder error",
+    });
+    stopServerSpeechRecorderSegment("discard");
+  });
+  recorder.addEventListener("stop", () => {
+    const reason = serverSpeechRecorderStopReason || "stop";
+    serverSpeechRecorder = null;
+    finalizeServerSpeechRecorderSegment(reason);
+  });
+
+  recorder.start();
+  setOutput({
+    action: "server-speech-segment-recording-started",
+    mimeType: serverSpeechRecorderMimeType,
+  });
+}
+
+function monitorServerSpeechRecorder() {
+  if (!serverSpeechRecorderAnalyser || !serverSpeechRecorderAnalyserBuffer) {
     return;
   }
   const now = Date.now();
-  trimServerSpeechRecentChunks(now);
   const level = measureServerSpeechLevel();
   const speaking = level >= SERVER_SPEECH_LEVEL_THRESHOLD;
   if (speaking) {
@@ -1328,11 +1386,11 @@ function monitorServerSpeechRecorder() {
   const segmentAge = now - serverSpeechRecorderSegmentStartedAt;
   const silenceDuration = serverSpeechRecorderLastSpeechAt > 0 ? now - serverSpeechRecorderLastSpeechAt : 0;
   if (segmentAge >= SERVER_SPEECH_MAX_SEGMENT_MS) {
-    flushServerSpeechRecorderSegment("max-duration");
+    stopServerSpeechRecorderSegment("max-duration");
     return;
   }
   if (!speaking && silenceDuration >= SERVER_SPEECH_SILENCE_MS) {
-    flushServerSpeechRecorderSegment("silence");
+    stopServerSpeechRecorderSegment("silence");
   }
 }
 
@@ -1341,16 +1399,7 @@ function stopServerSpeechTranscription(options = {}) {
     clearInterval(serverSpeechRecorderMonitorTimer);
     serverSpeechRecorderMonitorTimer = null;
   }
-  if (options.flush === true) {
-    flushServerSpeechRecorderSegment("stop");
-  } else {
-    resetServerSpeechRecorderSegment();
-  }
-  if (serverSpeechRecorder && serverSpeechRecorder.state !== "inactive") {
-    try {
-      serverSpeechRecorder.stop();
-    } catch {}
-  }
+  stopServerSpeechRecorderSegment(options.flush === true ? "stop" : "discard");
   if (serverSpeechRecorderSourceNode) {
     try {
       serverSpeechRecorderSourceNode.disconnect();
@@ -1364,9 +1413,6 @@ function stopServerSpeechTranscription(options = {}) {
   if (serverSpeechRecorderAudioContext) {
     void serverSpeechRecorderAudioContext.close().catch(() => {});
   }
-  serverSpeechRecorder = null;
-  serverSpeechRecorderMimeType = "";
-  serverSpeechRecorderRecentChunks = [];
   serverSpeechRecorderAudioContext = null;
   serverSpeechRecorderSourceNode = null;
   serverSpeechRecorderAnalyser = null;
@@ -1389,7 +1435,6 @@ async function startServerSpeechTranscription() {
     }
     const mimeType = pickServerSpeechRecorderMimeType();
     const stream = new MediaStream([mediaStreamTrack]);
-    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
     const audioContext = new AudioContextCtor();
     const sourceNode = audioContext.createMediaStreamSource(stream);
     const analyser = audioContext.createAnalyser();
@@ -1399,34 +1444,6 @@ async function startServerSpeechTranscription() {
     try {
       await audioContext.resume();
     } catch {}
-
-    recorder.addEventListener("dataavailable", (event) => {
-      if (!(event.data instanceof Blob) || event.data.size === 0) {
-        return;
-      }
-      const entry = { blob: event.data, at: Date.now() };
-      serverSpeechRecorderRecentChunks.push(entry);
-      trimServerSpeechRecentChunks(entry.at);
-      if (serverSpeechRecorderSegmentActive) {
-        serverSpeechRecorderChunks.push(entry);
-      }
-    });
-    recorder.addEventListener("error", (event) => {
-      setOutput({
-        action: "server-speech-recorder-error",
-        error:
-          event?.error instanceof Error
-            ? event.error.message
-            : typeof event?.error === "string"
-              ? event.error
-              : "Unknown MediaRecorder error",
-      });
-      stopServerSpeechTranscription({ flush: true });
-    });
-
-    recorder.start(SERVER_SPEECH_RECORDER_TIMESLICE_MS);
-    serverSpeechRecorder = recorder;
-    serverSpeechRecorderMimeType = recorder.mimeType || mimeType || "audio/webm";
     serverSpeechRecorderAudioContext = audioContext;
     serverSpeechRecorderSourceNode = sourceNode;
     serverSpeechRecorderAnalyser = analyser;
@@ -1437,8 +1454,8 @@ async function startServerSpeechTranscription() {
       SERVER_SPEECH_MONITOR_INTERVAL_MS,
     );
     setOutput({
-      action: "server-speech-recorder-started",
-      mimeType: serverSpeechRecorderMimeType,
+      action: "server-speech-transcription-ready",
+      mimeType,
     });
   })()
     .catch((error) => {
