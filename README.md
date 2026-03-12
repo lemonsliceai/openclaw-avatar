@@ -1,7 +1,22 @@
-# OpenClaw Claw Cast Plugin
+# Openclaw - Claw Cast Plugin
 
-Standalone OpenClaw plugin that adds a LemonSlice + LiveKit + Eleven Labs Avatar Cast experience with plugin-owned setup, browser session controls, text chat, speech-to-text, and text-to-speech.
+Give your Openclaw agents a face! Claw Cast enables a real time video avatar for any of your Openclaw agents. Now you can speak directly with your agent and bring them anywhere on your desktop!
 
+Claw Cast is an Openclaw plugin that adds a LemonSlice + LiveKit + Eleven Labs experience. Plugin-owned setup, browser session controls, text chat, speech-to-text, and text-to-speech.
+
+**Outline**
+
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Configure](#configure)
+- [Join avatar session](#join-avatar-session)
+- [Update](#update)
+- [Runtime Surface](#runtime-surface)
+- [What Ships](#what-ships)
+- [About The Install Warning](#about-the-install-warning)
+- [Verification/testing](#verification-testing)
+
+<a id="prerequisites"></a>
 ## Prerequisites
 
 ### Openclaw
@@ -13,7 +28,7 @@ OpenClaw install guide https://docs.openclaw.ai/install#npm-pnpm
 
 After installing, make sure you have configured at least one LLM provider.
 We **highly recommend** using a fast LLM model for a better experience. Examples below.
-- Qwen3-30B-A3B
+- qwen3-30B-A3B
 - gpt-5-nano
 - claude-haiku-4-5
 
@@ -43,6 +58,7 @@ You will also need accounts with the following services:
 
 Once you have accounts, retrieve API keys from each service and supply them during plugin setup.
 
+<a id="install"></a>
 ## Install
 
 Plugin installation:
@@ -55,6 +71,108 @@ openclaw plugins list
 
 Verify that ClawCast is listed. 
 
+<a id="configure"></a>
+## Configure
+
+The plugin can be configured with either the CLI (reccomended) or web browser interface. If you choose to use the web interface you must first [run the OpenClaw gateway](#run-gateway).
+
+### CLI Config 
+
+```bash
+openclaw video-chat-setup
+```
+
+### Browser
+
+1. [Run the gateway](#run-gateway)
+2. Open the plugin UI
+3. Set gateway token
+4. Set provider values
+
+```text
+http://127.0.0.1:18789/plugins/video-chat/config
+```
+
+**Once the plugin is properly configured the Gateway and Config status indicators (top bar of plugin web UI) will read "OK" and show green lights.**
+
+<a id="run-gateway"></a>
+### Run Gateway
+
+Start
+
+```bash
+openclaw gateway run
+```
+
+If the gateway is currently running, it can be stopped by using:
+
+```bash
+openclaw gateway stop
+```
+
+The gateway can also be forcefully re-run:
+
+```bash
+openclaw gateway run --force
+```
+
+<a id="join-avatar-session"></a>
+## Join avatar session
+Start a session, join the room, and use the chat, STT, and TTS controls from the web interface.
+```text
+http://127.0.0.1:18789/plugins/video-chat/
+```
+If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
+
+<a id="update"></a>
+## Update
+
+The plugin can be updated to the latest version using:
+
+```bash
+openclaw plugins update video-chat  
+```
+
+<a id="runtime-surface"></a>
+## Runtime Surface
+
+- Gateway methods:
+  - `videoChat.config`
+  - `videoChat.setup.get`
+  - `videoChat.setup.save`
+  - `videoChat.session.create`
+  - `videoChat.session.stop`
+  - `videoChat.audio.transcribe`
+  - `videoChat.tts.generate`
+- HTTP routes:
+  - `/plugins/video-chat`
+  - `/plugins/video-chat/config`
+  - `/plugins/video-chat/api/*`
+  - `/plugins/video-chat/styles/*`
+- Service:
+  - `video-chat-agent`
+- CLI command:
+  - `video-chat-setup`
+
+<a id="what-ships"></a>
+## What Ships
+
+- Gateway extension: `video-chat/index.ts`
+- Sidecar helpers:
+  - `video-chat/video-chat-agent-bridge.mjs`
+  - `video-chat/video-chat-agent-runner-wrapper.mjs`
+  - `video-chat/video-chat-agent-runner.js`
+  - `video-chat/sidecar-process-control.ts`
+- Web UI:
+  - `web/index.html`
+  - `web/settings.html`
+  - `web/app.js`
+  - `styles/`
+- Plugin manifest: [`openclaw.plugin.json`](openclaw.plugin.json)
+
+`package.json` uses a `files` allowlist so `npm pack` only includes the runtime files above and excludes tests, local dependencies, and editor artifacts.
+
+<a id="about-the-install-warning"></a>
 ## About The Install Warning
 
 OpenClaw may show a warning like this during install:
@@ -80,102 +198,7 @@ What it does do:
 - Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
 - Send audio, transcript, and session traffic only to the configured providers needed for Claw Cast to function.
 
-## Configure
-
-The plugin can be configured with either the CLI (reccomended) or web browser interface. If you choose to use the web interface you must first run the Openclaw gateway.
-
-### CLI Config 
-
-```bash
-openclaw video-chat-setup
-```
-
-### Browser
-
-1. Run the gateway (see Run Gateway)
-2. Open the plugin UI:
-3. Set Gateway token
-4. Set provider values
-
-```text
-http://127.0.0.1:18789/plugins/video-chat/config
-```
-
-
-**Once the plugin is properly configured the Gateway and Config status indicators (top bar of plugin web UI) will read "OK" and show a green light.**
-
-### Run Gateway:
-
-Start
-
-```bash
-openclaw gateway run
-```
-
-If the gateway is currently running, it can be stopped by using:
-
-```bash
-openclaw gateway stop
-```
-
-The gateway can also be forcefully re-run:
-
-```bash
-openclaw gateway run --force
-```
-
-## Join avatar session
-Start a session, join the room, and use the chat, STT, and TTS controls from the web interface.
-```text
-http://127.0.0.1:18789/plugins/video-chat/
-```
-If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
-
-## Update
-
-The plugin can be updated to the latest version using:
-
-```bash
-openclaw plugins update video-chat  
-```
-
-## Runtime Surface
-
-- Gateway methods:
-  - `videoChat.config`
-  - `videoChat.setup.get`
-  - `videoChat.setup.save`
-  - `videoChat.session.create`
-  - `videoChat.session.stop`
-  - `videoChat.audio.transcribe`
-  - `videoChat.tts.generate`
-- HTTP routes:
-  - `/plugins/video-chat`
-  - `/plugins/video-chat/config`
-  - `/plugins/video-chat/api/*`
-  - `/plugins/video-chat/styles/*`
-- Service:
-  - `video-chat-agent`
-- CLI command:
-  - `video-chat-setup`
-
-## What Ships
-
-- Gateway extension: `video-chat/index.ts`
-- Sidecar helpers:
-  - `video-chat/video-chat-agent-bridge.mjs`
-  - `video-chat/video-chat-agent-runner-wrapper.mjs`
-  - `video-chat/video-chat-agent-runner.js`
-  - `video-chat/sidecar-process-control.ts`
-- Web UI:
-  - `web/index.html`
-  - `web/settings.html`
-  - `web/app.js`
-  - `styles/`
-- Plugin manifest: [`openclaw.plugin.json`](openclaw.plugin.json)
-
-`package.json` uses a `files` allowlist so `npm pack` only includes the runtime files above and excludes tests, local dependencies, and editor artifacts.
-
+<a id="verification-testing"></a>
 ## Verification/testing
 
 Release validation is codified in the project scripts:
