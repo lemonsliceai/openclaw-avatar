@@ -4,11 +4,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
 import plugin from "./index.js";
 
-const { mockSpawn, mockStat, actualStatHolder, mockFetch } = vi.hoisted(() => ({
+const {
+  mockSpawn,
+  mockStat,
+  actualStatHolder,
+  mockFetch,
+  mockResetProcessGroupChildren,
+  mockStopChildProcess,
+  mockStopMatchingProcesses,
+} = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockStat: vi.fn(),
   actualStatHolder: { stat: null as null | ((path: string) => Promise<unknown>) },
   mockFetch: vi.fn(),
+  mockResetProcessGroupChildren: vi.fn().mockResolvedValue(undefined),
+  mockStopChildProcess: vi.fn().mockResolvedValue(undefined),
+  mockStopMatchingProcesses: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -37,8 +48,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 vi.mock("./sidecar-process-control.js", () => ({
-  resetProcessGroupChildren: vi.fn().mockResolvedValue(undefined),
-  stopChildProcess: vi.fn().mockResolvedValue(undefined),
+  resetProcessGroupChildren: mockResetProcessGroupChildren,
+  stopChildProcess: mockStopChildProcess,
+  stopMatchingProcesses: mockStopMatchingProcesses,
 }));
 
 type RespondCall = [boolean, unknown?, { code: string; message: string }?];
@@ -127,15 +139,24 @@ function setup(config: unknown = baseConfig) {
 
 function createSpawnedChild(pid: number): EventEmitter & {
   pid: number;
+  kill: ReturnType<typeof vi.fn>;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
   stdout: EventEmitter;
   stderr: EventEmitter;
 } {
   const child = new EventEmitter() as EventEmitter & {
     pid: number;
+    kill: ReturnType<typeof vi.fn>;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
     stdout: EventEmitter;
     stderr: EventEmitter;
   };
   child.pid = pid;
+  child.kill = vi.fn();
+  child.exitCode = null;
+  child.signalCode = null;
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   return child;
@@ -232,6 +253,7 @@ describe("video-chat plugin", () => {
     vi.stubGlobal("fetch", mockFetch);
     delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
     mockSpawn.mockImplementation(() => createSpawnedChild(4999));
+    mockStopMatchingProcesses.mockResolvedValue([]);
     mockFetch.mockResolvedValue(
       new Response(JSON.stringify({ text: "hello from microphone" }), {
         status: 200,
@@ -347,6 +369,18 @@ describe("video-chat plugin", () => {
     await flushMicrotasks();
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockStopMatchingProcesses).toHaveBeenCalledWith({
+      scriptPaths: [
+        expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+        expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+      ],
+      commandPatterns: [
+        ["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"],
+        ["video-chat-agent-bridge.mjs"],
+      ],
+      termTimeoutMs: 400,
+      postKillDelayMs: 200,
+    });
     expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
       expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
       expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
@@ -379,6 +413,18 @@ describe("video-chat plugin", () => {
     await flushMicrotasks();
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockStopMatchingProcesses).toHaveBeenCalledWith({
+      scriptPaths: [
+        expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+        expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+      ],
+      commandPatterns: [
+        ["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"],
+        ["video-chat-agent-bridge.mjs"],
+      ],
+      termTimeoutMs: 400,
+      postKillDelayMs: 200,
+    });
     expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
       expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
       expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
@@ -495,6 +541,35 @@ describe("video-chat plugin", () => {
     expect(call?.[1]).toEqual({
       stopped: true,
       roomName: "openclaw-main-12345678",
+    });
+  });
+
+  it("cleans stale wrapper jobs during session stop", async () => {
+    const { methods } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+    await invoke(methods, "videoChat.session.stop", {
+      roomName: "openclaw-main-12345678",
+    });
+
+    expect(mockStopMatchingProcesses).toHaveBeenNthCalledWith(1, {
+      scriptPaths: [
+        expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+        expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+      ],
+      commandPatterns: [
+        ["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"],
+        ["video-chat-agent-bridge.mjs"],
+      ],
+      termTimeoutMs: 400,
+      postKillDelayMs: 200,
+    });
+    expect(mockStopMatchingProcesses).toHaveBeenNthCalledWith(2, {
+      scriptPaths: [expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs")],
+      commandPatterns: [["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"]],
+      keepPids: [4999],
+      termTimeoutMs: 400,
+      postKillDelayMs: 200,
     });
   });
 

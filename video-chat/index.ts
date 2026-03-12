@@ -14,7 +14,11 @@ import type {
   RespondFn,
 } from "openclaw/plugin-sdk";
 import { hasConfiguredSecretInput, normalizeResolvedSecretInputString } from "openclaw/plugin-sdk";
-import { resetProcessGroupChildren, stopChildProcess } from "./sidecar-process-control.js";
+import {
+  resetProcessGroupChildren,
+  stopChildProcess,
+  stopMatchingProcesses,
+} from "./sidecar-process-control.js";
 
 const VIDEO_CHAT_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
 const LIVEKIT_TOKEN_TTL_SECONDS = 60 * 60;
@@ -1568,6 +1572,22 @@ function resolveSidecarBridgeScriptPath(): string {
   return path.join(moduleDir, "video-chat-agent-bridge.mjs");
 }
 
+function resolveSidecarRunnerWrapperPath(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return path.join(moduleDir, "video-chat-agent-runner-wrapper.mjs");
+}
+
+function buildStartupSidecarCleanupPatterns(): string[][] {
+  return [
+    ["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"],
+    ["video-chat-agent-bridge.mjs"],
+  ];
+}
+
+function buildSessionResetCleanupPatterns(): string[][] {
+  return [["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"]];
+}
+
 function resolveCustomSidecarRunnerPath(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return path.join(moduleDir, "video-chat-agent-runner.js");
@@ -1876,6 +1896,27 @@ async function startVideoChatAgentSidecar(params: {
   }
   params.log.info(`Claw Cast agent sidecar launch command: ${launchCommand.description}`);
 
+  const staleScriptPaths = [resolveSidecarBridgeScriptPath(), resolveSidecarRunnerWrapperPath()];
+  try {
+    const stalePids = await stopMatchingProcesses({
+      scriptPaths: staleScriptPaths,
+      commandPatterns: buildStartupSidecarCleanupPatterns(),
+      termTimeoutMs: 400,
+      postKillDelayMs: 200,
+    });
+    if (stalePids.length > 0) {
+      params.log.warn(
+        `[video-chat-agent] cleaned up stale sidecar processes before launch: ${stalePids.join(", ")}`,
+      );
+    }
+  } catch (error) {
+    params.log.warn(
+      `[video-chat-agent] failed to clean up stale sidecar processes before launch: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
   let child: ChildProcess | null = null;
   let childProcessGroupId: number | null = null;
   let respawnTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1961,6 +2002,13 @@ async function startVideoChatAgentSidecar(params: {
         return;
       }
       await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
+      await stopMatchingProcesses({
+        scriptPaths: [resolveSidecarRunnerWrapperPath()],
+        commandPatterns: buildSessionResetCleanupPatterns(),
+        keepPids: [processGroupId],
+        termTimeoutMs: 400,
+        postKillDelayMs: 200,
+      });
     },
     stop: async () => {
       stopping = true;
@@ -2034,7 +2082,6 @@ const videoChatPlugin = {
       sessionKey: string;
     }): Promise<VideoChatSessionResult> => {
       await ensureSidecarRunning(params.config);
-      await resetSidecarJobs();
       return createVideoChatSession(params);
     };
 

@@ -1,10 +1,101 @@
 import type { ChildProcess } from "node:child_process";
+import { execFile } from "node:child_process";
+import path from "node:path";
+
+type ProcessEntry = {
+  pid: number;
+  command: string;
+};
 
 async function delayMs(timeoutMs: number): Promise<void> {
   await new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
     timer.unref();
   });
+}
+
+function isProcessRunning(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function captureCommandOutput(file: string, args: string[]): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    execFile(file, args, { encoding: "utf8", maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+function parseProcessEntries(output: string): ProcessEntry[] {
+  const entries: ProcessEntry[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!match) {
+      continue;
+    }
+    const pid = Number.parseInt(match[1] ?? "", 10);
+    const command = (match[2] ?? "").trim();
+    if (!Number.isFinite(pid) || pid <= 0 || !command) {
+      continue;
+    }
+    entries.push({ pid, command });
+  }
+  return entries;
+}
+
+async function listProcesses(): Promise<ProcessEntry[]> {
+  if (process.platform === "win32") {
+    return [];
+  }
+  const output = await captureCommandOutput("ps", ["-axo", "pid=,command="]);
+  return parseProcessEntries(output);
+}
+
+async function stopProcessIds(params: {
+  pids: number[];
+  termTimeoutMs?: number;
+  postKillDelayMs?: number;
+}): Promise<number[]> {
+  const uniquePids = Array.from(
+    new Set(
+      params.pids.filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid),
+    ),
+  );
+  if (uniquePids.length === 0) {
+    return [];
+  }
+
+  for (const pid of uniquePids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Process may already be gone.
+    }
+  }
+  await delayMs(params.termTimeoutMs ?? 300);
+
+  const stubbornPids = uniquePids.filter((pid) => isProcessRunning(pid));
+  for (const pid of stubbornPids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Process may already be gone.
+    }
+  }
+  await delayMs(params.postKillDelayMs ?? 150);
+  return uniquePids;
 }
 
 export async function stopChildProcess(params: {
@@ -80,4 +171,54 @@ export async function resetProcessGroupChildren(params: {
   } catch {
     // Best effort cleanup; caller can retry later.
   }
+}
+
+export async function stopMatchingProcesses(params: {
+  scriptPaths?: string[];
+  commandPatterns?: string[][];
+  keepPids?: number[];
+  termTimeoutMs?: number;
+  postKillDelayMs?: number;
+  listProcesses?: () => Promise<ProcessEntry[]>;
+}): Promise<number[]> {
+  if (process.platform === "win32") {
+    return [];
+  }
+
+  const pathTargets = Array.from(
+    new Set((params.scriptPaths ?? []).map((value) => value.trim()).filter((value) => value.length > 0)),
+  );
+  const basenameTargets = Array.from(
+    new Set(
+      pathTargets
+        .map((value) => path.basename(value))
+        .filter((value) => value.length > 0),
+    ),
+  );
+  const commandPatterns = (params.commandPatterns ?? [])
+    .map((pattern) => pattern.map((value) => value.trim()).filter((value) => value.length > 0))
+    .filter((pattern) => pattern.length > 0);
+  if (pathTargets.length === 0 && basenameTargets.length === 0 && commandPatterns.length === 0) {
+    return [];
+  }
+
+  const keepPids = new Set([process.pid, ...(params.keepPids ?? [])]);
+  const enumerateProcesses = params.listProcesses ?? listProcesses;
+  const processes = await enumerateProcesses();
+  const matchingPids = processes
+    .filter(
+      (entry) =>
+        !keepPids.has(entry.pid) &&
+        (pathTargets.some((target) => entry.command.includes(target)) ||
+          basenameTargets.some((target) => entry.command.includes(target)) ||
+          commandPatterns.some((pattern) => pattern.every((token) => entry.command.includes(token)))),
+    )
+    .map((entry) => entry.pid);
+
+  await stopProcessIds({
+    pids: matchingPids,
+    termTimeoutMs: params.termTimeoutMs ?? 300,
+    postKillDelayMs: params.postKillDelayMs ?? 150,
+  });
+  return Array.from(new Set(matchingPids));
 }
