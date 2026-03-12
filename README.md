@@ -21,12 +21,11 @@ Claw Cast is an Openclaw plugin that adds a LemonSlice + LiveKit + Eleven Labs e
 <a id="prerequisites"></a>
 ## Prerequisites
 
-### Openclaw
+### OpenClaw
 
-Before installing and running this plugin, you must have:
+Before installing and running this plugin **you must have an OpenClaw instance installed and configured**
 
-- **An OpenClaw instance installed and configured**
-OpenClaw install guide https://docs.openclaw.ai/install#npm-pnpm
+- OpenClaw [install guide](https://docs.openclaw.ai/install#npm-pnpm)
 
 After installing, make sure you have configured at least one LLM provider.
 We **highly recommend** using a fast LLM model for a better experience. Examples below.
@@ -44,7 +43,7 @@ http://127.0.0.1:18789/agents
 
 ### Providers
 
-You will also need accounts with the following services:
+You will also need accounts with the following service providers:
 
 - **LemonSlice** — provides the avatar/character rendering for the video chat experience.
   Sign up at https://www.lemonslice.com
