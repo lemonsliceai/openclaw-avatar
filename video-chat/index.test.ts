@@ -375,10 +375,6 @@ describe("video-chat plugin", () => {
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     expect(mockStopMatchingProcesses).toHaveBeenCalledWith({
-      scriptPaths: [
-        expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
-        expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
-      ],
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
@@ -427,10 +423,6 @@ describe("video-chat plugin", () => {
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     expect(mockStopMatchingProcesses).toHaveBeenCalledWith({
-      scriptPaths: [
-        expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
-        expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
-      ],
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
@@ -627,10 +619,6 @@ describe("video-chat plugin", () => {
     });
 
     expect(mockStopMatchingProcesses).toHaveBeenNthCalledWith(1, {
-      scriptPaths: [
-        expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
-        expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
-      ],
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
@@ -643,7 +631,6 @@ describe("video-chat plugin", () => {
       postKillDelayMs: 200,
     });
     expect(mockStopMatchingProcesses).toHaveBeenNthCalledWith(2, {
-      scriptPaths: [expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs")],
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",

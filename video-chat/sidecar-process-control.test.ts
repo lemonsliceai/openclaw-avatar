@@ -8,6 +8,9 @@ import {
 
 const describeUnixOnly = process.platform === "win32" ? describe.skip : describe;
 const ACTIVE_PARENTS = new Set<ChildProcess>();
+const FIXTURE_WRAPPER_PATH = "/repo/video-chat/video-chat-agent-runner-wrapper.mjs";
+const MATCHING_INSTANCE_ARG = "--openclaw-video-chat-instance=gateway-port-4321";
+const NON_MATCHING_INSTANCE_ARG = "--openclaw-video-chat-instance=gateway-port-9999";
 
 function isProcessRunning(pid: number | null | undefined): boolean {
   if (!pid || pid <= 0) {
@@ -276,12 +279,12 @@ setInterval(() => {}, 1000);
     await waitForProcessState({ pid: workerPid, running: true });
 
     const stoppedPids = await stopMatchingProcesses({
-      scriptPaths: ["/Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs"],
+      scriptPaths: [FIXTURE_WRAPPER_PATH],
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
-          "/Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs",
-          "--openclaw-video-chat-instance=gateway-port-4321",
+          FIXTURE_WRAPPER_PATH,
+          MATCHING_INSTANCE_ARG,
         ],
       ],
       termTimeoutMs: 100,
@@ -290,7 +293,7 @@ setInterval(() => {}, 1000);
         {
           pid: stalePid,
           command:
-            "node /tmp/job_proc_lazy_main.cjs /Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs --openclaw-video-chat-instance=gateway-port-4321",
+            `node /repo/tmp/job_proc_lazy_main.cjs ${FIXTURE_WRAPPER_PATH} ${MATCHING_INSTANCE_ARG}`,
         },
       ],
     });
@@ -325,12 +328,12 @@ setInterval(() => {}, 1000);
     await waitForProcessState({ pid: stalePid, running: true });
 
     const stoppedPids = await stopMatchingProcesses({
-      scriptPaths: ["/Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs"],
+      scriptPaths: [FIXTURE_WRAPPER_PATH],
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
-          "/Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs",
-          "--openclaw-video-chat-instance=gateway-port-4321",
+          FIXTURE_WRAPPER_PATH,
+          MATCHING_INSTANCE_ARG,
         ],
       ],
       termTimeoutMs: 100,
@@ -339,7 +342,7 @@ setInterval(() => {}, 1000);
         {
           pid: stalePid,
           command:
-            "node /tmp/job_proc_lazy_main.cjs /tmp/old-plugin-copy/video-chat-agent-runner-wrapper.mjs --openclaw-video-chat-instance=gateway-port-9999",
+            `node /repo/tmp/job_proc_lazy_main.cjs /repo/tmp/old-plugin-copy/video-chat-agent-runner-wrapper.mjs ${NON_MATCHING_INSTANCE_ARG}`,
         },
       ],
     });

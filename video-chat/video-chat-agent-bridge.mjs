@@ -20,6 +20,13 @@ function resolveInstanceArg(argv) {
   );
 }
 
+function filterInstanceArgs(argv) {
+  return argv.filter((value) => {
+    const trimmed = value?.trim() || "";
+    return !trimmed.startsWith(INSTANCE_ARG_PREFIX);
+  });
+}
+
 function resolveRunnerPath(argv) {
   const candidate = argv[2]?.trim();
   if (!candidate) {
@@ -101,8 +108,9 @@ async function main() {
     process.env.OPENCLAW_VIDEO_CHAT_INSTANCE_ARG = instanceArg;
     process.title = `${fileURLToPath(import.meta.url)} ${instanceArg}`;
   }
-  const runnerPath = resolveRunnerPath(process.argv);
-  const depsBaseRunnerPath = resolveDepsBaseRunnerPath(process.argv, runnerPath);
+  const positionalArgv = filterInstanceArgs(process.argv);
+  const runnerPath = resolveRunnerPath(positionalArgv);
+  const depsBaseRunnerPath = resolveDepsBaseRunnerPath(positionalArgv, runnerPath);
   const wrapperPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "video-chat-agent-runner-wrapper.mjs",

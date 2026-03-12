@@ -1922,10 +1922,8 @@ async function startVideoChatAgentSidecar(params: {
   }
   params.log.info(`Claw Cast agent sidecar launch command: ${launchCommand.description}`);
 
-  const staleScriptPaths = [bridgeScriptPath, wrapperScriptPath];
   try {
     const stalePids = await stopMatchingProcesses({
-      scriptPaths: staleScriptPaths,
       commandPatterns: buildStartupSidecarCleanupPatterns({
         bridgeScriptPath,
         wrapperScriptPath,
@@ -2033,7 +2031,6 @@ async function startVideoChatAgentSidecar(params: {
       }
       await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
       await stopMatchingProcesses({
-        scriptPaths: [wrapperScriptPath],
         commandPatterns: buildSessionResetCleanupPatterns({
           wrapperScriptPath,
           instanceArg,
