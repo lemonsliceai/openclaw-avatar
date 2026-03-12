@@ -4,8 +4,6 @@ Give your Openclaw agents a face! Claw Cast enables a real time video avatar for
 
 Claw Cast is an OpenClaw plugin that integrates LemonSlice, LiveKit, and ElevenLabs to deliver a real-time avatar experience with plugin-managed setup, browser session controls, text chat, speech-to-text, and text-to-speech.
 
-[![Watch the demo](assets/ClawCastAvatar.png)](https://www.loom.com/embed/307a34384a0b4dc4a5391d8bbc9accf7)
-
 <div>
   <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
     <p>Claw Cast Demo - Watch Video</p>
@@ -14,7 +12,6 @@ Claw Cast is an OpenClaw plugin that integrates LemonSlice, LiveKit, and ElevenL
     <img
       src="https://cdn.loom.com/sessions/thumbnails/307a34384a0b4dc4a5391d8bbc9accf7-5fbac2c9d95c536d-full-play.gif#t=0.1"
       alt="Claw Cast demo video thumbnail"
-      width="300"
     />
   </a>
 </div>
