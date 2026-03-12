@@ -2,12 +2,29 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+const INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
+
 function requireEnv(name) {
   const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(`Missing required env var ${name}`);
   }
   return value;
+}
+
+function resolveInstanceArg(argv) {
+  return (
+    argv
+      .map((value) => value?.trim() || "")
+      .find((value) => value.startsWith(INSTANCE_ARG_PREFIX)) || ""
+  );
+}
+
+function filterInstanceArgs(argv) {
+  return argv.filter((value) => {
+    const trimmed = value?.trim() || "";
+    return !trimmed.startsWith(INSTANCE_ARG_PREFIX);
+  });
 }
 
 function resolveRunnerPath(argv) {
@@ -86,8 +103,14 @@ function startParentWatchdog(onOrphaned, intervalMs = 1000) {
 }
 
 async function main() {
-  const runnerPath = resolveRunnerPath(process.argv);
-  const depsBaseRunnerPath = resolveDepsBaseRunnerPath(process.argv, runnerPath);
+  const instanceArg = resolveInstanceArg(process.argv);
+  if (instanceArg) {
+    process.env.OPENCLAW_VIDEO_CHAT_INSTANCE_ARG = instanceArg;
+    process.title = `${fileURLToPath(import.meta.url)} ${instanceArg}`;
+  }
+  const positionalArgv = filterInstanceArgs(process.argv);
+  const runnerPath = resolveRunnerPath(positionalArgv);
+  const depsBaseRunnerPath = resolveDepsBaseRunnerPath(positionalArgv, runnerPath);
   const wrapperPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "video-chat-agent-runner-wrapper.mjs",

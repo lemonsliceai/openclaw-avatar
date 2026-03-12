@@ -97,6 +97,7 @@ const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
 const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
+const AVATAR_JOIN_TIMEOUT_ERROR_CODE = "AVATAR_JOIN_TIMEOUT";
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
 const AVATAR_RECONNECTING_STATUS = "Reconnecting avatar...";
@@ -147,6 +148,7 @@ let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
 let activeAvatarParticipantIdentity = "";
+let avatarSessionAutoRecovering = false;
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let preferredMicMuted = false;
@@ -4720,6 +4722,91 @@ function markAvatarDisconnected() {
   updateRoomButtons();
 }
 
+function hasAvatarParticipantInRoom(room = activeRoom) {
+  if (!room?.remoteParticipants?.values) {
+    return false;
+  }
+  for (const participant of room.remoteParticipants.values()) {
+    if (shouldTreatParticipantAsAvatar(participant)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createAvatarJoinTimeoutError(message) {
+  const error = new Error(message);
+  error.name = "AvatarJoinTimeoutError";
+  error.code = AVATAR_JOIN_TIMEOUT_ERROR_CODE;
+  return error;
+}
+
+function isAvatarJoinTimeoutError(error) {
+  return (
+    error instanceof Error &&
+    (error.code === AVATAR_JOIN_TIMEOUT_ERROR_CODE || error.name === "AvatarJoinTimeoutError")
+  );
+}
+
+async function waitForAvatarParticipant(room, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 12_000;
+  const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 200;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (activeRoom !== room) {
+      throw new Error("Room changed before avatar joined.");
+    }
+    if (!activeSession) {
+      throw new Error("Session ended before avatar joined.");
+    }
+    if (hasAvatarParticipantInRoom(room) || hasAvatarVideo()) {
+      return;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, pollMs);
+    });
+  }
+  throw createAvatarJoinTimeoutError("Timed out waiting for avatar to join the room.");
+}
+
+async function connectToRoomAndEnsureAvatar(options = {}) {
+  await connectToRoom(options);
+  const room = activeRoom;
+  if (!room) {
+    return;
+  }
+  try {
+    await waitForAvatarParticipant(room, {
+      timeoutMs: options.avatarJoinTimeoutMs,
+    });
+  } catch (error) {
+    if (
+      !isAvatarJoinTimeoutError(error) ||
+      options.allowAutoRecovery === false ||
+      avatarSessionAutoRecovering ||
+      !activeSession
+    ) {
+      throw error;
+    }
+    avatarSessionAutoRecovering = true;
+    setOutput({
+      action: "avatar-session-auto-recovering",
+      roomName: activeSession?.roomName ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    setAvatarLoadingState(true, "Avatar did not join. Recreating session...");
+    updateRoomButtons();
+    try {
+      await reconnectAvatarSession({
+        allowAutoRecovery: false,
+      });
+      return;
+    } finally {
+      avatarSessionAutoRecovering = false;
+    }
+  }
+}
+
 function updateRoomButtons() {
   const hasSession = Boolean(activeSession);
   const hasRoom = Boolean(activeRoom);
@@ -5052,7 +5139,7 @@ function disconnectRoom(options = {}) {
   updateRoomButtons();
 }
 
-async function reconnectAvatarSession() {
+async function reconnectAvatarSession(options = {}) {
   if (!activeSession?.sessionKey || !activeSession?.roomName) {
     throw new Error("Start a session first.");
   }
@@ -5091,7 +5178,10 @@ async function reconnectAvatarSession() {
       setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
       appendChatLine("system", "Text chat initialization failed.");
     }
-    await connectToRoom({ loadingMessage: AVATAR_RECONNECTING_STATUS });
+    await connectToRoomAndEnsureAvatar({
+      loadingMessage: AVATAR_RECONNECTING_STATUS,
+      allowAutoRecovery: options.allowAutoRecovery,
+    });
     setOutput({ action: "avatar-reconnected", roomName: activeSession?.roomName ?? null });
   } catch (error) {
     setAvatarConnectionState(activeSession ? "disconnected" : "idle");
@@ -5383,7 +5473,9 @@ if (sessionForm) {
         setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
         appendChatLine("system", "Text chat initialization failed.");
       }
-      await connectToRoom({ loadingMessage: SESSION_STARTING_STATUS });
+      await connectToRoomAndEnsureAvatar({
+        loadingMessage: SESSION_STARTING_STATUS,
+      });
     } catch (error) {
       setAvatarLoadingState(false);
       if (autoPictureInPictureOpened) {
@@ -5457,7 +5549,9 @@ if (connectRoomButton) {
   connectRoomButton.addEventListener("click", async () => {
     const autoPictureInPictureOpened = await maybeStartAvatarPictureInPicture();
     try {
-      await connectToRoom({ loadingMessage: SESSION_STARTING_STATUS });
+      await connectToRoomAndEnsureAvatar({
+        loadingMessage: SESSION_STARTING_STATUS,
+      });
       setOutput({ action: "room-connected", roomName: activeSession?.roomName ?? null });
     } catch (error) {
       if (autoPictureInPictureOpened) {

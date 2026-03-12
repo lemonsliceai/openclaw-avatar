@@ -1,9 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { resetProcessGroupChildren, stopChildProcess } from "./sidecar-process-control.js";
+import {
+  resetProcessGroupChildren,
+  stopChildProcess,
+  stopMatchingProcesses,
+} from "./sidecar-process-control.js";
 
 const describeUnixOnly = process.platform === "win32" ? describe.skip : describe;
 const ACTIVE_PARENTS = new Set<ChildProcess>();
+const FIXTURE_WRAPPER_PATH = "/repo/video-chat/video-chat-agent-runner-wrapper.mjs";
+const MATCHING_INSTANCE_ARG = "--openclaw-video-chat-instance=gateway-port-4321";
+const NON_MATCHING_INSTANCE_ARG = "--openclaw-video-chat-instance=gateway-port-9999";
 
 function isProcessRunning(pid: number | null | undefined): boolean {
   if (!pid || pid <= 0) {
@@ -44,18 +51,22 @@ function trackParent(parent: ChildProcess): void {
   });
 }
 
-function spawnBridgeHarness(): {
+function spawnBridgeHarness(params?: {
+  workerScript?: string;
+}): {
   parent: ChildProcess;
   waitForNextChildPid: (timeoutMs?: number) => Promise<number>;
   requestChildSpawn: () => void;
 } {
+  const workerScript =
+    params?.workerScript?.trim() || "setInterval(() => {}, 1000);";
   const bridgeHarnessScript = `
 const { spawn } = require("node:child_process");
-const workerScript = "setInterval(() => {}, 1000);";
 function spawnWorker() {
   const worker = spawn(process.execPath, ["-e", workerScript], { stdio: "ignore" });
   console.log("CHILD_PID=" + worker.pid);
 }
+const workerScript = ${JSON.stringify(workerScript)};
 spawnWorker();
 process.on("SIGUSR2", () => {});
 process.on("SIGUSR1", () => {
@@ -254,5 +265,89 @@ setInterval(() => {}, 1000);
 
     await waitForProcessState({ pid: stubbornPid, running: false });
     expect(Date.now() - stopStart).toBeGreaterThanOrEqual(120);
+  }, 10_000);
+
+  it("stops matching stale runner processes before a new sidecar launches", async () => {
+    const harness = spawnBridgeHarness();
+    const stalePid = harness.parent.pid;
+    expect(typeof stalePid).toBe("number");
+    if (!stalePid) {
+      throw new Error("missing stale pid");
+    }
+    const workerPid = await harness.waitForNextChildPid();
+    await waitForProcessState({ pid: stalePid, running: true });
+    await waitForProcessState({ pid: workerPid, running: true });
+
+    const stoppedPids = await stopMatchingProcesses({
+      scriptPaths: [FIXTURE_WRAPPER_PATH],
+      commandPatterns: [
+        [
+          "job_proc_lazy_main.cjs",
+          FIXTURE_WRAPPER_PATH,
+          MATCHING_INSTANCE_ARG,
+        ],
+      ],
+      termTimeoutMs: 100,
+      postKillDelayMs: 50,
+      listProcesses: async () => [
+        {
+          pid: stalePid,
+          command:
+            `node /repo/tmp/job_proc_lazy_main.cjs ${FIXTURE_WRAPPER_PATH} ${MATCHING_INSTANCE_ARG}`,
+        },
+      ],
+    });
+
+    expect(stoppedPids).toEqual([stalePid]);
+    await waitForProcessState({ pid: stalePid, running: false });
+    await waitForProcessState({ pid: workerPid, running: false });
+  }, 10_000);
+
+  it("does not match other sidecar instances by basename alone", async () => {
+    const staleProcess = spawn(
+      process.execPath,
+      [
+        "-e",
+        `
+process.on("SIGTERM", () => {});
+setInterval(() => {}, 1000);
+`,
+      ],
+      {
+        detached: true,
+        stdio: "ignore",
+      },
+    );
+    trackParent(staleProcess);
+
+    const stalePid = staleProcess.pid;
+    expect(typeof stalePid).toBe("number");
+    if (!stalePid) {
+      throw new Error("missing stale pid");
+    }
+    await waitForProcessState({ pid: stalePid, running: true });
+
+    const stoppedPids = await stopMatchingProcesses({
+      scriptPaths: [FIXTURE_WRAPPER_PATH],
+      commandPatterns: [
+        [
+          "job_proc_lazy_main.cjs",
+          FIXTURE_WRAPPER_PATH,
+          MATCHING_INSTANCE_ARG,
+        ],
+      ],
+      termTimeoutMs: 100,
+      postKillDelayMs: 50,
+      listProcesses: async () => [
+        {
+          pid: stalePid,
+          command:
+            `node /repo/tmp/job_proc_lazy_main.cjs /repo/tmp/old-plugin-copy/video-chat-agent-runner-wrapper.mjs ${NON_MATCHING_INSTANCE_ARG}`,
+        },
+      ],
+    });
+
+    expect(stoppedPids).toEqual([]);
+    await waitForProcessState({ pid: stalePid, running: true });
   }, 10_000);
 });
