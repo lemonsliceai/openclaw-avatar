@@ -1033,6 +1033,27 @@ function clearGatewayToken() {
   localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
 }
 
+async function bootstrapGatewayTokenFromServer() {
+  try {
+    const response = await fetch("/plugins/video-chat/bootstrap");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.success === false) {
+      return false;
+    }
+    const token =
+      typeof payload?.gateway?.auth?.token === "string" ? payload.gateway.auth.token.trim() : "";
+    if (!token) {
+      return false;
+    }
+    if (token !== getGatewayToken().trim()) {
+      persistGatewayToken(token);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function migrateLegacyGatewayTokenIfNeeded() {
   const legacy = localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY);
   if (!legacy || !legacy.trim()) {
@@ -5812,18 +5833,25 @@ renderChatComposerAttachments();
 clearChatLog();
 updateAvatarUiState();
 
-if (hasGatewayToken()) {
-  setGatewayHealthStatus("warn", "Checking");
-  setKeysHealthStatus("warn", "Checking");
-  refreshSetupStatus().catch(() => {});
-  setChatStatus("Start a session to use text chat.");
-} else {
-  if (statusEl) {
-    statusEl.textContent = "Enter a gateway token above, then click Use Token.";
+async function initializeGatewaySetupState() {
+  await bootstrapGatewayTokenFromServer();
+  updateTokenFieldMasking();
+  if (hasGatewayToken()) {
+    setGatewayHealthStatus("warn", "Checking");
+    setKeysHealthStatus("warn", "Checking");
+    refreshSetupStatus().catch(() => {});
+    setChatStatus("Start a session to use text chat.");
+  } else {
+    if (statusEl) {
+      statusEl.textContent = "Enter a gateway token above, then click Use Token.";
+    }
+    setGatewayHealthStatus("warn", "Token Missing");
+    setKeysHealthStatus("warn", "Needs Token");
+    setChatStatus("Enter a gateway token to use text chat.");
   }
-  setGatewayHealthStatus("warn", "Token Missing");
-  setKeysHealthStatus("warn", "Needs Token");
-  setChatStatus("Enter a gateway token to use text chat.");
+  updateRoomStatusState();
 }
 
-updateRoomStatusState();
+initializeGatewaySetupState().catch(() => {
+  updateRoomStatusState();
+});

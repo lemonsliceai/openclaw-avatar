@@ -294,7 +294,7 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
     expect(methods.has("videoChat.tts.generate")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(6);
+    expect(httpRoutes).toHaveLength(7);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -318,6 +318,11 @@ describe("video-chat plugin", () => {
           match: "exact",
         }),
         expect.objectContaining({
+          path: "/plugins/video-chat/bootstrap",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
           path: "/plugins/video-chat/app.js",
           auth: "plugin",
           match: "exact",
@@ -330,6 +335,39 @@ describe("video-chat plugin", () => {
       ]),
     );
     expect(cliCommands).toHaveLength(1);
+  });
+
+  it("registers gateway token as the first video-chat setup CLI option", () => {
+    const { cliCommands } = setup();
+    const registerCli = cliCommands[0] as ((ctx: { program: unknown }) => void) | undefined;
+    const optionFlags: string[] = [];
+    let actionHandler: unknown;
+    const commandApi = {
+      description(description: string) {
+        expect(description).toContain("gateway auth");
+        return commandApi;
+      },
+      option(flag: string) {
+        optionFlags.push(flag);
+        return commandApi;
+      },
+      action(handler: unknown) {
+        actionHandler = handler;
+        return commandApi;
+      },
+    };
+
+    registerCli?.({
+      program: {
+        command(name: string) {
+          expect(name).toBe("video-chat-setup");
+          return commandApi;
+        },
+      },
+    });
+
+    expect(optionFlags[0]).toBe("--gateway-token <token>");
+    expect(actionHandler).toBeTypeOf("function");
   });
 
   it("prefers the bundled bridge runner over the native gateway sidecar command", async () => {
@@ -697,6 +735,65 @@ describe("video-chat plugin", () => {
     expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
   });
 
+  it("saves gateway token into the root gateway auth config", async () => {
+    const { methods, runtime } = setup({
+      ...baseConfig,
+      gateway: {
+        port: 18789,
+        auth: { mode: "token", token: "old-gateway-token" },
+      },
+    });
+
+    const respond = await invoke(methods, "videoChat.setup.save", {
+      gatewayToken: "new-gateway-token",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const savedConfig = vi.mocked(runtime.config.writeConfigFile).mock.calls[0]?.[0] as
+      | {
+          gateway?: {
+            port?: number;
+            auth?: { mode?: string; token?: string };
+          };
+        }
+      | undefined;
+    expect(savedConfig?.gateway).toEqual({
+      port: 18789,
+      auth: { mode: "token", token: "new-gateway-token" },
+    });
+  });
+
+  it("preserves the existing gateway token when setup save receives a blank token", async () => {
+    const { methods, runtime } = setup({
+      ...baseConfig,
+      gateway: {
+        port: 18789,
+        auth: { mode: "token", token: "existing-gateway-token" },
+      },
+    });
+
+    const respond = await invoke(methods, "videoChat.setup.save", {
+      gatewayToken: "",
+      lemonSliceImageUrl: "https://example.com/new-avatar.png",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const savedConfig = vi.mocked(runtime.config.writeConfigFile).mock.calls[0]?.[0] as
+      | {
+          gateway?: {
+            port?: number;
+            auth?: { mode?: string; token?: string };
+          };
+        }
+      | undefined;
+    expect(savedConfig?.gateway).toEqual({
+      port: 18789,
+      auth: { mode: "token", token: "existing-gateway-token" },
+    });
+  });
+
   it("saves setup values while preserving redacted secrets", async () => {
     const { methods, runtime } = setup();
     const respond = await invoke(methods, "videoChat.setup.save", {
@@ -941,6 +1038,32 @@ describe("video-chat plugin", () => {
         },
         tts: {
           elevenLabsApiKey: "eleven-key",
+        },
+      },
+    });
+  });
+
+  it("bootstraps the configured gateway token for the browser settings page", async () => {
+    const { httpRoutes } = setup({
+      ...baseConfig,
+      gateway: {
+        port: 18789,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+
+    const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/bootstrap", {
+      url: "/plugins/video-chat/bootstrap",
+    });
+    expect(bootstrap.handled).toBe(true);
+    expect(bootstrap.res.statusCode).toBe(200);
+    expect(bootstrap.res.header("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(bootstrap.res.body)).toEqual({
+      success: true,
+      gateway: {
+        auth: {
+          mode: "token",
+          token: "gateway-token",
         },
       },
     });

@@ -2,22 +2,52 @@
 
 Standalone OpenClaw plugin that adds a LemonSlice + LiveKit + Eleven Labs Avatar Cast experience with plugin-owned setup, browser session controls, text chat, speech-to-text, and text-to-speech.
 
-## What Ships
+## Prerequisites
 
-- Gateway extension: `video-chat/index.ts`
-- Sidecar helpers:
-  - `video-chat/video-chat-agent-bridge.mjs`
-  - `video-chat/video-chat-agent-runner-wrapper.mjs`
-  - `video-chat/video-chat-agent-runner.js`
-  - `video-chat/sidecar-process-control.ts`
-- Web UI:
-  - `web/index.html`
-  - `web/settings.html`
-  - `web/app.js`
-  - `styles/`
-- Plugin manifest: [`openclaw.plugin.json`](openclaw.plugin.json)
+Before installing and running this plugin, you must have:
 
-`package.json` uses a `files` allowlist so `npm pack` only includes the runtime files above and excludes tests, local dependencies, and editor artifacts.
+- **An OpenClaw instance installed and configured**
+Openclaw install Guide https://docs.openclaw.ai/install#npm-pnpm
+
+After installing, make sure you have configured at least one LLM provider.
+We **higly reccomend** using a fast LLM model for a better experience. Examples below.
+- Qwen3-30B-A3B
+- gpt-5-nano
+- claude-haiku-4-5
+
+```bash
+openclaw config
+```
+After configuing a valid LLM provier make sure the agent uses your LLM of choice. 
+ 
+
+You will also need accounts with the following services:
+
+- **LemonSlice** — provides the avatar/character rendering for the video chat experience.
+  Sign up at https://www.lemonslice.com
+
+- **ElevenLabs** — powers plugin-owned speech-to-text (STT) and text-to-speech (TTS).
+  Sign up at https://elevenlabs.io
+
+- **LiveKit** — provides the real-time video/audio room infrastructure.
+  Sign up at https://livekit.io
+
+- **Publicly Accessable Image URL** - The source image for the avatar. 
+  Uploadthing is a convient way store images with publicly accessible URLS. https://uploadthing.com/
+
+Once you have accounts, retrieve API keys from each service and supply them during plugin setup.
+
+## Install
+
+Plugin installation:
+
+```bash
+openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
+openclaw plugins enable video-chat
+openclaw plugins list
+```
+
+Verify that ClawCast is listed. 
 
 ## About The Install Warning
 
@@ -44,6 +74,69 @@ What it does do:
 - Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
 - Send audio, transcript, and session traffic only to the configured providers needed for Claw Cast to function.
 
+## Run and configure
+
+1. Start or restart the gateway:
+
+Start
+
+```bash
+openclaw gateway run
+```
+
+If the gatway is currently running it can be stopped by using:
+
+```bash
+openclaw gateway stop
+```
+
+The gateway can also be forefully re-run: 
+
+```bash
+openclaw gateway run --force
+```
+
+2. Open the plugin UI:
+
+```text
+http://127.0.0.1:18789/plugins/video-chat/config
+```
+
+3. Configure the plugin with either:
+  - the registered `video-chat-setup` CLI command, using flags or interactive prompts (recommended)
+  - the browser config page at `/plugins/video-chat/config`
+  
+CLI
+
+```bash
+openclaw video-chat-setup
+```
+
+The CLI prompt starts with the OpenClaw gateway token so the config page can reuse it automatically later.
+
+If you use the browser config page without running the CLI first, enter your gateway token and click `Use Token`.
+
+Once a valid token is set the Gateway status indicator (top of page) will read "Gateway: OK" and show a green light.
+
+Then proceede to set the LemonSlice, ElevenLabs, and LiveKit values.
+
+Once the plugin is properly configured the Config status indicator (top of page) will read "Config: OK" and show a green light.
+
+
+## Join avatar session
+Start a session, join the room, and use the chat, STT, and TTS controls from the web interface.
+http://127.0.0.1:18789/plugins/video-chat/
+
+If you choose to use the picture-in-picutre view for the avatar do not close the avatar tab
+
+## Update
+
+The plugin can be updated to the latest version using:
+
+```bash
+openclaw plugins update video-chat  
+```
+
 ## Runtime Surface
 
 - Gateway methods:
@@ -64,89 +157,24 @@ What it does do:
 - CLI command:
   - `video-chat-setup`
 
-## Prerequisites
+## What Ships
 
-Before installing and running this plugin, you must have:
+- Gateway extension: `video-chat/index.ts`
+- Sidecar helpers:
+  - `video-chat/video-chat-agent-bridge.mjs`
+  - `video-chat/video-chat-agent-runner-wrapper.mjs`
+  - `video-chat/video-chat-agent-runner.js`
+  - `video-chat/sidecar-process-control.ts`
+- Web UI:
+  - `web/index.html`
+  - `web/settings.html`
+  - `web/app.js`
+  - `styles/`
+- Plugin manifest: [`openclaw.plugin.json`](openclaw.plugin.json)
 
-- **An OpenClaw instance installed and configured** with at least one LLM provider.
+`package.json` uses a `files` allowlist so `npm pack` only includes the runtime files above and excludes tests, local dependencies, and editor artifacts.
 
-You will also need accounts with the following services:
-
-- **LemonSlice** — provides the avatar/character rendering for the video chat experience.
-  Sign up at https://www.lemonslice.com
-
-- **ElevenLabs** — powers plugin-owned speech-to-text (STT) and text-to-speech (TTS).
-  Sign up at https://elevenlabs.io
-
-- **LiveKit** — provides the real-time video/audio room infrastructure.
-  Sign up at https://livekit.io
-
-Once you have accounts, retrieve API keys from each service and supply them during plugin setup (via the browser config page or the `video-chat-setup` CLI command). If you use the browser config page, enter and apply your OpenClaw gateway token there first so the page can authorize the remaining config requests.
-
-## Install
-
-Verify published plugin installation:
-
-```bash
-openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
-openclaw plugins list
-```
-
-Verify that ClawCast is listed. 
-
-Local development from source:
-
-```bash
-openclaw plugins install .
-openclaw plugins list
-```
-
-Verify that ClawCast is listed and resolves to the local checkout.
-
-`@livekit/agents` loads `@livekit/rtc-node` at runtime, so a fresh `npm install` is required after pulling dependency changes before starting the gateway or packing the plugin.
-
-## Run
-
-1. Start or restart the gateway:
-
-```bash
-openclaw gateway run
-```
-
-2. Open the plugin UI:
-
-```text
-http://127.0.0.1:18789/plugins/video-chat/
-```
-
-3. Configure the plugin with either:
-  - the browser config page at `/plugins/video-chat/config`
-  - the registered `video-chat-setup` CLI command, using flags or interactive prompts
-
-If you use the browser config page, enter your gateway token and click `Use Token` before attempting to save the LemonSlice, ElevenLabs, or LiveKit settings.
-
-4. Start a session, join the room, and use the chat, STT, and TTS controls from the page.
-
-## Manual Sidecar Run
-
-For debugging the LiveKit agent directly:
-
-```bash
-LIVEKIT_URL="wss://<your-livekit-host>" \
-LIVEKIT_API_KEY="<key>" \
-LIVEKIT_API_SECRET="<secret>" \
-LEMONSLICE_API_KEY="<key>" \
-LEMONSLICE_IMAGE_URL="https://<direct-image-url>" \
-ELEVENLABS_API_KEY="<key>" \
-node /Users/scott/Documents/GitHub/openclaw/dist/index.js gateway video-chat-agent
-```
-
-Notes:
-
-- `LEMONSLICE_IMAGE_URL` must be a direct image URL, not a directory URL.
-- `OPENCLAW_VIDEO_CHAT_AGENT_RUNNER` can override the runner path auto-discovery.
-
-## Verification
+## Verification/testing
 
 Release validation is codified in the project scripts:
 
