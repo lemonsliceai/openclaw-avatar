@@ -147,6 +147,7 @@ let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
 let activeAvatarParticipantIdentity = "";
+let avatarSessionAutoRecovering = false;
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let preferredMicMuted = false;
@@ -4720,6 +4721,72 @@ function markAvatarDisconnected() {
   updateRoomButtons();
 }
 
+function hasAvatarParticipantInRoom(room = activeRoom) {
+  if (!room?.remoteParticipants?.values) {
+    return false;
+  }
+  for (const participant of room.remoteParticipants.values()) {
+    if (shouldTreatParticipantAsAvatar(participant)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function waitForAvatarParticipant(room, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 12_000;
+  const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 200;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (activeRoom !== room) {
+      throw new Error("Room changed before avatar joined.");
+    }
+    if (!activeSession) {
+      throw new Error("Session ended before avatar joined.");
+    }
+    if (hasAvatarParticipantInRoom(room) || hasAvatarVideo()) {
+      return;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, pollMs);
+    });
+  }
+  throw new Error("Timed out waiting for avatar to join the room.");
+}
+
+async function connectToRoomAndEnsureAvatar(options = {}) {
+  await connectToRoom(options);
+  const room = activeRoom;
+  if (!room) {
+    return;
+  }
+  try {
+    await waitForAvatarParticipant(room, {
+      timeoutMs: options.avatarJoinTimeoutMs,
+    });
+  } catch (error) {
+    if (options.allowAutoRecovery === false || avatarSessionAutoRecovering || !activeSession) {
+      throw error;
+    }
+    avatarSessionAutoRecovering = true;
+    setOutput({
+      action: "avatar-session-auto-recovering",
+      roomName: activeSession?.roomName ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    setAvatarLoadingState(true, "Avatar did not join. Recreating session...");
+    updateRoomButtons();
+    try {
+      await reconnectAvatarSession({
+        allowAutoRecovery: false,
+      });
+      return;
+    } finally {
+      avatarSessionAutoRecovering = false;
+    }
+  }
+}
+
 function updateRoomButtons() {
   const hasSession = Boolean(activeSession);
   const hasRoom = Boolean(activeRoom);
@@ -5052,7 +5119,7 @@ function disconnectRoom(options = {}) {
   updateRoomButtons();
 }
 
-async function reconnectAvatarSession() {
+async function reconnectAvatarSession(options = {}) {
   if (!activeSession?.sessionKey || !activeSession?.roomName) {
     throw new Error("Start a session first.");
   }
@@ -5091,7 +5158,10 @@ async function reconnectAvatarSession() {
       setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
       appendChatLine("system", "Text chat initialization failed.");
     }
-    await connectToRoom({ loadingMessage: AVATAR_RECONNECTING_STATUS });
+    await connectToRoomAndEnsureAvatar({
+      loadingMessage: AVATAR_RECONNECTING_STATUS,
+      allowAutoRecovery: options.allowAutoRecovery,
+    });
     setOutput({ action: "avatar-reconnected", roomName: activeSession?.roomName ?? null });
   } catch (error) {
     setAvatarConnectionState(activeSession ? "disconnected" : "idle");
@@ -5383,7 +5453,9 @@ if (sessionForm) {
         setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
         appendChatLine("system", "Text chat initialization failed.");
       }
-      await connectToRoom({ loadingMessage: SESSION_STARTING_STATUS });
+      await connectToRoomAndEnsureAvatar({
+        loadingMessage: SESSION_STARTING_STATUS,
+      });
     } catch (error) {
       setAvatarLoadingState(false);
       if (autoPictureInPictureOpened) {
@@ -5457,7 +5529,9 @@ if (connectRoomButton) {
   connectRoomButton.addEventListener("click", async () => {
     const autoPictureInPictureOpened = await maybeStartAvatarPictureInPicture();
     try {
-      await connectToRoom({ loadingMessage: SESSION_STARTING_STATUS });
+      await connectToRoomAndEnsureAvatar({
+        loadingMessage: SESSION_STARTING_STATUS,
+      });
       setOutput({ action: "room-connected", roomName: activeSession?.roomName ?? null });
     } catch (error) {
       if (autoPictureInPictureOpened) {
