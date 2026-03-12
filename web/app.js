@@ -106,7 +106,13 @@ const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
 const VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH = 12;
-const SERVER_SPEECH_SILENCE_MS = 1_200;
+const AVATAR_ECHO_RECENT_REPLY_RETENTION_MS = 30_000;
+const AVATAR_ECHO_ACTIVE_WINDOW_MS = 4_000;
+const AVATAR_ECHO_MIN_TRANSCRIPT_CHARS = 18;
+const AVATAR_ECHO_MIN_TRANSCRIPT_TOKENS = 4;
+const AVATAR_ECHO_TOKEN_OVERLAP_THRESHOLD = 0.8;
+const AVATAR_ECHO_MAX_RECENT_REPLIES = 4;
+const SERVER_SPEECH_SILENCE_MS = 900;
 const SERVER_SPEECH_MAX_SEGMENT_MS = 9_000;
 const SERVER_SPEECH_MONITOR_INTERVAL_MS = 150;
 const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
@@ -129,7 +135,8 @@ let browserSpeechRecognitionActive = false;
 let browserSpeechRecognitionShouldRun = false;
 let browserSpeechRecognitionRestartTimer = null;
 const lastVoiceTranscriptByConnection = new Map();
-let serverSpeechTranscriptionForced = false;
+let preferServerSpeechTranscription = true;
+let serverSpeechTranscriptionUnavailable = false;
 let serverSpeechRecorder = null;
 let serverSpeechRecorderMimeType = "";
 let serverSpeechRecorderChunks = [];
@@ -148,6 +155,9 @@ let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
 let activeAvatarParticipantIdentity = "";
+let avatarSpeechActive = false;
+let avatarSpeechLastDetectedAt = 0;
+const recentAvatarReplies = [];
 let avatarSessionAutoRecovering = false;
 let avatarLoadPending = false;
 let avatarLoadMessage = "";
@@ -230,6 +240,129 @@ function nextChatComposerAttachmentId() {
 
 function normalizeChatComposerKey(key) {
   return key === "pip" ? "pip" : "main";
+}
+
+function normalizeComparableSpeechText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractComparableSpeechTokens(value) {
+  const normalized = normalizeComparableSpeechText(value);
+  if (!normalized) {
+    return [];
+  }
+  return normalized.split(" ").filter((token) => token.length > 2);
+}
+
+function pruneRecentAvatarReplies(now = Date.now()) {
+  for (let index = recentAvatarReplies.length - 1; index >= 0; index -= 1) {
+    if (now - recentAvatarReplies[index].at > AVATAR_ECHO_RECENT_REPLY_RETENTION_MS) {
+      recentAvatarReplies.splice(index, 1);
+    }
+  }
+}
+
+function clearRecentAvatarReplies() {
+  recentAvatarReplies.length = 0;
+}
+
+function rememberRecentAvatarReply(text, timestamp = Date.now()) {
+  const normalized = normalizeComparableSpeechText(text);
+  const tokens = extractComparableSpeechTokens(text);
+  if (!normalized) {
+    return;
+  }
+  recentAvatarReplies.unshift({
+    at: Number.isFinite(timestamp) ? timestamp : Date.now(),
+    normalized,
+    tokens,
+  });
+  pruneRecentAvatarReplies();
+  if (recentAvatarReplies.length > AVATAR_ECHO_MAX_RECENT_REPLIES) {
+    recentAvatarReplies.splice(AVATAR_ECHO_MAX_RECENT_REPLIES);
+  }
+}
+
+function setAvatarSpeechActive(nextValue) {
+  const normalized = Boolean(nextValue);
+  if (normalized) {
+    avatarSpeechActive = true;
+    avatarSpeechLastDetectedAt = Date.now();
+    return;
+  }
+  if (avatarSpeechActive) {
+    avatarSpeechLastDetectedAt = Date.now();
+  }
+  avatarSpeechActive = false;
+}
+
+function clearAvatarSpeechActivity() {
+  avatarSpeechActive = false;
+  avatarSpeechLastDetectedAt = 0;
+}
+
+function isAvatarSpeechRecent(now = Date.now()) {
+  return Boolean(
+    avatarSpeechActive ||
+      (avatarSpeechLastDetectedAt > 0 && now - avatarSpeechLastDetectedAt <= AVATAR_ECHO_ACTIVE_WINDOW_MS),
+  );
+}
+
+function countMatchingSpeechTokens(candidateTokens, referenceTokens) {
+  if (!candidateTokens.length || !referenceTokens.length) {
+    return 0;
+  }
+  const remaining = new Map();
+  for (const token of referenceTokens) {
+    remaining.set(token, (remaining.get(token) || 0) + 1);
+  }
+  let matches = 0;
+  for (const token of candidateTokens) {
+    const count = remaining.get(token) || 0;
+    if (count <= 0) {
+      continue;
+    }
+    matches += 1;
+    remaining.set(token, count - 1);
+  }
+  return matches;
+}
+
+function shouldSuppressVoiceTranscriptAsAvatarEcho(rawTranscript) {
+  const now = Date.now();
+  if (!isAvatarSpeechRecent(now)) {
+    return false;
+  }
+  pruneRecentAvatarReplies(now);
+  const normalizedTranscript = normalizeComparableSpeechText(rawTranscript);
+  if (!normalizedTranscript || normalizedTranscript.length < AVATAR_ECHO_MIN_TRANSCRIPT_CHARS) {
+    return false;
+  }
+  const transcriptTokens = extractComparableSpeechTokens(rawTranscript);
+  if (transcriptTokens.length < AVATAR_ECHO_MIN_TRANSCRIPT_TOKENS) {
+    return false;
+  }
+  for (const reply of recentAvatarReplies) {
+    if (!reply?.normalized) {
+      continue;
+    }
+    if (
+      reply.normalized === normalizedTranscript ||
+      reply.normalized.includes(normalizedTranscript) ||
+      normalizedTranscript.includes(reply.normalized)
+    ) {
+      return true;
+    }
+    const matchingTokens = countMatchingSpeechTokens(transcriptTokens, reply.tokens);
+    if (matchingTokens / transcriptTokens.length >= AVATAR_ECHO_TOKEN_OVERLAP_THRESHOLD) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function getChatComposerDraft(key = "main") {
@@ -1094,6 +1227,14 @@ async function submitVoiceTranscript(rawTranscript) {
     return false;
   }
 
+  if (shouldSuppressVoiceTranscriptAsAvatarEcho(transcript)) {
+    debugLog("voice-chat:transcript-suppressed", {
+      reason: "avatar-echo",
+      transcriptLength: transcript.length,
+    });
+    return false;
+  }
+
   const dedupeKey = getVoiceTranscriptDeduplicationKey(sessionKey);
   const priorTranscriptEntry = lastVoiceTranscriptByConnection.get(dedupeKey);
   const duplicateTranscript =
@@ -1162,17 +1303,35 @@ function shouldPreferBrowserSpeechRecognition() {
   return Boolean(
     shouldRunVoiceTranscription() &&
       browserSpeechRecognitionSupported() &&
-      !serverSpeechTranscriptionForced,
+      (!preferServerSpeechTranscription ||
+        !serverSpeechTranscriptionSupported() ||
+        serverSpeechTranscriptionUnavailable),
   );
 }
 
 function setServerSpeechTranscriptionFallback(reason) {
-  if (serverSpeechTranscriptionForced) {
+  if (
+    preferServerSpeechTranscription ||
+    !serverSpeechTranscriptionSupported() ||
+    serverSpeechTranscriptionUnavailable
+  ) {
     return;
   }
-  serverSpeechTranscriptionForced = true;
+  preferServerSpeechTranscription = true;
   setOutput({
     action: "voice-chat-server-transcription-fallback",
+    reason,
+  });
+}
+
+function setBrowserSpeechRecognitionFallback(reason) {
+  if (!preferServerSpeechTranscription || !browserSpeechRecognitionSupported()) {
+    return;
+  }
+  serverSpeechTranscriptionUnavailable = true;
+  preferServerSpeechTranscription = false;
+  setOutput({
+    action: "voice-chat-browser-transcription-fallback",
     reason,
   });
 }
@@ -1467,6 +1626,7 @@ async function startServerSpeechTranscription() {
     try {
       await audioContext.resume();
     } catch {}
+    serverSpeechTranscriptionUnavailable = false;
     serverSpeechRecorderAudioContext = audioContext;
     serverSpeechRecorderSourceNode = sourceNode;
     serverSpeechRecorderAnalyser = analyser;
@@ -1486,6 +1646,8 @@ async function startServerSpeechTranscription() {
         action: "server-speech-recorder-start-failed",
         error: error instanceof Error ? error.message : String(error),
       });
+      setBrowserSpeechRecognitionFallback("start-failed");
+      syncVoiceTranscription();
     })
     .finally(() => {
       serverSpeechRecorderStartPromise = null;
@@ -2693,6 +2855,20 @@ function shouldTreatParticipantAsAvatar(participant, track = null) {
   return false;
 }
 
+function syncAvatarSpeechStateFromSpeakers(speakers) {
+  const participants = Array.isArray(speakers) ? speakers : [];
+  const avatarSpeaking = participants.some((participant) => shouldTreatParticipantAsAvatar(participant));
+  setAvatarSpeechActive(avatarSpeaking);
+}
+
+function refreshAvatarSpeechState(room = activeRoom) {
+  if (!room) {
+    clearAvatarSpeechActivity();
+    return;
+  }
+  syncAvatarSpeechStateFromSpeakers(room.activeSpeakers);
+}
+
 function isVideoElement(value) {
   return Boolean(value && typeof value === "object" && value.tagName === "VIDEO");
 }
@@ -3873,6 +4049,7 @@ function clearChatLog() {
   renderedVoiceUserRuns.clear();
   chatMessages.length = 0;
   chatAwaitingReply = false;
+  clearRecentAvatarReplies();
   clearAllChatComposerAttachments();
   renderChatLog({ scrollToBottom: false });
 }
@@ -4354,6 +4531,9 @@ function handleGatewayChatEvent(payload) {
   }
   if (state === "final") {
     const content = extractChatMessageContent(payload.message);
+    if (content.text) {
+      rememberRecentAvatarReply(content.text, resolveMessageTimestamp(payload.message));
+    }
     const assistantMessage = content.text || content.images.length > 0 ? content : "[No text in final message]";
     appendChatLine(
       "assistant",
@@ -4557,6 +4737,7 @@ async function loadChatHistory() {
     limit: 30,
   });
   renderedVoiceUserRuns.clear();
+  clearRecentAvatarReplies();
   const entries = [];
   const messages = Array.isArray(history?.messages) ? history.messages : [];
   for (const message of messages) {
@@ -4575,6 +4756,9 @@ async function loadChatHistory() {
         images: content.images,
         timestamp: resolveMessageTimestamp(message),
       });
+      if (role === "assistant" && content.text) {
+        rememberRecentAvatarReply(content.text, resolveMessageTimestamp(message));
+      }
       if (role === "user") {
         const idempotencyKey =
           typeof message.idempotencyKey === "string" ? message.idempotencyKey.trim() : "";
@@ -4596,6 +4780,8 @@ function clearRemoteTiles(options = {}) {
     void exitAvatarDocumentPictureInPicture().catch(() => {});
   }
   if (!avatarMediaEl) {
+    clearAvatarParticipantIdentity();
+    clearAvatarSpeechActivity();
     unbindAvatarPictureInPictureVideo();
     updateAvatarAspectRatio(null);
     updateAvatarUiState();
@@ -4608,6 +4794,7 @@ function clearRemoteTiles(options = {}) {
     mediaElement.remove();
   }
   clearAvatarParticipantIdentity();
+  clearAvatarSpeechActivity();
   unbindAvatarPictureInPictureVideo();
   updateAvatarAspectRatio(null);
   updateAvatarUiState();
@@ -4722,6 +4909,7 @@ function detachTrack(track) {
 function releaseLocalTracks() {
   stopBrowserSpeechRecognition();
   stopServerSpeechTranscription();
+  serverSpeechTranscriptionUnavailable = false;
   if (localAudioTrack) {
     try {
       localAudioTrack.stop();
@@ -4863,6 +5051,7 @@ function removeParticipantTile(participantIdentity) {
     return;
   }
   clearAvatarParticipantIdentity();
+  clearAvatarSpeechActivity();
   markAvatarDisconnected();
   clearRemoteTiles({ keepDocumentPictureInPicture: Boolean(activeRoom || activeSession) });
 }
@@ -4873,8 +5062,14 @@ async function publishLocalTracks(room) {
   }
   let tracks = [];
   try {
+    preferServerSpeechTranscription = true;
+    serverSpeechTranscriptionUnavailable = false;
     tracks = await LIVEKIT.createLocalTracks({
-      audio: true,
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
       video: false,
     });
   } catch (error) {
@@ -4922,6 +5117,14 @@ function bindRoomEvents(room) {
     void kind;
     handleLiveKitDataMessage(payload, topic);
   });
+  room.on?.(LIVEKIT.RoomEvent.ActiveSpeakersChanged, (speakers) => {
+    debugLog("livekit:active-speakers-changed", {
+      participantIdentities: Array.isArray(speakers)
+        ? speakers.map((participant) => participant?.identity ?? "")
+        : [],
+    });
+    syncAvatarSpeechStateFromSpeakers(speakers);
+  });
   room.on?.(LIVEKIT.RoomEvent.TrackPublished, (publication, participant) => {
     debugLog("livekit:track-published", {
       participantIdentity: participant?.identity ?? "",
@@ -4953,6 +5156,7 @@ function bindRoomEvents(room) {
       participantIdentity: participant?.identity ?? "",
       trackKind: track?.kind ?? "",
     });
+    refreshAvatarSpeechState(room);
     updateRoomButtons();
   });
   room.on(LIVEKIT.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
@@ -4976,6 +5180,7 @@ function bindRoomEvents(room) {
       rememberAvatarParticipantIdentity(participant.identity);
       markAvatarDisconnected();
     }
+    refreshAvatarSpeechState(room);
   });
   room.on(LIVEKIT.RoomEvent.ParticipantDisconnected, (participant) => {
     debugLog("livekit:participant-disconnected", {
@@ -4985,6 +5190,7 @@ function bindRoomEvents(room) {
       participantIdentity: participant?.identity ?? "",
     });
     removeParticipantTile(participant.identity);
+    refreshAvatarSpeechState(room);
   });
   room.on(LIVEKIT.RoomEvent.ConnectionStateChanged, (state) => {
     roomConnectionState =
@@ -5116,6 +5322,7 @@ async function connectToRoom(options = {}) {
         attachTrackToContainer(publication.track, container);
       }
     }
+    refreshAvatarSpeechState(room);
     debugLogRoomState("livekit:post-connect-room-state", room);
     updateRoomButtons();
   } catch (error) {
