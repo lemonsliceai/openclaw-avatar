@@ -4,6 +4,8 @@ Give your Openclaw agents a face! Claw Cast enables a real time video avatar for
 
 Claw Cast is an Openclaw plugin that adds a LemonSlice + LiveKit + Eleven Labs experience. Plugin-owned setup, browser session controls, text chat, speech-to-text, and text-to-speech.
 
+![Claw Cast Avatar](assets/ClawCastAvatar.png)
+
 **Outline**
 
 - [Prerequisites](#prerequisites)
@@ -11,8 +13,8 @@ Claw Cast is an Openclaw plugin that adds a LemonSlice + LiveKit + Eleven Labs e
 - [Configure](#configure)
 - [Join avatar session](#join-avatar-session)
 - [Update](#update)
-- [Runtime Surface](#runtime-surface)
-- [What Ships](#what-ships)
+- [Public Interface](#public-interface)
+- [Package Contents](#package-contents)
 - [About The Install Warning](#about-the-install-warning)
 - [Verification/testing](#verification-testing)
 
@@ -95,6 +97,8 @@ http://127.0.0.1:18789/plugins/video-chat/config
 
 **Once the plugin is properly configured the Gateway and Config status indicators (top bar of plugin web UI) will read "OK" and show green lights.**
 
+![Green Config](assets/GreenConfig.png)
+
 <a id="run-gateway"></a>
 ### Run Gateway
 
@@ -133,8 +137,8 @@ The plugin can be updated to the latest version using:
 openclaw plugins update video-chat  
 ```
 
-<a id="runtime-surface"></a>
-## Runtime Surface
+<a id="public-interface"></a>
+## Public Interface
 
 - Gateway methods:
   - `videoChat.config`
@@ -154,8 +158,8 @@ openclaw plugins update video-chat
 - CLI command:
   - `video-chat-setup`
 
-<a id="what-ships"></a>
-## What Ships
+<a id="package-contents"></a>
+## Package Contents
 
 - Gateway extension: `video-chat/index.ts`
 - Sidecar helpers:
