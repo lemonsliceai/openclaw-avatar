@@ -18,11 +18,37 @@ function isProcessRunning(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) {
     return false;
   }
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, 0);
+      return true;
+    } catch {
+      // Fall through to a direct pid check below.
+    }
+  }
   try {
     process.kill(pid, 0);
     return true;
   } catch {
     return false;
+  }
+}
+
+function signalProcessId(pid: number, signal: NodeJS.Signals): void {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return;
+  }
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      // Process group may already be gone.
+    }
+  }
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // Process may already be gone.
   }
 }
 
@@ -78,21 +104,13 @@ async function stopProcessIds(params: {
   }
 
   for (const pid of uniquePids) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // Process may already be gone.
-    }
+    signalProcessId(pid, "SIGTERM");
   }
   await delayMs(params.termTimeoutMs ?? 300);
 
   const stubbornPids = uniquePids.filter((pid) => isProcessRunning(pid));
   for (const pid of stubbornPids) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Process may already be gone.
-    }
+    signalProcessId(pid, "SIGKILL");
   }
   await delayMs(params.postKillDelayMs ?? 150);
   return uniquePids;
@@ -177,6 +195,7 @@ export async function stopMatchingProcesses(params: {
   scriptPaths?: string[];
   commandPatterns?: string[][];
   keepPids?: number[];
+  matchBasenames?: boolean;
   termTimeoutMs?: number;
   postKillDelayMs?: number;
   listProcesses?: () => Promise<ProcessEntry[]>;
@@ -188,13 +207,15 @@ export async function stopMatchingProcesses(params: {
   const pathTargets = Array.from(
     new Set((params.scriptPaths ?? []).map((value) => value.trim()).filter((value) => value.length > 0)),
   );
-  const basenameTargets = Array.from(
-    new Set(
-      pathTargets
-        .map((value) => path.basename(value))
-        .filter((value) => value.length > 0),
-    ),
-  );
+  const basenameTargets = params.matchBasenames
+    ? Array.from(
+        new Set(
+          pathTargets
+            .map((value) => path.basename(value))
+            .filter((value) => value.length > 0),
+        ),
+      )
+    : [];
   const commandPatterns = (params.commandPatterns ?? [])
     .map((pattern) => pattern.map((value) => value.trim()).filter((value) => value.length > 0))
     .filter((pattern) => pattern.length > 0);

@@ -82,6 +82,10 @@ const baseConfig = {
   },
 };
 
+const DEFAULT_GATEWAY_PORT = 1;
+const SIDE_CAR_INSTANCE_ARG = `--openclaw-video-chat-instance=gateway-port-${DEFAULT_GATEWAY_PORT}`;
+const SERVICE_GATEWAY_INSTANCE_ARG = "--openclaw-video-chat-instance=gateway-port-4321";
+
 function decodeJwtPayload(token: string): Record<string, unknown> {
   const [, payload] = token.split(".");
   const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
@@ -367,6 +371,7 @@ describe("video-chat plugin", () => {
     });
 
     await flushMicrotasks();
+    await flushMicrotasks();
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     expect(mockStopMatchingProcesses).toHaveBeenCalledWith({
@@ -375,8 +380,15 @@ describe("video-chat plugin", () => {
         expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
       ],
       commandPatterns: [
-        ["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"],
-        ["video-chat-agent-bridge.mjs"],
+        [
+          "job_proc_lazy_main.cjs",
+          expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+          SERVICE_GATEWAY_INSTANCE_ARG,
+        ],
+        [
+          expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+          SERVICE_GATEWAY_INSTANCE_ARG,
+        ],
       ],
       termTimeoutMs: 400,
       postKillDelayMs: 200,
@@ -385,6 +397,7 @@ describe("video-chat plugin", () => {
       expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
       expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
       "/mock-openclaw/dist/video-chat-agent-runner.js",
+      SERVICE_GATEWAY_INSTANCE_ARG,
     ]);
     await service?.stop?.();
   });
@@ -419,8 +432,15 @@ describe("video-chat plugin", () => {
         expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
       ],
       commandPatterns: [
-        ["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"],
-        ["video-chat-agent-bridge.mjs"],
+        [
+          "job_proc_lazy_main.cjs",
+          expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+          SERVICE_GATEWAY_INSTANCE_ARG,
+        ],
+        [
+          expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+          SERVICE_GATEWAY_INSTANCE_ARG,
+        ],
       ],
       termTimeoutMs: 400,
       postKillDelayMs: 200,
@@ -429,8 +449,62 @@ describe("video-chat plugin", () => {
       expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
       expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
       expect.stringContaining("/openclaw/dist/video-chat-agent-runner.js"),
+      SERVICE_GATEWAY_INSTANCE_ARG,
     ]);
     await service?.stop?.();
+  });
+
+  it("serializes concurrent sidecar startup", async () => {
+    const { services } = setup();
+    const service = services[0] as
+      | {
+          start?: (ctx: { config: typeof baseConfig; gateway: { port: number; auth: object } }) => Promise<void>;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+    expect(service?.start).toBeTypeOf("function");
+
+    const child = createSpawnedChild(4103);
+    mockSpawn.mockImplementationOnce(() => child);
+
+    let resolveCleanup: (value: number[]) => void = () => {};
+    const cleanupPromise = new Promise<number[]>((resolve) => {
+      resolveCleanup = resolve;
+    });
+    mockStopMatchingProcesses.mockImplementationOnce(() => cleanupPromise);
+
+    const startOne = service?.start?.({
+      config: baseConfig,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+    const startTwo = service?.start?.({
+      config: baseConfig,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+
+    try {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 20);
+      });
+
+      expect(mockStopMatchingProcesses).toHaveBeenCalledTimes(1);
+      expect(mockSpawn).not.toHaveBeenCalled();
+
+      resolveCleanup([]);
+      await Promise.all([startOne, startTwo]);
+      await flushMicrotasks();
+
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      await service?.stop?.();
+    } finally {
+      resolveCleanup([]);
+    }
   });
 
   it("returns redacted Claw Cast config state", async () => {
@@ -558,15 +632,25 @@ describe("video-chat plugin", () => {
         expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
       ],
       commandPatterns: [
-        ["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"],
-        ["video-chat-agent-bridge.mjs"],
+        [
+          "job_proc_lazy_main.cjs",
+          expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+          SIDE_CAR_INSTANCE_ARG,
+        ],
+        [expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"), SIDE_CAR_INSTANCE_ARG],
       ],
       termTimeoutMs: 400,
       postKillDelayMs: 200,
     });
     expect(mockStopMatchingProcesses).toHaveBeenNthCalledWith(2, {
       scriptPaths: [expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs")],
-      commandPatterns: [["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"]],
+      commandPatterns: [
+        [
+          "job_proc_lazy_main.cjs",
+          expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+          SIDE_CAR_INSTANCE_ARG,
+        ],
+      ],
       keepPids: [4999],
       termTimeoutMs: 400,
       postKillDelayMs: 200,

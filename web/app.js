@@ -97,6 +97,7 @@ const AVATAR_PIP_TOOLBAR_HEIGHT = 72;
 const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
+const AVATAR_JOIN_TIMEOUT_ERROR_CODE = "AVATAR_JOIN_TIMEOUT";
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
 const AVATAR_RECONNECTING_STATUS = "Reconnecting avatar...";
@@ -4733,6 +4734,20 @@ function hasAvatarParticipantInRoom(room = activeRoom) {
   return false;
 }
 
+function createAvatarJoinTimeoutError(message) {
+  const error = new Error(message);
+  error.name = "AvatarJoinTimeoutError";
+  error.code = AVATAR_JOIN_TIMEOUT_ERROR_CODE;
+  return error;
+}
+
+function isAvatarJoinTimeoutError(error) {
+  return (
+    error instanceof Error &&
+    (error.code === AVATAR_JOIN_TIMEOUT_ERROR_CODE || error.name === "AvatarJoinTimeoutError")
+  );
+}
+
 async function waitForAvatarParticipant(room, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 12_000;
   const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 200;
@@ -4751,7 +4766,7 @@ async function waitForAvatarParticipant(room, options = {}) {
       setTimeout(resolve, pollMs);
     });
   }
-  throw new Error("Timed out waiting for avatar to join the room.");
+  throw createAvatarJoinTimeoutError("Timed out waiting for avatar to join the room.");
 }
 
 async function connectToRoomAndEnsureAvatar(options = {}) {
@@ -4765,7 +4780,12 @@ async function connectToRoomAndEnsureAvatar(options = {}) {
       timeoutMs: options.avatarJoinTimeoutMs,
     });
   } catch (error) {
-    if (options.allowAutoRecovery === false || avatarSessionAutoRecovering || !activeSession) {
+    if (
+      !isAvatarJoinTimeoutError(error) ||
+      options.allowAutoRecovery === false ||
+      avatarSessionAutoRecovering ||
+      !activeSession
+    ) {
       throw error;
     }
     avatarSessionAutoRecovering = true;

@@ -265,6 +265,42 @@ setInterval(() => {}, 1000);
   }, 10_000);
 
   it("stops matching stale runner processes before a new sidecar launches", async () => {
+    const harness = spawnBridgeHarness();
+    const stalePid = harness.parent.pid;
+    expect(typeof stalePid).toBe("number");
+    if (!stalePid) {
+      throw new Error("missing stale pid");
+    }
+    const workerPid = await harness.waitForNextChildPid();
+    await waitForProcessState({ pid: stalePid, running: true });
+    await waitForProcessState({ pid: workerPid, running: true });
+
+    const stoppedPids = await stopMatchingProcesses({
+      scriptPaths: ["/Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs"],
+      commandPatterns: [
+        [
+          "job_proc_lazy_main.cjs",
+          "/Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs",
+          "--openclaw-video-chat-instance=gateway-port-4321",
+        ],
+      ],
+      termTimeoutMs: 100,
+      postKillDelayMs: 50,
+      listProcesses: async () => [
+        {
+          pid: stalePid,
+          command:
+            "node /tmp/job_proc_lazy_main.cjs /Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs --openclaw-video-chat-instance=gateway-port-4321",
+        },
+      ],
+    });
+
+    expect(stoppedPids).toEqual([stalePid]);
+    await waitForProcessState({ pid: stalePid, running: false });
+    await waitForProcessState({ pid: workerPid, running: false });
+  }, 10_000);
+
+  it("does not match other sidecar instances by basename alone", async () => {
     const staleProcess = spawn(
       process.execPath,
       [
@@ -290,18 +326,25 @@ setInterval(() => {}, 1000);
 
     const stoppedPids = await stopMatchingProcesses({
       scriptPaths: ["/Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs"],
-      commandPatterns: [["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"]],
+      commandPatterns: [
+        [
+          "job_proc_lazy_main.cjs",
+          "/Users/scott/Documents/GitHub/videoChatPlugin/video-chat/video-chat-agent-runner-wrapper.mjs",
+          "--openclaw-video-chat-instance=gateway-port-4321",
+        ],
+      ],
       termTimeoutMs: 100,
       postKillDelayMs: 50,
       listProcesses: async () => [
         {
           pid: stalePid,
-          command: "node /tmp/job_proc_lazy_main.cjs /tmp/old-plugin-copy/video-chat-agent-runner-wrapper.mjs",
+          command:
+            "node /tmp/job_proc_lazy_main.cjs /tmp/old-plugin-copy/video-chat-agent-runner-wrapper.mjs --openclaw-video-chat-instance=gateway-port-9999",
         },
       ],
     });
 
-    expect(stoppedPids).toEqual([stalePid]);
-    await waitForProcessState({ pid: stalePid, running: false });
+    expect(stoppedPids).toEqual([]);
+    await waitForProcessState({ pid: stalePid, running: true });
   }, 10_000);
 });

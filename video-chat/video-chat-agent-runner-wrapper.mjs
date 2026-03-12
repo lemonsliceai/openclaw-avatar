@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 function requireBaseRunnerPath() {
   const value =
@@ -21,6 +21,14 @@ function requireRunnerPath() {
     throw new Error("Missing OPENCLAW_VIDEO_CHAT_RUNNER_PATH");
   }
   return path.resolve(value);
+}
+
+function applyInstanceProcessTitle() {
+  const instanceArg = process.env.OPENCLAW_VIDEO_CHAT_INSTANCE_ARG?.trim();
+  if (!instanceArg) {
+    return;
+  }
+  process.title = `job_proc_lazy_main.cjs ${fileURLToPath(import.meta.url)} ${instanceArg}`;
 }
 
 async function importFromBase(baseRunnerPath, specifier) {
@@ -141,6 +149,7 @@ async function patchLemonSliceLogging(baseRunnerPath) {
 
 const baseRunnerPath = requireBaseRunnerPath();
 const runnerPath = requireRunnerPath();
+applyInstanceProcessTitle();
 await patchLemonSliceLogging(baseRunnerPath);
 
 const baseRunnerModule = await import(pathToFileURL(runnerPath).href);

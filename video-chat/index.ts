@@ -27,6 +27,7 @@ const VIDEO_CHAT_ROOM_PART_FALLBACK = "main";
 const VIDEO_CHAT_ROOM_PART_MAX_LENGTH = 48;
 const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
+const VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
@@ -1577,15 +1578,26 @@ function resolveSidecarRunnerWrapperPath(): string {
   return path.join(moduleDir, "video-chat-agent-runner-wrapper.mjs");
 }
 
-function buildStartupSidecarCleanupPatterns(): string[][] {
+function buildSidecarInstanceArg(gateway: SidecarGatewayRuntime): string {
+  return `${VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX}gateway-port-${gateway.port}`;
+}
+
+function buildStartupSidecarCleanupPatterns(params: {
+  bridgeScriptPath: string;
+  wrapperScriptPath: string;
+  instanceArg: string;
+}): string[][] {
   return [
-    ["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"],
-    ["video-chat-agent-bridge.mjs"],
+    ["job_proc_lazy_main.cjs", params.wrapperScriptPath, params.instanceArg],
+    [params.bridgeScriptPath, params.instanceArg],
   ];
 }
 
-function buildSessionResetCleanupPatterns(): string[][] {
-  return [["job_proc_lazy_main.cjs", "video-chat-agent-runner-wrapper.mjs"]];
+function buildSessionResetCleanupPatterns(params: {
+  wrapperScriptPath: string;
+  instanceArg: string;
+}): string[][] {
+  return [["job_proc_lazy_main.cjs", params.wrapperScriptPath, params.instanceArg]];
 }
 
 function resolveCustomSidecarRunnerPath(): string {
@@ -1841,6 +1853,7 @@ function buildWorkerEnv(params: {
   gateway: SidecarGatewayRuntime;
   credentials: SidecarCredentials;
 }): NodeJS.ProcessEnv {
+  const instanceArg = buildSidecarInstanceArg(params.gateway);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     LIVEKIT_URL: params.credentials.livekitUrl,
@@ -1849,6 +1862,7 @@ function buildWorkerEnv(params: {
     OPENCLAW_VIDEO_CHAT_GATEWAY_URL: `ws://127.0.0.1:${params.gateway.port}`,
     OPENCLAW_VIDEO_CHAT_LEMONSLICE_API_KEY: params.credentials.lemonSliceApiKey,
     OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY: params.credentials.elevenLabsApiKey,
+    OPENCLAW_VIDEO_CHAT_INSTANCE_ARG: instanceArg,
   };
 
   if (params.gateway.auth.mode === "token" && params.gateway.auth.token) {
@@ -1887,7 +1901,19 @@ async function startVideoChatAgentSidecar(params: {
   }
 
   const entryScript = process.argv[1];
-  const launchCommand = await resolveSidecarLaunchCommand(entryScript);
+  const bridgeScriptPath = resolveSidecarBridgeScriptPath();
+  const wrapperScriptPath = resolveSidecarRunnerWrapperPath();
+  const instanceArg = buildSidecarInstanceArg(params.gateway);
+  const resolvedLaunchCommand = await resolveSidecarLaunchCommand(entryScript);
+  const launchCommand =
+    resolvedLaunchCommand &&
+    path.resolve(resolvedLaunchCommand.args[0] ?? "") === path.resolve(bridgeScriptPath)
+      ? {
+          ...resolvedLaunchCommand,
+          args: [...resolvedLaunchCommand.args, instanceArg],
+          description: `${resolvedLaunchCommand.description} ${instanceArg}`,
+        }
+      : resolvedLaunchCommand;
   if (!launchCommand) {
     params.log.warn(
       "Claw Cast agent sidecar disabled: unable to resolve worker entrypoint (set OPENCLAW_VIDEO_CHAT_AGENT_RUNNER to override)",
@@ -1896,11 +1922,15 @@ async function startVideoChatAgentSidecar(params: {
   }
   params.log.info(`Claw Cast agent sidecar launch command: ${launchCommand.description}`);
 
-  const staleScriptPaths = [resolveSidecarBridgeScriptPath(), resolveSidecarRunnerWrapperPath()];
+  const staleScriptPaths = [bridgeScriptPath, wrapperScriptPath];
   try {
     const stalePids = await stopMatchingProcesses({
       scriptPaths: staleScriptPaths,
-      commandPatterns: buildStartupSidecarCleanupPatterns(),
+      commandPatterns: buildStartupSidecarCleanupPatterns({
+        bridgeScriptPath,
+        wrapperScriptPath,
+        instanceArg,
+      }),
       termTimeoutMs: 400,
       postKillDelayMs: 200,
     });
@@ -2003,8 +2033,11 @@ async function startVideoChatAgentSidecar(params: {
       }
       await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
       await stopMatchingProcesses({
-        scriptPaths: [resolveSidecarRunnerWrapperPath()],
-        commandPatterns: buildSessionResetCleanupPatterns(),
+        scriptPaths: [wrapperScriptPath],
+        commandPatterns: buildSessionResetCleanupPatterns({
+          wrapperScriptPath,
+          instanceArg,
+        }),
         keepPids: [processGroupId],
         termTimeoutMs: 400,
         postKillDelayMs: 200,
@@ -2044,12 +2077,17 @@ const videoChatPlugin = {
   description: "Claw Cast gateway methods and sidecar worker",
   register(api: OpenClawPluginApi) {
     let sidecar: VideoChatAgentSidecar | null = null;
+    let sidecarStartupPromise: Promise<VideoChatAgentSidecar | null> | null = null;
 
     const ensureSidecarRunning = async (
       config: OpenClawConfig,
       gateway?: OpenClawPluginServiceContext["gateway"],
     ): Promise<void> => {
       if (sidecar) {
+        return;
+      }
+      if (sidecarStartupPromise) {
+        sidecar = sidecar ?? (await sidecarStartupPromise);
         return;
       }
       const runtimeGateway = gateway ?? resolveGatewayRuntimeFromConfig(config);
@@ -2059,11 +2097,19 @@ const videoChatPlugin = {
         );
         return;
       }
-      sidecar = await startVideoChatAgentSidecar({
+      const startupPromise = startVideoChatAgentSidecar({
         config,
         gateway: runtimeGateway,
         log: api.logger,
       });
+      sidecarStartupPromise = startupPromise;
+      try {
+        sidecar = await startupPromise;
+      } finally {
+        if (sidecarStartupPromise === startupPromise) {
+          sidecarStartupPromise = null;
+        }
+      }
     };
 
     const resetSidecarJobs = async (): Promise<void> => {
@@ -2330,6 +2376,9 @@ const videoChatPlugin = {
         await ensureSidecarRunning(ctx.config, ctx.gateway);
       },
       stop: async () => {
+        if (!sidecar && sidecarStartupPromise) {
+          sidecar = await sidecarStartupPromise.catch(() => null);
+        }
         if (!sidecar) {
           return;
         }
