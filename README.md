@@ -4,13 +4,15 @@ Standalone OpenClaw plugin that adds a LemonSlice + LiveKit + Eleven Labs Avatar
 
 ## Prerequisites
 
+### Openclaw
+
 Before installing and running this plugin, you must have:
 
 - **An OpenClaw instance installed and configured**
-Openclaw install Guide https://docs.openclaw.ai/install#npm-pnpm
+OpenClaw install guide https://docs.openclaw.ai/install#npm-pnpm
 
 After installing, make sure you have configured at least one LLM provider.
-We **higly reccomend** using a fast LLM model for a better experience. Examples below.
+We **highly recommend** using a fast LLM model for a better experience. Examples below.
 - Qwen3-30B-A3B
 - gpt-5-nano
 - claude-haiku-4-5
@@ -18,8 +20,12 @@ We **higly reccomend** using a fast LLM model for a better experience. Examples 
 ```bash
 openclaw config
 ```
-After configuing a valid LLM provier make sure the agent uses your LLM of choice. 
- 
+After configuring a valid LLM provider, make sure your agent is set up with a primary model.
+```text
+http://127.0.0.1:18789/agents
+ ```
+
+### Providers
 
 You will also need accounts with the following services:
 
@@ -32,8 +38,8 @@ You will also need accounts with the following services:
 - **LiveKit** — provides the real-time video/audio room infrastructure.
   Sign up at https://livekit.io
 
-- **Publicly Accessable Image URL** - The source image for the avatar. 
-  Uploadthing is a convient way store images with publicly accessible URLS. https://uploadthing.com/
+- **Publicly Accessible Image URL** - The source image for the avatar.
+  UploadThing is a convenient way to store images with publicly accessible URLs. https://uploadthing.com/
 
 Once you have accounts, retrieve API keys from each service and supply them during plugin setup.
 
@@ -74,9 +80,31 @@ What it does do:
 - Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
 - Send audio, transcript, and session traffic only to the configured providers needed for Claw Cast to function.
 
-## Run and configure
+## Configure
 
-1. Start or restart the gateway:
+The plugin can be configured with either the CLI (reccomended) or web browser interface. If you choose to use the web interface you must first run the Openclaw gateway.
+
+### CLI Config 
+
+```bash
+openclaw video-chat-setup
+```
+
+### Browser
+
+1. Run the gateway (see Run Gateway)
+2. Open the plugin UI:
+3. Set Gateway token
+4. Set provider values
+
+```text
+http://127.0.0.1:18789/plugins/video-chat/config
+```
+
+
+**Once the plugin is properly configured the Gateway and Config status indicators (top bar of plugin web UI) will read "OK" and show a green light.**
+
+### Run Gateway:
 
 Start
 
@@ -84,50 +112,24 @@ Start
 openclaw gateway run
 ```
 
-If the gatway is currently running it can be stopped by using:
+If the gateway is currently running, it can be stopped by using:
 
 ```bash
 openclaw gateway stop
 ```
 
-The gateway can also be forefully re-run: 
+The gateway can also be forcefully re-run:
 
 ```bash
 openclaw gateway run --force
 ```
 
-2. Open the plugin UI:
-
-```text
-http://127.0.0.1:18789/plugins/video-chat/config
-```
-
-3. Configure the plugin with either:
-  - the registered `video-chat-setup` CLI command, using flags or interactive prompts (recommended)
-  - the browser config page at `/plugins/video-chat/config`
-  
-CLI
-
-```bash
-openclaw video-chat-setup
-```
-
-The CLI prompt starts with the OpenClaw gateway token so the config page can reuse it automatically later.
-
-If you use the browser config page without running the CLI first, enter your gateway token and click `Use Token`.
-
-Once a valid token is set the Gateway status indicator (top of page) will read "Gateway: OK" and show a green light.
-
-Then proceede to set the LemonSlice, ElevenLabs, and LiveKit values.
-
-Once the plugin is properly configured the Config status indicator (top of page) will read "Config: OK" and show a green light.
-
-
 ## Join avatar session
 Start a session, join the room, and use the chat, STT, and TTS controls from the web interface.
+```text
 http://127.0.0.1:18789/plugins/video-chat/
-
-If you choose to use the picture-in-picutre view for the avatar do not close the avatar tab
+```
+If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
 
 ## Update
 
