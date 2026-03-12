@@ -9,11 +9,17 @@ Before installing and running this plugin, you must have:
 - **An OpenClaw instance installed and configured**
 Openclaw install Guide https://docs.openclaw.ai/install#npm-pnpm
 
-After installing, make sure you have configured at least one LLM provider
+After installing, make sure you have configured at least one LLM provider.
+We **higly reccomend** using a fast LLM model for a better experience. Examples below.
+- Qwen3-30B-A3B
+- gpt-5-nano
+- claude-haiku-4-5
+
 ```bash
 openclaw config
 ```
 After configuing a valid LLM provier make sure the agent uses your LLM of choice. 
+ 
 
 You will also need accounts with the following services:
 
@@ -26,7 +32,10 @@ You will also need accounts with the following services:
 - **LiveKit** — provides the real-time video/audio room infrastructure.
   Sign up at https://livekit.io
 
-Once you have accounts, retrieve API keys from each service and supply them during plugin setup (via the browser config page or the `video-chat-setup` CLI command). The CLI setup flow can save your OpenClaw gateway token first, and the browser config page will auto-load that token when it is already configured.
+- **Publicly Accessable Image URL** - The source image for the avatar. 
+  Uploadthing is a convient way store images with publicly accessible URLS. https://uploadthing.com/
+
+Once you have accounts, retrieve API keys from each service and supply them during plugin setup.
 
 ## Install
 
@@ -90,13 +99,13 @@ openclaw gateway run --force
 2. Open the plugin UI:
 
 ```text
-http://127.0.0.1:18789/plugins/video-chat/
+http://127.0.0.1:18789/plugins/video-chat/config
 ```
 
 3. Configure the plugin with either:
+  - the registered `video-chat-setup` CLI command, using flags or interactive prompts (recommended)
   - the browser config page at `/plugins/video-chat/config`
-  - the registered `video-chat-setup` CLI command, using flags or interactive prompts
-
+  
 CLI
 
 ```bash
@@ -115,10 +124,10 @@ Once the plugin is properly configured the Config status indicator (top of page)
 
 
 ## Join avatar session
-Start a session, join the room, and use the chat, STT, and TTS controls from the page.
+Start a session, join the room, and use the chat, STT, and TTS controls from the web interface.
+http://127.0.0.1:18789/plugins/video-chat/
 
-Notes:
-- `LEMONSLICE_IMAGE_URL` must be a publicly accessable direct image URL, not a directory URL.
+If you choose to use the picture-in-picutre view for the avatar do not close the avatar tab
 
 ## Update
 
