@@ -244,9 +244,9 @@ function normalizeChatComposerKey(key) {
 
 function normalizeComparableSpeechText(value) {
   return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/gu, " ")
     .trim();
 }
 
@@ -255,7 +255,7 @@ function extractComparableSpeechTokens(value) {
   if (!normalized) {
     return [];
   }
-  return normalized.split(" ").filter((token) => token.length > 2);
+  return normalized.split(/\s+/u).filter((token) => [...token].length > 2);
 }
 
 function pruneRecentAvatarReplies(now = Date.now()) {
@@ -1336,6 +1336,15 @@ function setBrowserSpeechRecognitionFallback(reason) {
   });
 }
 
+function reportServerSpeechTranscriptionFailure(action, error, details = {}) {
+  setOutput({
+    action,
+    error: error instanceof Error ? error.message : String(error),
+    ...details,
+  });
+  setBrowserSpeechRecognitionFallback("start-failed");
+}
+
 function clearBrowserSpeechRecognitionRestartTimer() {
   if (browserSpeechRecognitionRestartTimer === null) {
     return;
@@ -1445,13 +1454,12 @@ function queueServerSpeechSegmentTranscription(segmentBlob, reason) {
       return true;
     })
     .catch((error) => {
-      setOutput({
-        action: "server-speech-transcription-failed",
-        error: error instanceof Error ? error.message : String(error),
+      reportServerSpeechTranscriptionFailure("server-speech-transcription-failed", error, {
         reason,
         mimeType,
         bytes: segmentBytes,
       });
+      syncVoiceTranscription();
       return false;
     });
   serverSpeechTranscriptionQueue = task;
@@ -1524,16 +1532,18 @@ function startServerSpeechRecorderSegment(now) {
     });
   });
   recorder.addEventListener("error", (event) => {
-    setOutput({
-      action: "server-speech-recorder-error",
-      error:
-        event?.error instanceof Error
-          ? event.error.message
-          : typeof event?.error === "string"
-            ? event.error
-            : "Unknown MediaRecorder error",
-    });
-    stopServerSpeechRecorderSegment("discard");
+    reportServerSpeechTranscriptionFailure(
+      "server-speech-recorder-error",
+      event?.error instanceof Error
+        ? event.error
+        : typeof event?.error === "string"
+          ? event.error
+          : new Error("Unknown MediaRecorder error"),
+    );
+    if (shouldRunVoiceTranscription() && !shouldPreferBrowserSpeechRecognition()) {
+      stopServerSpeechRecorderSegment("discard");
+    }
+    syncVoiceTranscription();
   });
   recorder.addEventListener("stop", () => {
     const reason = serverSpeechRecorderStopReason || "stop";
@@ -1642,11 +1652,7 @@ async function startServerSpeechTranscription() {
     });
   })()
     .catch((error) => {
-      setOutput({
-        action: "server-speech-recorder-start-failed",
-        error: error instanceof Error ? error.message : String(error),
-      });
-      setBrowserSpeechRecognitionFallback("start-failed");
+      reportServerSpeechTranscriptionFailure("server-speech-recorder-start-failed", error);
       syncVoiceTranscription();
     })
     .finally(() => {
@@ -5120,7 +5126,9 @@ function bindRoomEvents(room) {
   room.on?.(LIVEKIT.RoomEvent.ActiveSpeakersChanged, (speakers) => {
     debugLog("livekit:active-speakers-changed", {
       participantIdentities: Array.isArray(speakers)
-        ? speakers.map((participant) => participant?.identity ?? "")
+        ? speakers.map((participant) =>
+            sanitizeDebugLogValue("participantIdentity", participant?.identity ?? ""),
+          )
         : [],
     });
     syncAvatarSpeechStateFromSpeakers(speakers);
