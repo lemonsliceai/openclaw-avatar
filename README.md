@@ -66,7 +66,11 @@ What it does do:
 
 ## Prerequisites
 
-Before installing and running this plugin, you will need accounts with the following services:
+Before installing and running this plugin, you must have:
+
+- **An OpenClaw instance installed and configured** with at least one LLM provider.
+
+You will also need accounts with the following services:
 
 - **LemonSlice** — provides the avatar/character rendering for the video chat experience.
   Sign up at https://www.lemonslice.com
@@ -77,7 +81,7 @@ Before installing and running this plugin, you will need accounts with the follo
 - **LiveKit** — provides the real-time video/audio room infrastructure.
   Sign up at https://livekit.io
 
-Once you have accounts, retrieve API keys from each service and supply them during plugin setup (via the browser config page or the `video-chat-setup` CLI command).
+Once you have accounts, retrieve API keys from each service and supply them during plugin setup (via the browser config page or the `video-chat-setup` CLI command). If you use the browser config page, enter and apply your OpenClaw gateway token there first so the page can authorize the remaining config requests.
 
 ## Install
 
@@ -118,6 +122,8 @@ http://127.0.0.1:18789/plugins/video-chat/
 3. Configure the plugin with either:
   - the browser config page at `/plugins/video-chat/config`
   - the registered `video-chat-setup` CLI command, using flags or interactive prompts
+
+If you use the browser config page, enter your gateway token and click `Use Token` before attempting to save the LemonSlice, ElevenLabs, or LiveKit settings.
 
 4. Start a session, join the room, and use the chat, STT, and TTS controls from the page.
 
