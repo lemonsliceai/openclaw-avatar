@@ -2,9 +2,9 @@
 
 Give your Openclaw agents a face! Claw Cast enables a real time video avatar for any of your Openclaw agents. Now you can speak directly with your agent and bring them anywhere on your desktop!
 
-Claw Cast is an Openclaw plugin that adds a LemonSlice + LiveKit + Eleven Labs experience. Plugin-owned setup, browser session controls, text chat, speech-to-text, and text-to-speech.
+Claw Cast is an OpenClaw plugin that integrates LemonSlice, LiveKit, and ElevenLabs to deliver a real-time avatar experience with plugin-managed setup, browser session controls, text chat, speech-to-text, and text-to-speech.
 
-![Claw Cast Avatar](assets/ClawCastAvatar.png)
+[![Watch the demo](assets/ClawCastAvatar.png)](https://www.loom.com/embed/307a34384a0b4dc4a5391d8bbc9accf7)
 
 **Outline**
 
@@ -83,13 +83,14 @@ The plugin can be configured with either the CLI (reccomended) or web browser in
 openclaw video-chat-setup
 ```
 
-### Browser
+### Browser Config
 
 1. [Run the gateway](#run-gateway)
-2. Open the plugin UI
-3. Set gateway token
-4. Set provider values
+2. [Open the plugin UI](http://127.0.0.1:18789/plugins/video-chat/config)
+3. Set gateway token, click "Use Token"
+4. Set provider values, click "Save"
 
+Browser Config link
 ```text
 http://127.0.0.1:18789/plugins/video-chat/config
 ```
