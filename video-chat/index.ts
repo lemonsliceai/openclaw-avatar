@@ -115,6 +115,7 @@ type GatewayErrorShape = {
 };
 
 type VideoChatSetupInput = {
+  gatewayToken?: string;
   lemonSliceApiKey?: string;
   lemonSliceImageUrl?: string;
   livekitUrl?: string;
@@ -596,6 +597,7 @@ function parseVideoChatSetupInput(
   };
 
   const parsed: VideoChatSetupInput = {
+    gatewayToken: readInput("gatewayToken"),
     lemonSliceApiKey: readInput("lemonSliceApiKey"),
     lemonSliceImageUrl: readInput("lemonSliceImageUrl"),
     livekitUrl: readInput("livekitUrl"),
@@ -621,6 +623,9 @@ function applyVideoChatSetupToConfig(
   setupInput: VideoChatSetupInput,
 ): OpenClawConfig {
   const effective = resolveEffectiveVideoChatConfig(config);
+  const gatewayRecord = asObjectRecord(config.gateway);
+  const gatewayAuthRecord = asObjectRecord(gatewayRecord.auth);
+  const gatewayToken = normalizeOptionalSetupSecretString(setupInput.gatewayToken);
   const lemonSliceApiKey =
     normalizeOptionalSetupSecretString(setupInput.lemonSliceApiKey) ??
     effective.videoChat?.lemonSlice?.apiKey;
@@ -656,6 +661,18 @@ function applyVideoChatSetupToConfig(
 
   return {
     ...config,
+    ...(gatewayToken
+      ? {
+          gateway: {
+            ...gatewayRecord,
+            auth: {
+              ...gatewayAuthRecord,
+              mode: "token",
+              token: gatewayToken,
+            },
+          },
+        }
+      : {}),
     plugins: {
       ...plugins,
       entries: {
@@ -936,6 +953,10 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
   const effectiveCurrentConfig = resolveEffectiveVideoChatConfig(currentConfig);
 
   let setupInput: VideoChatSetupInput = {
+    gatewayToken:
+      readCliOption(options, "gatewayToken") ??
+      process.env.VIDEO_CHAT_GATEWAY_TOKEN ??
+      process.env.OPENCLAW_GATEWAY_TOKEN,
     lemonSliceApiKey:
       readCliOption(options, "lemonsliceApiKey") ??
       readCliOption(options, "lemonSliceApiKey") ??
@@ -967,6 +988,7 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
       setupInput = {
+        gatewayToken: await promptTerminalField({ rl, label: "Gateway token" }),
         lemonSliceApiKey: await promptTerminalField({ rl, label: "LemonSlice API key" }),
         lemonSliceImageUrl: await promptTerminalField({
           rl,
@@ -1015,7 +1037,8 @@ function registerVideoChatSetupCli(api: OpenClawPluginApi): void {
   api.registerCli(({ program }: { program: any }) => {
       program
         .command("video-chat-setup")
-        .description("Configure Claw Cast provider credentials")
+        .description("Configure OpenClaw gateway auth and Claw Cast provider credentials")
+        .option("--gateway-token <token>", "OpenClaw gateway token")
         .option("--lemonslice-api-key <key>", "LemonSlice API key")
         .option("--lemonslice-image-url <url>", "LemonSlice image URL")
         .option("--livekit-url <url>", "LiveKit URL")
@@ -1287,6 +1310,35 @@ function registerVideoChatHttpRoutes(
     return readFile(resolvedPath, "utf8");
   };
 
+  const buildBrowserBootstrapPayload = (config: OpenClawConfig) => {
+    const gateway = resolveGatewayRuntimeFromConfig(config);
+    if (!gateway) {
+      return {
+        success: true,
+        gateway: {
+          auth: { mode: "none" as const },
+        },
+      };
+    }
+    if (gateway.auth.mode === "token") {
+      return {
+        success: true,
+        gateway: {
+          auth: {
+            mode: "token" as const,
+            token: gateway.auth.token ?? "",
+          },
+        },
+      };
+    }
+    return {
+      success: true,
+      gateway: {
+        auth: { mode: gateway.auth.mode },
+      },
+    };
+  };
+
   api.registerHttpRoute({
     path: "/plugins/video-chat/api",
     auth: "gateway",
@@ -1544,6 +1596,41 @@ function registerVideoChatHttpRoutes(
     auth: "plugin",
     match: "exact",
     handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/bootstrap",
+    auth: "plugin",
+    match: "exact",
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      const pathname = parseRequestPathname(req.url);
+      if (!pathname) {
+        return false;
+      }
+      const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/video-chat/bootstrap";
+      if (normalizedPath !== "/plugins/video-chat/bootstrap") {
+        return false;
+      }
+      try {
+        const config = api.runtime.config.loadConfig();
+        sendHttpResponse(res, asJsonResponse(buildBrowserBootstrapPayload(config)));
+        return true;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "failed to load Claw Cast browser bootstrap";
+        sendHttpResponse(
+          res,
+          asJsonResponse(
+            {
+              success: false,
+              error: { code: "UNAVAILABLE", message },
+            },
+            503,
+          ),
+        );
+        return true;
+      }
+    },
   });
 
   api.registerHttpRoute({
