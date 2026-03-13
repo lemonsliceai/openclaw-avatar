@@ -141,7 +141,10 @@ function setup(config: unknown = baseConfig) {
   return { runtime, methods, services, httpRoutes, cliCommands };
 }
 
-function createSpawnedChild(pid: number): EventEmitter & {
+function createSpawnedChild(
+  pid: number,
+  options: { autoReady?: boolean } = {},
+): EventEmitter & {
   pid: number;
   kill: ReturnType<typeof vi.fn>;
   exitCode: number | null;
@@ -163,6 +166,18 @@ function createSpawnedChild(pid: number): EventEmitter & {
   child.signalCode = null;
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  if (options.autoReady !== false) {
+    let readyScheduled = false;
+    child.stdout.on("newListener", (eventName) => {
+      if (readyScheduled || eventName !== "data") {
+        return;
+      }
+      readyScheduled = true;
+      queueMicrotask(() => {
+        child.stdout.emit("data", "[video-chat-agent] worker registered and ready id=test-worker\n");
+      });
+    });
+  }
   return child;
 }
 
@@ -549,6 +564,46 @@ describe("video-chat plugin", () => {
     }
   });
 
+  it("restarts a stale sidecar when the gateway service starts again", async () => {
+    const { services } = setup();
+    const service = services[0] as
+      | {
+          start?: (ctx: { config: typeof baseConfig; gateway: { port: number; auth: object } }) => Promise<void>;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+    expect(service?.start).toBeTypeOf("function");
+
+    const firstChild = createSpawnedChild(4104);
+    const secondChild = createSpawnedChild(4105);
+    mockSpawn
+      .mockImplementationOnce(() => firstChild)
+      .mockImplementationOnce(() => secondChild);
+
+    await service?.start?.({
+      config: baseConfig,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+    await flushMicrotasks();
+
+    firstChild.emit("exit", 0, null);
+
+    await service?.start?.({
+      config: baseConfig,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+    await flushMicrotasks();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    await service?.stop?.();
+  });
+
   it("returns redacted Claw Cast config state", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.config", {});
@@ -730,6 +785,83 @@ describe("video-chat plugin", () => {
 
     await Promise.all([stopPromise, createPromise]);
     expect(createFinished).toBe(true);
+  });
+
+  it("restarts a stale sidecar before creating the next session", async () => {
+    const { methods, services } = setup();
+    const service = services[0] as
+      | {
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+
+    const firstChild = createSpawnedChild(4106);
+    const secondChild = createSpawnedChild(4107);
+    mockSpawn
+      .mockImplementationOnce(() => firstChild)
+      .mockImplementationOnce(() => secondChild);
+
+    await invoke(methods, "videoChat.session.create", {});
+    await flushMicrotasks();
+
+    firstChild.emit("exit", 0, null);
+
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect((respond.mock.calls[0] as RespondCall | undefined)?.[0]).toBe(true);
+    await service?.stop?.();
+  });
+
+  it("restarts the sidecar through the HTTP API", async () => {
+    const { httpRoutes, methods, services } = setup();
+    const service = services[0] as
+      | {
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+
+    const firstChild = createSpawnedChild(4108);
+    const secondChild = createSpawnedChild(4109);
+    mockSpawn
+      .mockImplementationOnce(() => firstChild)
+      .mockImplementationOnce(() => secondChild);
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/sidecar/restart",
+      method: "POST",
+      body: {},
+    });
+
+    expect(handled).toBe(true);
+    expect(JSON.parse(res.body)).toMatchObject({
+      success: true,
+      restarted: true,
+    });
+    expect(mockStopChildProcess).toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    await service?.stop?.();
+  });
+
+  it("stops the sidecar through the HTTP API", async () => {
+    const { httpRoutes, methods } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/sidecar/stop",
+      method: "POST",
+      body: {},
+    });
+
+    expect(handled).toBe(true);
+    expect(JSON.parse(res.body)).toMatchObject({
+      success: true,
+      stopped: true,
+    });
+    expect(mockStopChildProcess).toHaveBeenCalled();
   });
 
   it("loads chat history through the runtime subagent API", async () => {

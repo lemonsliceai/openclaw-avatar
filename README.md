@@ -62,6 +62,7 @@ You will also need accounts with the following service providers:
 
 - **ElevenLabs** — powers plugin-owned speech-to-text (STT) and text-to-speech (TTS).
   Sign up at https://elevenlabs.io
+  **The ElevenLabs API key must have both text-to-speech (TTS) and speech-to-text (STT) access enabled.**
 
 - **LiveKit** — provides the real-time video/audio room infrastructure.
   Sign up at https://livekit.io
