@@ -189,6 +189,7 @@ const configSectionFilterButtons = Array.from(document.querySelectorAll("[data-s
 const configSectionCards = Array.from(document.querySelectorAll("[data-config-section]"));
 const configModeButtons = Array.from(document.querySelectorAll("[data-config-mode]"));
 const secretVisibilityState = new Set();
+const storedSetupSecretValues = new Map();
 const mobileChatPaneMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 960px)") : null;
 const systemThemeMedia =
@@ -2119,6 +2120,37 @@ function setSensitiveInputVisible(input, visible) {
 }
 
 function getStoredSetupSecretValue(setup, fieldName) {
+  if (storedSetupSecretValues.has(fieldName)) {
+    return normalizeOptionalInputValue(storedSetupSecretValues.get(fieldName));
+  }
+  switch (fieldName) {
+    case "lemonSliceApiKey":
+      return normalizeOptionalInputValue(setup?.lemonSlice?.apiKey);
+    case "livekitApiKey":
+      return normalizeOptionalInputValue(setup?.livekit?.apiKey);
+    case "livekitApiSecret":
+      return normalizeOptionalInputValue(setup?.livekit?.apiSecret);
+    case "elevenLabsApiKey":
+      return normalizeOptionalInputValue(setup?.tts?.elevenLabsApiKey);
+    default:
+      return "";
+  }
+}
+
+function cacheSetupSecretValues(setup) {
+  storedSetupSecretValues.clear();
+  if (!setup || typeof setup !== "object") {
+    return;
+  }
+  for (const name of setupSecretFieldNames) {
+    const value = getStoredSetupSecretValueFromPayload(setup, name);
+    if (value) {
+      storedSetupSecretValues.set(name, value);
+    }
+  }
+}
+
+function getStoredSetupSecretValueFromPayload(setup, fieldName) {
   switch (fieldName) {
     case "lemonSliceApiKey":
       return normalizeOptionalInputValue(setup?.lemonSlice?.apiKey);
@@ -2178,6 +2210,17 @@ function updateSensitiveVisibilityButton(button, visible, label) {
   button.setAttribute("title", `${action} ${label}`);
 }
 
+function updateSensitiveCopyButton(button, enabled, label) {
+  if (!button) {
+    return;
+  }
+  const actionLabel = enabled ? `Copy ${label}` : `Copy ${label}`;
+  button.disabled = false;
+  button.setAttribute("aria-disabled", "false");
+  button.setAttribute("aria-label", actionLabel);
+  button.setAttribute("title", actionLabel);
+}
+
 function maskSensitiveField(input, isMasked) {
   if (!input) {
     return;
@@ -2222,6 +2265,17 @@ function updateSensitiveFieldMasking(setup) {
       secretVisibilityState.has(fieldName) && Boolean(configured || normalizeOptionalInputValue(setupForm.elements.namedItem(fieldName)?.value).length),
       button.getAttribute("data-secret-label") || "secret",
     );
+  }
+
+  for (const button of sensitiveFieldCopyButtons) {
+    const fieldName = button.getAttribute("data-copy-secret");
+    if (!fieldName) {
+      continue;
+    }
+    const input = setupForm.elements.namedItem(fieldName);
+    const value = typeof input?.value === "string" ? normalizeOptionalInputValue(input.value) : "";
+    const canCopy = Boolean(value) || Boolean(getStoredSetupSecretValue(setup, fieldName));
+    updateSensitiveCopyButton(button, canCopy, button.getAttribute("data-secret-label") || "secret");
   }
 
   updateSetupSaveButtonState();
@@ -5654,6 +5708,7 @@ async function saveSetupPayload(body) {
     method: "POST",
     body: JSON.stringify(body),
   });
+  cacheSetupSecretValues(payload.setup);
   const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
   if (statusEl) {
     statusEl.textContent = setupStatusLabel(sanitizedSetup);
@@ -5671,6 +5726,7 @@ async function saveSetupPayload(body) {
 async function refreshSetupStatus() {
   if (!hasGatewayToken()) {
     latestSetupStatus = null;
+    storedSetupSecretValues.clear();
     secretVisibilityState.clear();
     syncSetupEditorsFromCurrentForm();
     if (statusEl) {
@@ -5687,6 +5743,7 @@ async function refreshSetupStatus() {
   setKeysHealthStatus("warn", "Checking");
   try {
     const payload = await requestJson("/plugins/video-chat/api/setup");
+    cacheSetupSecretValues(payload.setup);
     const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
     latestSetupStatus = sanitizedSetup;
     if (statusEl) {
@@ -5698,6 +5755,7 @@ async function refreshSetupStatus() {
     syncSetupEditorsFromCurrentForm();
   } catch (error) {
     latestSetupStatus = null;
+    storedSetupSecretValues.clear();
     secretVisibilityState.clear();
     syncSetupEditorsFromCurrentForm();
     const message = error instanceof Error ? error.message : "Failed to load status";
@@ -5737,8 +5795,15 @@ if (setupForm) {
       if (!input || typeof input.value !== "string") {
         return;
       }
+      const inputValue = normalizeOptionalInputValue(input.value);
+      const value = isRedactedSecretValue(inputValue)
+        ? getStoredSetupSecretValue(latestSetupStatus, fieldName)
+        : inputValue;
+      if (!value) {
+        return;
+      }
       try {
-        await copyTextToClipboard(input.value);
+        await copyTextToClipboard(value);
         flashCopyButton(button);
       } catch (error) {
         setOutput({ action: "secret-copy-failed", error: String(error) });
