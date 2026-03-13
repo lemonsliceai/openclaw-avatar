@@ -697,6 +697,41 @@ describe("video-chat plugin", () => {
     });
   });
 
+  it("waits for an in-flight sidecar reset before creating the next session", async () => {
+    const { methods } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    let resolveReset: () => void = () => {};
+    const resetPromise = new Promise<void>((resolve) => {
+      resolveReset = resolve;
+    });
+    mockResetProcessGroupChildren.mockImplementationOnce(() => resetPromise);
+
+    const stopPromise = invoke(methods, "videoChat.session.stop", {
+      roomName: "openclaw-main-12345678",
+    });
+
+    await flushMicrotasks();
+
+    let createFinished = false;
+    const createPromise = invoke(methods, "videoChat.session.create", {}).then((respond) => {
+      createFinished = true;
+      return respond;
+    });
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 20);
+    });
+
+    expect(createFinished).toBe(false);
+
+    resolveReset();
+
+    await Promise.all([stopPromise, createPromise]);
+    expect(createFinished).toBe(true);
+  });
+
   it("loads chat history through the runtime subagent API", async () => {
     const { httpRoutes, runtime } = setup();
     vi.mocked(runtime.subagent.getSessionMessages).mockResolvedValueOnce({

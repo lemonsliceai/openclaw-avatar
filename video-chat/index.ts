@@ -30,6 +30,7 @@ const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.11";
 const VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
+const VIDEO_CHAT_SIDECAR_RESET_SETTLE_MS = 1_000;
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
 const SHARED_SHELL_BOOTSTRAP_PLACEHOLDER = "__SHARED_SHELL_BOOTSTRAP__";
@@ -93,6 +94,7 @@ type SidecarCredentials = {
 type VideoChatAgentSidecar = {
   stop: () => Promise<void>;
   resetJobs: () => Promise<void>;
+  waitForIdle: () => Promise<void>;
 };
 
 type SidecarLogger = {
@@ -2834,6 +2836,7 @@ async function startVideoChatAgentSidecar(params: {
   let child: ChildProcess | null = null;
   let childProcessGroupId: number | null = null;
   let respawnTimer: ReturnType<typeof setTimeout> | null = null;
+  let resetJobsPromise: Promise<void> | null = null;
   let stopping = false;
   const recentExits: number[] = [];
   let unsupportedLegacyCommand = false;
@@ -2907,24 +2910,45 @@ async function startVideoChatAgentSidecar(params: {
   spawnChild();
 
   return {
+    waitForIdle: async () => {
+      if (resetJobsPromise) {
+        await resetJobsPromise;
+      }
+    },
     resetJobs: async () => {
       if (stopping) {
         return;
       }
-      const processGroupId = childProcessGroupId;
-      if (process.platform === "win32" || !processGroupId || processGroupId <= 0) {
+      if (resetJobsPromise) {
+        await resetJobsPromise;
         return;
       }
-      await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
-      await stopMatchingProcesses({
-        commandPatterns: buildSessionResetCleanupPatterns({
-          wrapperScriptPath,
-          instanceArg,
-        }),
-        keepPids: [processGroupId],
-        termTimeoutMs: 400,
-        postKillDelayMs: 200,
-      });
+      const nextResetPromise = (async () => {
+        const processGroupId = childProcessGroupId;
+        if (process.platform === "win32" || !processGroupId || processGroupId <= 0) {
+          return;
+        }
+        await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
+        await stopMatchingProcesses({
+          commandPatterns: buildSessionResetCleanupPatterns({
+            wrapperScriptPath,
+            instanceArg,
+          }),
+          keepPids: [processGroupId],
+          termTimeoutMs: 400,
+          postKillDelayMs: 200,
+        });
+        // Give the worker a brief window to advertise itself idle again before the next dispatch.
+        await sleep(VIDEO_CHAT_SIDECAR_RESET_SETTLE_MS);
+      })();
+      resetJobsPromise = nextResetPromise;
+      try {
+        await nextResetPromise;
+      } finally {
+        if (resetJobsPromise === nextResetPromise) {
+          resetJobsPromise = null;
+        }
+      }
     },
     stop: async () => {
       stopping = true;
@@ -2967,10 +2991,14 @@ const videoChatPlugin = {
       gateway?: OpenClawPluginServiceContext["gateway"],
     ): Promise<void> => {
       if (sidecar) {
+        await sidecar.waitForIdle();
         return;
       }
       if (sidecarStartupPromise) {
         sidecar = sidecar ?? (await sidecarStartupPromise);
+        if (sidecar) {
+          await sidecar.waitForIdle();
+        }
         return;
       }
       const runtimeGateway = gateway ?? resolveGatewayRuntimeFromConfig(config);
@@ -2988,6 +3016,9 @@ const videoChatPlugin = {
       sidecarStartupPromise = startupPromise;
       try {
         sidecar = await startupPromise;
+        if (sidecar) {
+          await sidecar.waitForIdle();
+        }
       } finally {
         if (sidecarStartupPromise === startupPromise) {
           sidecarStartupPromise = null;
