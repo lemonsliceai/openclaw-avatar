@@ -49,6 +49,9 @@
   .shell {
     --shell-pad: 8px;
     --shell-gap: 8px;
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
   }
 
   /* Topbar */
@@ -58,7 +61,14 @@
     flex-direction: row;
     flex-wrap: wrap;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    height: auto;
+    min-height: var(--shell-topbar-height);
+  }
+
+  .topbar-left {
+    width: 100%;
+    min-width: 0;
   }
 
   .brand {
@@ -76,22 +86,33 @@
 
   .topbar-status {
     gap: 6px;
-    width: auto;
-    flex-wrap: nowrap;
+    width: 100%;
+    flex-wrap: wrap;
+    align-items: stretch;
+    justify-content: flex-start;
   }
 
   .topbar-status .pill {
     padding: 4px 8px;
     font-size: 11px;
     gap: 4px;
+    height: auto;
+    min-height: 30px;
+    max-width: 100%;
+    flex: 0 1 auto;
   }
 
   .topbar-status .pill .mono {
-    display: none;
+    display: inline-flex;
+    min-width: 0;
   }
 
   .topbar-status .pill span:nth-child(2) {
-    display: none;
+    display: inline;
+  }
+
+  .topbar-status .theme-toggle {
+    margin-left: auto;
   }
 
   /* Nav */
@@ -359,6 +380,7 @@
   .topbar-status .pill {
     padding: 3px 6px;
     font-size: 10px;
+    min-height: 28px;
   }
 
   .theme-toggle {

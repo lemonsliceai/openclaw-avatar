@@ -1029,8 +1029,10 @@ describe("video-chat plugin", () => {
     expect(page.res.header("content-type")).toBe("text/html; charset=utf-8");
     expect(page.res.header("permissions-policy")).toBe("microphone=(self)");
     expect(page.res.body).toContain("<title>Claw Cast</title>");
+    expect(page.res.body).toContain('data-shared-topbar');
     expect(page.res.body).toContain('id="package-version-value"');
     expect(page.res.body).toContain(`>${packageJson.version}</span>`);
+    expect(page.res.body).not.toContain("__SHARED_SHELL_BOOTSTRAP__");
 
     const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/readme", {
       url: "/plugins/video-chat/readme",

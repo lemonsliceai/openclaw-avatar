@@ -30,6 +30,7 @@ const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
+const SHARED_SHELL_BOOTSTRAP_PLACEHOLDER = "__SHARED_SHELL_BOOTSTRAP__";
 const README_HTML_PLACEHOLDER_REGEX = /__README_HTML__/g;
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
@@ -1592,11 +1593,18 @@ function registerVideoChatHttpRoutes(
   };
 
   const readRenderedHtmlAsset = async (relativePath: string): Promise<string> => {
-    const [html, packageVersion] = await Promise.all([
+    const [html, packageVersion, sharedShellScript] = await Promise.all([
       readWebAsset(relativePath),
       resolvePackageVersion(),
+      readWebAsset("shared-shell.js"),
     ]);
-    return html.replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion);
+    const renderedSharedShellScript = sharedShellScript.replaceAll(
+      PACKAGE_VERSION_PLACEHOLDER,
+      packageVersion,
+    );
+    return html
+      .replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion)
+      .replace(SHARED_SHELL_BOOTSTRAP_PLACEHOLDER, renderedSharedShellScript);
   };
 
   const resolveReadmePath = async (): Promise<string> => {
@@ -1620,15 +1628,21 @@ function registerVideoChatHttpRoutes(
   };
 
   const readRenderedReadmePage = async (): Promise<string> => {
-    const [template, packageVersion, readmePath] = await Promise.all([
+    const [template, packageVersion, readmePath, sharedShellScript] = await Promise.all([
       readWebAsset("readme.html"),
       resolvePackageVersion(),
       resolveReadmePath(),
+      readWebAsset("shared-shell.js"),
     ]);
     const markdown = await readFile(readmePath, "utf8");
     const readmeHtml = renderMarkdownToHtml(markdown);
+    const renderedSharedShellScript = sharedShellScript.replaceAll(
+      PACKAGE_VERSION_PLACEHOLDER,
+      packageVersion,
+    );
     return template
       .replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion)
+      .replace(SHARED_SHELL_BOOTSTRAP_PLACEHOLDER, renderedSharedShellScript)
       .replace(README_HTML_PLACEHOLDER_REGEX, readmeHtml);
   };
 

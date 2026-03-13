@@ -2791,7 +2791,7 @@ function setChatPaneOpen(isOpen, options = {}) {
 }
 
 function initChatPane() {
-  let isOpen = true;
+  let isOpen = !isMobileChatPane();
   let storedWidth = 360;
   try {
     const stored = localStorage.getItem(CHAT_PANE_STORAGE_KEY);

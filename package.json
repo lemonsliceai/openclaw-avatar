@@ -15,6 +15,7 @@
     "video-chat/video-chat-agent-runner-wrapper.mjs",
     "video-chat/video-chat-agent-runner.js",
     "web/app.js",
+    "web/shared-shell.js",
     "web/index.html",
     "web/readme.html",
     "web/settings.html"
