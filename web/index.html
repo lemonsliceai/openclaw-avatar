@@ -4,6 +4,46 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Claw Cast</title>
+    <script>
+      (() => {
+        document.documentElement.classList.add("video-chat-preload-layout-pending");
+        document.documentElement.classList.add("video-chat-preload-chat-pane-pending");
+        try {
+          const stored = globalThis.localStorage?.getItem("videoChat.chatPaneOpen");
+          const shouldOpen = stored === "1";
+          const isMobile =
+            typeof globalThis.matchMedia === "function" &&
+            globalThis.matchMedia("(max-width: 960px)").matches;
+          if (isMobile && !shouldOpen) {
+            document.documentElement.classList.add("video-chat-preload-chat-pane-closed");
+          }
+        } catch {
+          if (
+            typeof globalThis.matchMedia === "function" &&
+            globalThis.matchMedia("(max-width: 960px)").matches
+          ) {
+            document.documentElement.classList.add("video-chat-preload-chat-pane-closed");
+          }
+        }
+      })();
+    </script>
+    <style>
+      .video-chat-preload-layout-pending .video-chat-layout {
+        visibility: hidden !important;
+      }
+
+      .video-chat-preload-chat-pane-pending #chat-pane,
+      .video-chat-preload-chat-pane-pending #chat-pane-backdrop,
+      .video-chat-preload-chat-pane-pending #chat-pane-resizer {
+        display: none !important;
+      }
+
+      .video-chat-preload-chat-pane-closed #chat-pane,
+      .video-chat-preload-chat-pane-closed #chat-pane-backdrop,
+      .video-chat-preload-chat-pane-closed #chat-pane-resizer {
+        display: none !important;
+      }
+    </style>
     <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
     <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
@@ -97,6 +137,18 @@
           border-color 200ms var(--ease-out),
           opacity 200ms var(--ease-out),
           transform 200ms var(--ease-out);
+      }
+
+      .video-chat-shell .video-chat-chatpane,
+      .video-chat-shell .video-chat-resizer,
+      .video-chat-shell .video-chat-chatpane__backdrop {
+        visibility: hidden;
+      }
+
+      .video-chat-shell .shell--chat-pane-ready .video-chat-chatpane,
+      .video-chat-shell .shell--chat-pane-ready .video-chat-resizer,
+      .video-chat-shell .shell--chat-pane-ready .video-chat-chatpane__backdrop {
+        visibility: visible;
       }
 
       .video-chat-resizer {
@@ -710,6 +762,16 @@
           transform: translateX(calc(100% + 24px));
         }
 
+        .video-chat-preload-chat-pane-closed .video-chat-chatpane {
+          transform: translateX(calc(100% + 24px));
+          pointer-events: none;
+        }
+
+        .video-chat-preload-chat-pane-closed .video-chat-chatpane__backdrop {
+          opacity: 0;
+          pointer-events: none;
+        }
+
         .video-chat-resizer {
           display: none;
         }
@@ -1104,11 +1166,12 @@
           aria-label="Resize text chat panel"
           aria-orientation="vertical"
           tabindex="0"
+          hidden
         ></div>
 
         <div class="video-chat-chatpane__backdrop" id="chat-pane-backdrop" hidden></div>
 
-        <aside class="card video-chat-chatpane" id="chat-pane" aria-labelledby="chat-pane-title">
+        <aside class="card video-chat-chatpane" id="chat-pane" aria-labelledby="chat-pane-title" hidden>
           <div class="video-chat-chatpane__header">
             <div class="video-chat-chatpane__title">
               <h2 class="card-title" id="chat-pane-title">Text Chat</h2>
@@ -1145,6 +1208,6 @@
       __SHARED_SHELL_BOOTSTRAP__
     </script>
     <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
-    <script type="module" src="/plugins/video-chat/app.js"></script>
+    <script type="module" src="/plugins/video-chat/app.js?v=__PACKAGE_VERSION__"></script>
   </body>
 </html>

@@ -695,6 +695,91 @@ describe("video-chat plugin", () => {
     });
   });
 
+  it("loads chat history through the runtime subagent API", async () => {
+    const { httpRoutes, runtime } = setup();
+    vi.mocked(runtime.subagent.getSessionMessages).mockResolvedValueOnce({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          idempotencyKey: "voice-chat-run-browser-123",
+        },
+      ],
+    });
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/history",
+      method: "POST",
+      body: {
+        sessionKey: "agent:main:main",
+        limit: 12,
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.getSessionMessages).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      limit: 12,
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      success: true,
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          idempotencyKey: "voice-chat-run-browser-123",
+        },
+      ],
+    });
+  });
+
+  it("sends chat messages through the runtime subagent API", async () => {
+    const { httpRoutes, runtime } = setup();
+    vi.mocked(runtime.subagent.run).mockResolvedValueOnce({
+      runId: "run-123",
+    });
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/send",
+      method: "POST",
+      body: {
+        sessionKey: "agent:main:main",
+        message: "show me the bug",
+        idempotencyKey: "video-chat-ui-123",
+        attachments: [
+          {
+            type: "image",
+            mimeType: "image/png",
+            fileName: "error.png",
+            content: "Zm9v",
+          },
+        ],
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.run).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      deliver: false,
+      idempotencyKey: "video-chat-ui-123",
+      attachments: [
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "error.png",
+          content: "Zm9v",
+        },
+      ],
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      success: true,
+      response: {
+        runId: "run-123",
+      },
+    });
+  });
+
   it("returns setup state for plugin-owned setup surfaces", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.setup.get", {});

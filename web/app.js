@@ -83,6 +83,7 @@ const GATEWAY_WS_CLIENT = {
   platform: "web",
   mode: "test",
 };
+const GATEWAY_WS_SCOPES = ["operator.read", "operator.write"];
 const CHAT_PANE_MIN_WIDTH = 300;
 const CHAT_PANE_MAX_WIDTH = 640;
 const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
@@ -1279,11 +1280,15 @@ async function submitVoiceTranscript(rawTranscript) {
   setChatStatus("Sending message...");
 
   try {
-    const response = await gatewayRpc("chat.send", {
-      sessionKey,
-      message: transcript,
-      idempotencyKey,
+    const payload = await requestJson("/plugins/video-chat/api/chat/send", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionKey,
+        message: transcript,
+        idempotencyKey,
+      }),
     });
+    const response = payload?.response ?? {};
     setOutput({
       action: "voice-chat-sent",
       sessionKey,
@@ -2731,6 +2736,22 @@ function isMobileChatPane() {
   return Boolean(mobileChatPaneMedia?.matches);
 }
 
+function waitForAnimationFrame() {
+  return new Promise((resolve) => {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => resolve(undefined));
+      return;
+    }
+    window.setTimeout(() => resolve(undefined), 16);
+  });
+}
+
+async function waitForChatPaneLayoutReady() {
+  // Give viewport/media-query state a moment to settle after navigation before revealing the pane.
+  await waitForAnimationFrame();
+  await waitForAnimationFrame();
+}
+
 function updateChatPaneToggleState(isOpen) {
   if (!chatPaneToggleButton) {
     return;
@@ -2771,13 +2792,26 @@ function applyChatPaneWidth(nextWidth, options = {}) {
 
 function setChatPaneOpen(isOpen, options = {}) {
   const shouldPersist = options.persist !== false;
+  const isMobile = isMobileChatPane();
   shellEl?.classList.toggle("shell--chat-pane-open", isOpen);
   shellEl?.classList.toggle("shell--chat-pane-closed", !isOpen);
+
+  if (!isOpen && chatPaneEl?.contains(document.activeElement)) {
+    chatPaneToggleButton?.focus({ preventScroll: true });
+  }
+
   if (chatPaneEl) {
     chatPaneEl.setAttribute("aria-hidden", isOpen ? "false" : "true");
+    chatPaneEl.hidden = isMobile && !isOpen;
+    if ("inert" in chatPaneEl) {
+      chatPaneEl.inert = !isOpen;
+    }
   }
   if (chatPaneBackdropEl) {
-    chatPaneBackdropEl.hidden = !isMobileChatPane();
+    chatPaneBackdropEl.hidden = !isMobile || !isOpen;
+  }
+  if (chatPaneResizerEl) {
+    chatPaneResizerEl.hidden = isMobile || !isOpen;
   }
   updateChatPaneToggleState(isOpen);
 
@@ -2790,7 +2824,7 @@ function setChatPaneOpen(isOpen, options = {}) {
   }
 }
 
-function initChatPane() {
+function resolveInitialChatPaneOpen() {
   let isOpen = !isMobileChatPane();
   let storedWidth = 360;
   try {
@@ -2809,8 +2843,22 @@ function initChatPane() {
     storedWidth = 360;
   }
 
+  return { isOpen, storedWidth };
+}
+
+async function initChatPane() {
+  let { isOpen, storedWidth } = resolveInitialChatPaneOpen();
+
+  applyChatPaneWidth(storedWidth, { persist: false });
+  await waitForChatPaneLayoutReady();
+
+  ({ isOpen, storedWidth } = resolveInitialChatPaneOpen());
   applyChatPaneWidth(storedWidth, { persist: false });
   setChatPaneOpen(isOpen, { persist: false });
+  shellEl?.classList.add("shell--chat-pane-ready");
+  document.documentElement.classList.remove("video-chat-preload-layout-pending");
+  document.documentElement.classList.remove("video-chat-preload-chat-pane-pending");
+  document.documentElement.classList.remove("video-chat-preload-chat-pane-closed");
 
   chatPaneToggleButton?.addEventListener("click", () => {
     const nextOpen = shellEl ? shellEl.classList.contains("shell--chat-pane-closed") : true;
@@ -4766,7 +4814,7 @@ function handleGatewaySocketMessage(raw) {
       maxProtocol: GATEWAY_PROTOCOL_VERSION,
       client: GATEWAY_WS_CLIENT,
       role: "operator",
-      scopes: ["operator.admin"],
+      scopes: GATEWAY_WS_SCOPES,
       ...(token ? { auth: { token } } : {}),
     };
     gatewaySocket?.send(
@@ -4917,9 +4965,12 @@ async function loadChatHistory() {
   if (!sessionKey) {
     return;
   }
-  const history = await gatewayRpc("chat.history", {
-    sessionKey,
-    limit: 30,
+  const history = await requestJson("/plugins/video-chat/api/chat/history", {
+    method: "POST",
+    body: JSON.stringify({
+      sessionKey,
+      limit: 30,
+    }),
   });
   renderedVoiceUserRuns.clear();
   clearRecentAvatarReplies();
@@ -6125,12 +6176,16 @@ async function submitChatMessage(rawMessage, options = {}) {
   setChatStatus("Sending message...");
 
   try {
-    const response = await gatewayRpc("chat.send", {
-      sessionKey,
-      message,
-      ...(rpcAttachments.length > 0 ? { attachments: rpcAttachments } : {}),
-      idempotencyKey,
+    const payload = await requestJson("/plugins/video-chat/api/chat/send", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionKey,
+        message,
+        ...(rpcAttachments.length > 0 ? { attachments: rpcAttachments } : {}),
+        idempotencyKey,
+      }),
     });
+    const response = payload?.response ?? {};
     setOutput({ action: "chat-sent", sessionKey, response });
     setChatStatus("Awaiting agent reply...");
     return true;

@@ -143,6 +143,50 @@ type VideoChatSessionHandlers = {
   stopSession: (params: { roomName: string }) => Promise<VideoChatSessionStopResult>;
 };
 
+type VideoChatChatAttachmentInput = {
+  type: string;
+  mimeType: string;
+  fileName: string;
+  content: string;
+};
+
+type VideoChatChatHistoryResult = {
+  messages?: unknown[];
+};
+
+type VideoChatChatSendResult = Record<string, unknown>;
+
+type VideoChatSubagentRunParams = {
+  sessionKey: string;
+  message: string;
+  extraSystemPrompt?: string;
+  lane?: string;
+  deliver?: boolean;
+  idempotencyKey?: string;
+  attachments?: VideoChatChatAttachmentInput[];
+};
+
+type VideoChatSubagentRuntime = {
+  run: (params: VideoChatSubagentRunParams) => Promise<VideoChatChatSendResult>;
+  getSessionMessages: (params: {
+    sessionKey: string;
+    limit?: number;
+  }) => Promise<VideoChatChatHistoryResult>;
+};
+
+type VideoChatChatHandlers = {
+  loadHistory: (params: {
+    sessionKey: string;
+    limit?: number;
+  }) => Promise<VideoChatChatHistoryResult>;
+  sendMessage: (params: {
+    sessionKey: string;
+    message: string;
+    attachments?: VideoChatChatAttachmentInput[];
+    idempotencyKey?: string;
+  }) => Promise<VideoChatChatSendResult>;
+};
+
 function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -257,6 +301,50 @@ function resolveGatewayRuntimeFromConfig(config: OpenClawConfig): SidecarGateway
         ? process.env.OPENCLAW_GATEWAY_TOKEN
         : undefined;
   return { port, auth: { mode: "token", token } };
+}
+
+function getVideoChatSubagentRuntime(api: OpenClawPluginApi): VideoChatSubagentRuntime {
+  const candidate = (api.runtime as OpenClawPluginApi["runtime"] & {
+    subagent?: VideoChatSubagentRuntime;
+  }).subagent;
+  if (
+    !candidate ||
+    typeof candidate.run !== "function" ||
+    typeof candidate.getSessionMessages !== "function"
+  ) {
+    throw new Error("Claw Cast chat runtime unavailable during this request");
+  }
+  return candidate;
+}
+
+function isValidChatAttachmentInput(value: unknown): value is VideoChatChatAttachmentInput {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { type?: unknown }).type === "string" &&
+      typeof (value as { mimeType?: unknown }).mimeType === "string" &&
+      typeof (value as { fileName?: unknown }).fileName === "string" &&
+      typeof (value as { content?: unknown }).content === "string",
+  );
+}
+
+function normalizeChatAttachmentInputs(value: unknown): VideoChatChatAttachmentInput[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("invalid videoChat.chat.send params");
+  }
+  const attachments = value.filter((item) => item !== null && item !== undefined);
+  if (!attachments.every(isValidChatAttachmentInput)) {
+    throw new Error("invalid videoChat.chat.send params");
+  }
+  return attachments.map((attachment) => ({
+    type: attachment.type.trim(),
+    mimeType: attachment.mimeType.trim(),
+    fileName: attachment.fileName.trim(),
+    content: attachment.content.trim(),
+  }));
 }
 
 function respondGatewayError(
@@ -1123,6 +1211,17 @@ function withBrowserShellHeaders(payload: HttpResponsePayload): HttpResponsePayl
   };
 }
 
+function withNoStoreHeaders(payload: HttpResponsePayload): HttpResponsePayload {
+  return {
+    ...payload,
+    headers: {
+      ...(payload.headers ?? {}),
+      "cache-control": "no-store, max-age=0",
+      pragma: "no-cache",
+    },
+  };
+}
+
 function parseRequestPathname(urlValue: string | undefined): string | null {
   if (!urlValue) {
     return null;
@@ -1516,7 +1615,7 @@ function contentTypeForAssetPath(assetPath: string): string {
 
 function registerVideoChatHttpRoutes(
   api: OpenClawPluginApi,
-  sessionHandlers: VideoChatSessionHandlers,
+  handlers: VideoChatSessionHandlers & VideoChatChatHandlers,
 ): void {
   let cachedWebRootPath: string | null | undefined;
   let cachedStylesRootPath: string | null | undefined;
@@ -1824,7 +1923,7 @@ function registerVideoChatHttpRoutes(
               (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
               cfg.session?.mainKey ||
               "main";
-            const session = await sessionHandlers.createSession({
+            const session = await handlers.createSession({
               config: cfg,
               sessionKey,
               interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
@@ -1856,7 +1955,7 @@ function registerVideoChatHttpRoutes(
           if (typeof params.roomName !== "string") {
             throw new Error("invalid videoChat.session.stop params");
           }
-          const result = await sessionHandlers.stopSession({
+          const result = await handlers.stopSession({
             roomName: params.roomName,
           });
           sendHttpResponse(
@@ -1864,6 +1963,56 @@ function registerVideoChatHttpRoutes(
             asJsonResponse({
               success: true,
               ...result,
+            }),
+          );
+          return true;
+        }
+
+        if (normalizedPath === "/plugins/video-chat/api/chat/history" && method === "POST") {
+          const params = await readRequestJson(req);
+          if (typeof params.sessionKey !== "string") {
+            throw new Error("invalid videoChat.chat.history params");
+          }
+          if (params.limit !== undefined && typeof params.limit !== "number") {
+            throw new Error("invalid videoChat.chat.history params");
+          }
+          const result = await handlers.loadHistory({
+            sessionKey: params.sessionKey,
+            limit:
+              typeof params.limit === "number" && Number.isFinite(params.limit)
+                ? Math.max(1, Math.floor(params.limit))
+                : undefined,
+          });
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              ...result,
+            }),
+          );
+          return true;
+        }
+
+        if (normalizedPath === "/plugins/video-chat/api/chat/send" && method === "POST") {
+          const params = await readRequestJson(req);
+          if (typeof params.sessionKey !== "string" || typeof params.message !== "string") {
+            throw new Error("invalid videoChat.chat.send params");
+          }
+          if (params.idempotencyKey !== undefined && typeof params.idempotencyKey !== "string") {
+            throw new Error("invalid videoChat.chat.send params");
+          }
+          const attachments = normalizeChatAttachmentInputs(params.attachments);
+          const result = await handlers.sendMessage({
+            sessionKey: params.sessionKey,
+            message: params.message,
+            attachments,
+            idempotencyKey: params.idempotencyKey,
+          });
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              response: result,
             }),
           );
           return true;
@@ -1972,12 +2121,18 @@ function registerVideoChatHttpRoutes(
       }
       if (normalizedPath === "/plugins/video-chat") {
         const html = await readRenderedHtmlAsset("index.html");
-        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+        );
         return true;
       }
       if (normalizedPath === "/plugins/video-chat/readme") {
         const html = await readRenderedReadmePage();
-        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+        );
         return true;
       }
       if (
@@ -1985,12 +2140,18 @@ function registerVideoChatHttpRoutes(
         normalizedPath === "/plugins/video-chat/config"
       ) {
         const html = await readRenderedHtmlAsset("settings.html");
-        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+        );
         return true;
       }
       if (normalizedPath === "/plugins/video-chat/app.js") {
         const script = await readWebAsset("app.js");
-        sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(asTextResponse(script, "application/javascript; charset=utf-8")),
+        );
         return true;
       }
       sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
@@ -2680,10 +2841,47 @@ const videoChatPlugin = {
       return result;
     };
 
+    const loadManagedChatHistory = async (params: {
+      sessionKey: string;
+      limit?: number;
+    }): Promise<VideoChatChatHistoryResult> => {
+      const subagentRuntime = getVideoChatSubagentRuntime(api);
+      const result = await subagentRuntime.getSessionMessages({
+        sessionKey: params.sessionKey,
+        limit: params.limit ?? 30,
+      });
+      return {
+        messages: Array.isArray(result.messages) ? result.messages : [],
+      };
+    };
+
+    const sendManagedChatMessage = async (params: {
+      sessionKey: string;
+      message: string;
+      attachments?: VideoChatChatAttachmentInput[];
+      idempotencyKey?: string;
+    }): Promise<VideoChatChatSendResult> => {
+      const subagentRuntime = getVideoChatSubagentRuntime(api);
+      // The gateway agent schema accepts attachments even though the current runtime typings
+      // only expose the text-centric subset.
+      const runParams: VideoChatSubagentRunParams = {
+        sessionKey: params.sessionKey,
+        message: params.message,
+        deliver: false,
+        ...(params.attachments && params.attachments.length > 0
+          ? { attachments: params.attachments }
+          : {}),
+        ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
+      };
+      return await subagentRuntime.run(runParams);
+    };
+
     registerVideoChatSetupCli(api);
     registerVideoChatHttpRoutes(api, {
       createSession: createManagedSession,
       stopSession: stopManagedSession,
+      loadHistory: loadManagedChatHistory,
+      sendMessage: sendManagedChatMessage,
     });
 
     api.registerGatewayMethod(
@@ -2878,6 +3076,90 @@ const videoChatPlugin = {
           respondGatewayError(
             respond,
             invalidMessages.has(message) ? "INVALID_REQUEST" : "UNAVAILABLE",
+            message,
+          );
+        }
+      },
+    );
+
+    api.registerGatewayMethod(
+      "videoChat.chat.history",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          if (!assertMethodParams(params, "videoChat.chat.history", respond)) {
+            return;
+          }
+          if (typeof params.sessionKey !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.chat.history params",
+            );
+            return;
+          }
+          if (params.limit !== undefined && typeof params.limit !== "number") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.chat.history params",
+            );
+            return;
+          }
+          const result = await loadManagedChatHistory({
+            sessionKey: params.sessionKey,
+            limit:
+              typeof params.limit === "number" && Number.isFinite(params.limit)
+                ? Math.max(1, Math.floor(params.limit))
+                : undefined,
+          });
+          respond(true, result);
+        } catch (error) {
+          respondGatewayError(
+            respond,
+            "UNAVAILABLE",
+            error instanceof Error ? error.message : "Claw Cast chat history failed",
+          );
+        }
+      },
+    );
+
+    api.registerGatewayMethod(
+      "videoChat.chat.send",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          if (!assertMethodParams(params, "videoChat.chat.send", respond)) {
+            return;
+          }
+          if (typeof params.sessionKey !== "string" || typeof params.message !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.chat.send params",
+            );
+            return;
+          }
+          if (params.idempotencyKey !== undefined && typeof params.idempotencyKey !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.chat.send params",
+            );
+            return;
+          }
+          const attachments = normalizeChatAttachmentInputs(params.attachments);
+          const result = await sendManagedChatMessage({
+            sessionKey: params.sessionKey,
+            message: params.message,
+            attachments,
+            idempotencyKey: params.idempotencyKey,
+          });
+          respond(true, result);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Claw Cast chat send failed";
+          respondGatewayError(
+            respond,
+            message.includes("invalid videoChat.chat.send params") ? "INVALID_REQUEST" : "UNAVAILABLE",
             message,
           );
         }

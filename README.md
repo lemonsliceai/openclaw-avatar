@@ -77,7 +77,7 @@ Once you have accounts, retrieve API keys from each service and supply them duri
 Plugin installation:
 
 ```bash
-openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
+openclaw plugins install @openclaw/video-chat@latest
 openclaw plugins enable video-chat
 openclaw plugins list
 ```
@@ -131,6 +131,8 @@ The gateway can also be forcefully re-run:
 ```bash
 openclaw gateway run --force
 ```
+
+If OpenClaw 2026.3.12 logs `ReferenceError: Cannot access 'ANTHROPIC_MODEL_ALIASES' before initialization` while starting the gateway, that crash is coming from the OpenClaw config loader rather than this plugin. As a temporary workaround, remove Anthropic refs from `agents.defaults.model.primary`, `agents.defaults.model.fallbacks`, and `agents.defaults.models` in `~/.openclaw/openclaw.json`, or upgrade to an OpenClaw build that includes the loader fix.
 
 <a id="join-avatar-session"></a>
 ## Join avatar session
