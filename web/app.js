@@ -116,6 +116,8 @@ const AVATAR_ECHO_MIN_TRANSCRIPT_CHARS = 18;
 const AVATAR_ECHO_MIN_TRANSCRIPT_TOKENS = 4;
 const AVATAR_ECHO_TOKEN_OVERLAP_THRESHOLD = 0.8;
 const AVATAR_ECHO_MAX_RECENT_REPLIES = 4;
+const MINIMUM_COMPATIBLE_OPENCLAW_VERSION = "2026.3.11";
+const INCOMPATIABLE_OPENCLAW_VERSION_MESSAGE = "incompatiable openclaw version";
 const SERVER_SPEECH_SILENCE_MS = 900;
 const SERVER_SPEECH_MAX_SEGMENT_MS = 9_000;
 const SERVER_SPEECH_MONITOR_INTERVAL_MS = 150;
@@ -198,6 +200,11 @@ const systemThemeMedia =
 let activeThemePreference = "system";
 let tokenVisible = false;
 let latestSetupStatus = null;
+let openClawCompatibility = {
+  version: null,
+  minimumCompatibleVersion: MINIMUM_COMPATIBLE_OPENCLAW_VERSION,
+  compatible: null,
+};
 let activeConfigSectionFilter = "all";
 let activeConfigMode = "form";
 let setupFormBaseline = {
@@ -1195,6 +1202,15 @@ async function bootstrapGatewayTokenFromServer() {
     if (!response.ok || payload.success === false) {
       return false;
     }
+    openClawCompatibility = {
+      version: typeof payload?.openclaw?.version === "string" ? payload.openclaw.version : null,
+      minimumCompatibleVersion:
+        typeof payload?.openclaw?.minimumCompatibleVersion === "string" &&
+        payload.openclaw.minimumCompatibleVersion.trim()
+          ? payload.openclaw.minimumCompatibleVersion.trim()
+          : MINIMUM_COMPATIBLE_OPENCLAW_VERSION,
+      compatible: typeof payload?.openclaw?.compatible === "boolean" ? payload.openclaw.compatible : null,
+    };
     const token =
       typeof payload?.gateway?.auth?.token === "string" ? payload.gateway.auth.token.trim() : "";
     if (!token) {
@@ -2042,7 +2058,7 @@ function setHealthStatus(dotEl, valueEl, tone, text) {
   if (!dotEl || !valueEl) {
     return;
   }
-  dotEl.classList.remove("ok", "warn");
+  dotEl.classList.remove("ok", "warn", "danger");
   if (tone === "ok" || tone === "warn" || tone === "danger") {
     dotEl.classList.add(tone);
   }
@@ -2050,6 +2066,10 @@ function setHealthStatus(dotEl, valueEl, tone, text) {
 }
 
 function setGatewayHealthStatus(tone, text) {
+  if (openClawCompatibility.compatible === false) {
+    setHealthStatus(gatewayHealthDotEl, gatewayHealthValueEl, "danger", INCOMPATIABLE_OPENCLAW_VERSION_MESSAGE);
+    return;
+  }
   setHealthStatus(gatewayHealthDotEl, gatewayHealthValueEl, tone, text);
 }
 

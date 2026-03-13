@@ -1155,13 +1155,14 @@ describe("video-chat plugin", () => {
   });
 
   it("bootstraps the configured gateway token for the browser settings page", async () => {
-    const { httpRoutes } = setup({
+    const { httpRoutes, runtime } = setup({
       ...baseConfig,
       gateway: {
         port: 18789,
         auth: { mode: "token", token: "gateway-token" },
       },
     });
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.11";
 
     const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/bootstrap", {
       url: "/plugins/video-chat/bootstrap",
@@ -1171,11 +1172,35 @@ describe("video-chat plugin", () => {
     expect(bootstrap.res.header("content-type")).toBe("application/json; charset=utf-8");
     expect(JSON.parse(bootstrap.res.body)).toEqual({
       success: true,
+      openclaw: {
+        version: "2026.3.11",
+        minimumCompatibleVersion: "2026.3.11",
+        compatible: true,
+      },
       gateway: {
         auth: {
           mode: "token",
           token: "gateway-token",
         },
+      },
+    });
+  });
+
+  it("reports incompatible OpenClaw versions in the browser bootstrap payload", async () => {
+    const { httpRoutes, runtime } = setup();
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.10";
+
+    const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/bootstrap", {
+      url: "/plugins/video-chat/bootstrap",
+    });
+    expect(bootstrap.handled).toBe(true);
+    expect(bootstrap.res.statusCode).toBe(200);
+    expect(JSON.parse(bootstrap.res.body)).toMatchObject({
+      success: true,
+      openclaw: {
+        version: "2026.3.10",
+        minimumCompatibleVersion: "2026.3.11",
+        compatible: false,
       },
     });
   });

@@ -27,6 +27,7 @@ const VIDEO_CHAT_ROOM_PART_FALLBACK = "main";
 const VIDEO_CHAT_ROOM_PART_MAX_LENGTH = 48;
 const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
+const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.11";
 const VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
@@ -193,6 +194,47 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseVersionSegments(value: unknown): number[] | null {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return null;
+  }
+  const segments = normalized.match(/\d+/g);
+  if (!segments?.length) {
+    return null;
+  }
+  const parsed = segments.map((segment) => Number.parseInt(segment, 10));
+  return parsed.every((segment) => Number.isFinite(segment)) ? parsed : null;
+}
+
+function normalizeVersionString(value: unknown): string | null {
+  const normalized = normalizeOptionalString(value);
+  return normalized && parseVersionSegments(normalized) ? normalized : null;
+}
+
+function compareVersionSegments(left: number[], right: number[]): number {
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    if (delta !== 0) {
+      return delta > 0 ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+function isOpenClawVersionCompatible(
+  version: unknown,
+  minimumVersion: string = OPENCLAW_MIN_COMPATIBLE_VERSION,
+): boolean | null {
+  const normalizedVersion = parseVersionSegments(version);
+  const normalizedMinimumVersion = parseVersionSegments(minimumVersion);
+  if (!normalizedVersion || !normalizedMinimumVersion) {
+    return null;
+  }
+  return compareVersionSegments(normalizedVersion, normalizedMinimumVersion) >= 0;
 }
 
 function normalizeOptionalSetupSecretString(value: unknown): string | undefined {
@@ -1297,6 +1339,14 @@ function modulePackageJsonCandidates(): string[] {
   ];
 }
 
+function moduleOpenClawPackageJsonCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "node_modules", "openclaw", "package.json"),
+    path.resolve(moduleDir, "..", "..", "node_modules", "openclaw", "package.json"),
+  ];
+}
+
 function moduleReadmeCandidates(): string[] {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return [
@@ -1620,6 +1670,7 @@ function registerVideoChatHttpRoutes(
   let cachedWebRootPath: string | null | undefined;
   let cachedStylesRootPath: string | null | undefined;
   let cachedPackageVersion: string | undefined;
+  let cachedHostOpenClawVersion: string | null | undefined;
   let cachedReadmePath: string | null | undefined;
   let cachedAssetsRootPath: string | null | undefined;
 
@@ -1688,6 +1739,78 @@ function registerVideoChatHttpRoutes(
     } catch {
       cachedPackageVersion = "unknown";
       return cachedPackageVersion;
+    }
+  };
+
+  const collectOpenClawPackageJsonCandidates = (): string[] => {
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const pushCandidate = (candidate: string) => {
+      const normalized = candidate.trim();
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      candidates.push(normalized);
+    };
+    const addAncestorCandidates = (startPath: string, levels: number) => {
+      let current = path.resolve(startPath);
+      for (let depth = 0; depth <= levels; depth += 1) {
+        pushCandidate(path.join(current, "openclaw", "package.json"));
+        pushCandidate(path.join(current, "node_modules", "openclaw", "package.json"));
+        const parent = path.dirname(current);
+        if (parent === current) {
+          break;
+        }
+        current = parent;
+      }
+    };
+
+    pushCandidate(api.resolvePath("node_modules/openclaw/package.json"));
+    pushCandidate(api.resolvePath("./node_modules/openclaw/package.json"));
+    pushCandidate(api.resolvePath("../node_modules/openclaw/package.json"));
+    for (const candidate of moduleOpenClawPackageJsonCandidates()) {
+      pushCandidate(candidate);
+    }
+    addAncestorCandidates(path.dirname(fileURLToPath(import.meta.url)), 6);
+    addAncestorCandidates(process.cwd(), 4);
+    return candidates;
+  };
+
+  const resolveHostOpenClawVersion = async (): Promise<string | null> => {
+    if (cachedHostOpenClawVersion !== undefined) {
+      return cachedHostOpenClawVersion;
+    }
+
+    const runtimeRecord = asObjectRecord(api.runtime);
+    const directCandidates = [
+      runtimeRecord.openclawVersion,
+      runtimeRecord.hostVersion,
+      runtimeRecord.appVersion,
+      process.env.OPENCLAW_VERSION,
+      process.env.OPENCLAW_APP_VERSION,
+    ];
+    for (const candidate of directCandidates) {
+      const normalized = normalizeVersionString(candidate);
+      if (normalized) {
+        cachedHostOpenClawVersion = normalized;
+        return cachedHostOpenClawVersion;
+      }
+    }
+
+    const packageJsonPath = await resolveExistingFile(collectOpenClawPackageJsonCandidates());
+    if (!packageJsonPath) {
+      cachedHostOpenClawVersion = null;
+      return cachedHostOpenClawVersion;
+    }
+
+    try {
+      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+      cachedHostOpenClawVersion = normalizeVersionString(packageJson.version);
+      return cachedHostOpenClawVersion;
+    } catch {
+      cachedHostOpenClawVersion = null;
+      return cachedHostOpenClawVersion;
     }
   };
 
@@ -1820,11 +1943,18 @@ function registerVideoChatHttpRoutes(
     return readFile(resolvedPath, "utf8");
   };
 
-  const buildBrowserBootstrapPayload = (config: OpenClawConfig) => {
+  const buildBrowserBootstrapPayload = async (config: OpenClawConfig) => {
     const gateway = resolveGatewayRuntimeFromConfig(config);
+    const openclawVersion = await resolveHostOpenClawVersion();
+    const openclaw = {
+      version: openclawVersion,
+      minimumCompatibleVersion: OPENCLAW_MIN_COMPATIBLE_VERSION,
+      compatible: openclawVersion === null ? null : isOpenClawVersionCompatible(openclawVersion),
+    };
     if (!gateway) {
       return {
         success: true,
+        openclaw,
         gateway: {
           auth: { mode: "none" as const },
         },
@@ -1833,6 +1963,7 @@ function registerVideoChatHttpRoutes(
     if (gateway.auth.mode === "token") {
       return {
         success: true,
+        openclaw,
         gateway: {
           auth: {
             mode: "token" as const,
@@ -1843,6 +1974,7 @@ function registerVideoChatHttpRoutes(
     }
     return {
       success: true,
+      openclaw,
       gateway: {
         auth: { mode: gateway.auth.mode },
       },
@@ -2219,7 +2351,7 @@ function registerVideoChatHttpRoutes(
       }
       try {
         const config = api.runtime.config.loadConfig();
-        sendHttpResponse(res, asJsonResponse(buildBrowserBootstrapPayload(config)));
+        sendHttpResponse(res, asJsonResponse(await buildBrowserBootstrapPayload(config)));
         return true;
       } catch (error) {
         const message =
