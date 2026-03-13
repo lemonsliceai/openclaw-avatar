@@ -867,11 +867,19 @@
                 <button class="btn danger" type="button" id="stop-session">Stop Session</button>
               </div>
               <div class="session-form__toggles">
-                <label class="session-form__toggle" for="start-in-pip">
+                <label
+                  class="session-form__toggle"
+                  for="start-in-pip"
+                  title="Automatically open the avatar in picture-in-picture when the session starts."
+                >
                   <input type="checkbox" id="start-in-pip" checked />
                   <span>Start in PiP</span>
                 </label>
-                <label class="session-form__toggle" for="interrupt-agent-speech">
+                <label
+                  class="session-form__toggle"
+                  for="interrupt-agent-speech"
+                  title="If a newer agent reply arrives while the avatar is still speaking, stop the current speech and switch to the latest reply."
+                >
                   <input type="checkbox" id="interrupt-agent-speech" checked />
                   <span>Interrupt avatar speech</span>
                 </label>
