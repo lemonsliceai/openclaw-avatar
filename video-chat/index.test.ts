@@ -1041,6 +1041,7 @@ describe("video-chat plugin", () => {
     expect(readmePage.res.body).toContain("<title>Claw Cast README</title>");
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
     expect(readmePage.res.body).toContain("/plugins/video-chat/assets/GreenConfig.png");
+    expect(readmePage.res.body).not.toContain("__README_HTML__");
 
     const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/setup",

@@ -30,6 +30,7 @@ const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
+const README_HTML_PLACEHOLDER_REGEX = /__README_HTML__/g;
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
 const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
@@ -1254,33 +1255,35 @@ function resolveReadmeHref(target: string): string {
 }
 
 function renderMarkdownInline(value: string): string {
-  const codeTokens: string[] = [];
-  const storeCodeToken = (html: string) => {
-    const token = `\u0000CODE${codeTokens.length}\u0000`;
-    codeTokens.push(html);
+  const htmlTokens: string[] = [];
+  const storeHtmlToken = (html: string) => {
+    const token = `\u0000HTML${htmlTokens.length}\u0000`;
+    htmlTokens.push(html);
     return token;
   };
 
   let rendered = value.replace(/`([^`]+)`/g, (_match, code: string) =>
-    storeCodeToken(`<code>${escapeHtml(code)}</code>`),
+    storeHtmlToken(`<code>${escapeHtml(code)}</code>`),
   );
   rendered = escapeHtml(rendered);
   rendered = rendered.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, href: string) => {
     const src = resolveReadmeHref(href);
-    return `<img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}" loading="lazy" />`;
+    return storeHtmlToken(
+      `<img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}" loading="lazy" />`,
+    );
   });
   rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, href: string) => {
     const resolvedHref = resolveReadmeHref(href);
-    return `<a href="${escapeHtmlAttribute(resolvedHref)}">${label}</a>`;
+    return storeHtmlToken(`<a href="${escapeHtmlAttribute(resolvedHref)}">${label}</a>`);
   });
   rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   rendered = rendered.replace(/(^|[\s(])\*([^*]+)\*(?=[\s).,!?]|$)/g, "$1<em>$2</em>");
   rendered = rendered.replace(
-    /(^|[\s(])(https?:\/\/[^\s<)]+)(?=[\s).,!?]|$)/g,
+    /(^|[\s(])(https?:\/\/[^\s<]*[^\s<).,!?])/g,
     '$1<a href="$2">$2</a>',
   );
-  return rendered.replace(/\u0000CODE(\d+)\u0000/g, (_match, index: string) => {
-    return codeTokens[Number(index)] ?? "";
+  return rendered.replace(/\u0000HTML(\d+)\u0000/g, (_match, index: string) => {
+    return htmlTokens[Number(index)] ?? "";
   });
 }
 
@@ -1626,7 +1629,7 @@ function registerVideoChatHttpRoutes(
     const readmeHtml = renderMarkdownToHtml(markdown);
     return template
       .replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion)
-      .replace("__README_HTML__", readmeHtml);
+      .replace(README_HTML_PLACEHOLDER_REGEX, readmeHtml);
   };
 
   const resolveAssetsRootPath = async (): Promise<string> => {
