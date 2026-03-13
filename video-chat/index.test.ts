@@ -770,6 +770,29 @@ describe("video-chat plugin", () => {
     });
   });
 
+  it("rejects invalid chat history route payloads before calling the runtime subagent API", async () => {
+    const { httpRoutes, runtime } = setup();
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/history",
+      method: "POST",
+      body: {
+        limit: "12",
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.getSessionMessages).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      success: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "invalid videoChat.chat.history params",
+      },
+    });
+  });
+
   it("sends chat messages through the runtime subagent API", async () => {
     const { httpRoutes, runtime } = setup();
     vi.mocked(runtime.subagent.run).mockResolvedValueOnce({
@@ -813,6 +836,67 @@ describe("video-chat plugin", () => {
       success: true,
       response: {
         runId: "run-123",
+      },
+    });
+  });
+
+  it("rejects invalid chat send route payloads before calling the runtime subagent API", async () => {
+    const { httpRoutes, runtime } = setup();
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/send",
+      method: "POST",
+      body: {
+        sessionKey: "agent:main:main",
+        message: "show me the bug",
+        attachments: [
+          {
+            type: "image",
+            mimeType: "image/png",
+            fileName: "error.png",
+          },
+        ],
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.run).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      success: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "invalid videoChat.chat.send params",
+      },
+    });
+  });
+
+  it("rejects chat send route payloads with too many attachments", async () => {
+    const { httpRoutes, runtime } = setup();
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/send",
+      method: "POST",
+      body: {
+        sessionKey: "agent:main:main",
+        message: "show me the bug",
+        attachments: Array.from({ length: 5 }, (_, index) => ({
+          type: "image",
+          mimeType: "image/png",
+          fileName: `error-${index}.png`,
+          content: "Zm9v",
+        })),
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.run).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      success: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "invalid videoChat.chat.send params",
       },
     });
   });
@@ -924,6 +1008,29 @@ describe("video-chat plugin", () => {
           content: oversizedContent,
         },
       ],
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]).toEqual({
+      code: "INVALID_REQUEST",
+      message: "invalid videoChat.chat.send params",
+    });
+    expect(runtime.subagent.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects chat send params through the gateway method when attachment count exceeds the cap", async () => {
+    const { methods, runtime } = setup();
+
+    const respond = await invoke(methods, "videoChat.chat.send", {
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      attachments: Array.from({ length: 5 }, (_, index) => ({
+        type: "image",
+        mimeType: "image/png",
+        fileName: `error-${index}.png`,
+        content: "Zm9v",
+      })),
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -1325,6 +1432,9 @@ describe("video-chat plugin", () => {
     expect(bootstrap.handled).toBe(true);
     expect(bootstrap.res.statusCode).toBe(200);
     expect(bootstrap.res.header("content-type")).toBe("application/json; charset=utf-8");
+    expect(bootstrap.res.header("cache-control")).toBe("no-store");
+    expect(bootstrap.res.header("pragma")).toBe("no-cache");
+    expect(bootstrap.res.header("expires")).toBe("0");
     expect(JSON.parse(bootstrap.res.body)).toEqual({
       success: true,
       openclaw: {

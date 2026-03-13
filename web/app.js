@@ -1234,22 +1234,41 @@ function clearGatewayToken() {
   localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
 }
 
+function hydrateOpenClawCompatibility(payload) {
+  openClawCompatibility = {
+    version: typeof payload?.openclaw?.version === "string" ? payload.openclaw.version : null,
+    minimumCompatibleVersion:
+      typeof payload?.openclaw?.minimumCompatibleVersion === "string" &&
+      payload.openclaw.minimumCompatibleVersion.trim()
+        ? payload.openclaw.minimumCompatibleVersion.trim()
+        : MINIMUM_COMPATIBLE_OPENCLAW_VERSION,
+    compatible: typeof payload?.openclaw?.compatible === "boolean" ? payload.openclaw.compatible : null,
+  };
+  return openClawCompatibility;
+}
+
+async function requestBrowserBootstrapPayload() {
+  const response = await fetch("/plugins/video-chat/bootstrap");
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.success === false) {
+    throw new Error("Failed to load browser bootstrap payload.");
+  }
+  hydrateOpenClawCompatibility(payload);
+  return payload;
+}
+
+async function refreshOpenClawCompatibility() {
+  try {
+    await requestBrowserBootstrapPayload();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function bootstrapGatewayTokenFromServer() {
   try {
-    const response = await fetch("/plugins/video-chat/bootstrap");
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload.success === false) {
-      return false;
-    }
-    openClawCompatibility = {
-      version: typeof payload?.openclaw?.version === "string" ? payload.openclaw.version : null,
-      minimumCompatibleVersion:
-        typeof payload?.openclaw?.minimumCompatibleVersion === "string" &&
-        payload.openclaw.minimumCompatibleVersion.trim()
-          ? payload.openclaw.minimumCompatibleVersion.trim()
-          : MINIMUM_COMPATIBLE_OPENCLAW_VERSION,
-      compatible: typeof payload?.openclaw?.compatible === "boolean" ? payload.openclaw.compatible : null,
-    };
+    const payload = await requestBrowserBootstrapPayload();
     const token =
       typeof payload?.gateway?.auth?.token === "string" ? payload.gateway.auth.token.trim() : "";
     if (!token) {
@@ -4489,17 +4508,17 @@ function escapeChatHtmlAttribute(value) {
 function normalizeChatHref(href) {
   const trimmed = String(href || "").trim();
   if (!trimmed) {
-    return "#";
+    return "";
   }
-  if (
-    trimmed.startsWith("#") ||
-    trimmed.startsWith("http://") ||
-    trimmed.startsWith("https://") ||
-    trimmed.startsWith("mailto:")
-  ) {
-    return trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.href;
+    }
+  } catch {
+    return "";
   }
-  return "#";
+  return "";
 }
 
 function normalizeChatImageSrc(src) {
@@ -4522,7 +4541,7 @@ function normalizeChatImageSrc(src) {
 function renderChatMarkdownInline(value) {
   const htmlTokens = [];
   const storeHtmlToken = (html) => {
-    const token = `\u0000HTML${htmlTokens.length}\u0000`;
+    const token = `[[__VC_HTML_${htmlTokens.length}__]]`;
     htmlTokens.push(html);
     return token;
   };
@@ -4530,11 +4549,10 @@ function renderChatMarkdownInline(value) {
   let rendered = String(value || "").replace(/`([^`]+)`/g, (_match, code) =>
     storeHtmlToken(`<code>${escapeChatHtml(code)}</code>`),
   );
-  rendered = escapeChatHtml(rendered);
   rendered = rendered.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt, href) => {
     const src = normalizeChatImageSrc(href);
     if (!src) {
-      return escapeChatHtml(_match);
+      return _match;
     }
     return storeHtmlToken(
       `<img class="markdown-inline-image" src="${escapeChatHtmlAttribute(src)}" alt="${escapeChatHtmlAttribute(alt)}" loading="lazy" />`,
@@ -4542,17 +4560,26 @@ function renderChatMarkdownInline(value) {
   });
   rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
     const resolvedHref = normalizeChatHref(href);
+    if (!resolvedHref) {
+      return _match;
+    }
     return storeHtmlToken(
       `<a href="${escapeChatHtmlAttribute(resolvedHref)}" target="_blank" rel="noopener noreferrer">${escapeChatHtml(label)}</a>`,
     );
   });
+  rendered = rendered.replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<).,!?])/g, (_match, prefix, href) => {
+    const resolvedHref = normalizeChatHref(href);
+    if (!resolvedHref) {
+      return `${prefix}${href}`;
+    }
+    return `${prefix}${storeHtmlToken(
+      `<a href="${escapeChatHtmlAttribute(resolvedHref)}" target="_blank" rel="noopener noreferrer">${escapeChatHtml(href)}</a>`,
+    )}`;
+  });
+  rendered = escapeChatHtml(rendered);
   rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   rendered = rendered.replace(/(^|[\s(])\*([^*]+)\*(?=[\s).,!?]|$)/g, "$1<em>$2</em>");
-  rendered = rendered.replace(
-    /(^|[\s(])(https?:\/\/[^\s<]*[^\s<).,!?])/g,
-    '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>',
-  );
-  return rendered.replace(/\u0000HTML(\d+)\u0000/g, (_match, index) => {
+  return rendered.replace(/\[\[__VC_HTML_(\d+)__\]\]/g, (_match, index) => {
     return htmlTokens[Number(index)] ?? "";
   });
 }
@@ -6448,7 +6475,10 @@ async function refreshSetupStatus() {
   setGatewayHealthStatus("warn", "Checking");
   setKeysHealthStatus("warn", "Checking");
   try {
-    const payload = await requestJson("/plugins/video-chat/api/setup");
+    const [payload] = await Promise.all([
+      requestJson("/plugins/video-chat/api/setup"),
+      refreshOpenClawCompatibility(),
+    ]);
     cacheSetupSecretValues(payload.setup);
     const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
     latestSetupStatus = sanitizedSetup;
@@ -6923,11 +6953,12 @@ if (chatComposerInputEl) {
   });
 
   chatComposerInputEl.addEventListener("drop", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
     chatComposerInputEl.classList.remove("agent-chat__input--dragover");
     if (!activeSession) {
       return;
     }
-    event.preventDefault();
     void addChatComposerAttachments(event.dataTransfer?.files || [], "main", {
       sourceLabel: "Dropped image",
     }).catch((error) => {

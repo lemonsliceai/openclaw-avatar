@@ -21,7 +21,10 @@ import {
 } from "./sidecar-process-control.js";
 
 const VIDEO_CHAT_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
+const VIDEO_CHAT_ATTACHMENT_COUNT_MAX = 4;
 const VIDEO_CHAT_ATTACHMENT_CONTENT_MAX_BYTES = 10 * 1024 * 1024;
+const VIDEO_CHAT_ATTACHMENT_TOTAL_MAX_BYTES =
+  VIDEO_CHAT_ATTACHMENT_COUNT_MAX * VIDEO_CHAT_ATTACHMENT_CONTENT_MAX_BYTES;
 const LIVEKIT_TOKEN_TTL_SECONDS = 60 * 60;
 const VIDEO_CHAT_ROOM_PREFIX = "openclaw";
 const VIDEO_CHAT_ROOM_PART_FALLBACK = "main";
@@ -395,6 +398,18 @@ function normalizeChatAttachmentInputs(value: unknown): VideoChatChatAttachmentI
     throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
   }
   const attachments = value.filter((item) => item !== null && item !== undefined);
+  const totalAttachmentBytes = attachments.reduce((total, item) => {
+    const content = typeof (item as { content?: unknown }).content === "string"
+      ? (item as { content: string }).content
+      : "";
+    return total + Buffer.byteLength(content, "utf8");
+  }, 0);
+  if (
+    attachments.length > VIDEO_CHAT_ATTACHMENT_COUNT_MAX ||
+    totalAttachmentBytes > VIDEO_CHAT_ATTACHMENT_TOTAL_MAX_BYTES
+  ) {
+    throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
+  }
   if (!attachments.every(isValidChatAttachmentInput)) {
     throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
   }
@@ -1303,6 +1318,12 @@ function sendHttpResponse(res: ServerResponse, payload: HttpResponsePayload): vo
     res.setHeader(name, value);
   }
   res.end(payload.body);
+}
+
+function setNoStoreHeaders(res: ServerResponse): void {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
 }
 
 function asJsonResponse(body: unknown, status = 200): HttpResponsePayload {
@@ -2401,6 +2422,7 @@ function registerVideoChatHttpRoutes(
       if (normalizedPath !== "/plugins/video-chat/bootstrap") {
         return false;
       }
+      setNoStoreHeaders(res);
       try {
         const config = api.runtime.config.loadConfig();
         sendHttpResponse(res, asJsonResponse(await buildBrowserBootstrapPayload(config)));
