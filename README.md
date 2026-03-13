@@ -144,6 +144,13 @@ http://127.0.0.1:18789/plugins/video-chat/readme
 ```
 If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
 
+Session key tips:
+
+- Leave the Session key field blank, or enter `main`, to use the default OpenClaw session key from `session.mainKey` (fallback: `main`).
+- Enter a plain key like `research` if that is the session name you started in OpenClaw.
+- For the default OpenClaw main agent, the fully qualified agent session key format is `agent:main:<sessionKey>`, for example `agent:main:main`.
+- If OpenClaw already shows a full agent session key, paste it into the field exactly as-is.
+
 <a id="usage-tips"></a>
 ## Usage tips
 
