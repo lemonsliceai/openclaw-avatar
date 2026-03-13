@@ -236,6 +236,8 @@ async function invoke(
     | "videoChat.setup.save"
     | "videoChat.session.create"
     | "videoChat.session.stop"
+    | "videoChat.chat.history"
+    | "videoChat.chat.send"
     | "videoChat.audio.transcribe"
     | "videoChat.tts.generate",
   params: Record<string, unknown>,
@@ -778,6 +780,124 @@ describe("video-chat plugin", () => {
         runId: "run-123",
       },
     });
+  });
+
+  it("loads chat history through the gateway method", async () => {
+    const { methods, runtime } = setup();
+    vi.mocked(runtime.subagent.getSessionMessages).mockResolvedValueOnce({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          idempotencyKey: "voice-chat-run-browser-123",
+        },
+      ],
+    });
+
+    const respond = await invoke(methods, "videoChat.chat.history", {
+      sessionKey: "agent:main:main",
+      limit: 12,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(runtime.subagent.getSessionMessages).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      limit: 12,
+    });
+    expect(call?.[1]).toEqual({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          idempotencyKey: "voice-chat-run-browser-123",
+        },
+      ],
+    });
+  });
+
+  it("sends chat messages through the gateway method", async () => {
+    const { methods, runtime } = setup();
+    vi.mocked(runtime.subagent.run).mockResolvedValueOnce({
+      runId: "run-123",
+    });
+
+    const respond = await invoke(methods, "videoChat.chat.send", {
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      idempotencyKey: "video-chat-ui-123",
+      attachments: [
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "error.png",
+          content: "Zm9v",
+        },
+      ],
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(runtime.subagent.run).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      deliver: false,
+      idempotencyKey: "video-chat-ui-123",
+      attachments: [
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "error.png",
+          content: "Zm9v",
+        },
+      ],
+    });
+    expect(call?.[1]).toEqual({
+      runId: "run-123",
+    });
+  });
+
+  it("rejects invalid chat history params through the gateway method", async () => {
+    const { methods, runtime } = setup();
+
+    const respond = await invoke(methods, "videoChat.chat.history", {
+      sessionKey: "   ",
+      limit: 12,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]).toEqual({
+      code: "INVALID_REQUEST",
+      message: "invalid videoChat.chat.history params",
+    });
+    expect(runtime.subagent.getSessionMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid chat send params through the gateway method", async () => {
+    const { methods, runtime } = setup();
+    const oversizedContent = "x".repeat(10 * 1024 * 1024 + 1);
+
+    const respond = await invoke(methods, "videoChat.chat.send", {
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      attachments: [
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "error.png",
+          content: oversizedContent,
+        },
+      ],
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]).toEqual({
+      code: "INVALID_REQUEST",
+      message: "invalid videoChat.chat.send params",
+    });
+    expect(runtime.subagent.run).not.toHaveBeenCalled();
   });
 
   it("returns setup state for plugin-owned setup surfaces", async () => {

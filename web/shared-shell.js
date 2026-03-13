@@ -140,7 +140,7 @@ function renderTopbar(element) {
       <div class="brand">
         <div class="brand-text">
           <span class="brand-title">Claw Cast Plugin</span>
-          <span class="brand-sub">${subtitle}</span>
+          <span class="brand-sub"></span>
         </div>
       </div>
     </div>
@@ -148,6 +148,10 @@ function renderTopbar(element) {
       ${statusMarkup}
     </div>
   `;
+  const subtitleElement = element.querySelector(".brand-sub");
+  if (subtitleElement) {
+    subtitleElement.textContent = subtitle;
+  }
 }
 
 function renderNav(element) {

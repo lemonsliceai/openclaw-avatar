@@ -117,7 +117,7 @@ const AVATAR_ECHO_MIN_TRANSCRIPT_TOKENS = 4;
 const AVATAR_ECHO_TOKEN_OVERLAP_THRESHOLD = 0.8;
 const AVATAR_ECHO_MAX_RECENT_REPLIES = 4;
 const MINIMUM_COMPATIBLE_OPENCLAW_VERSION = "2026.3.11";
-const INCOMPATIABLE_OPENCLAW_VERSION_MESSAGE = "incompatiable openclaw version";
+const INCOMPATIBLE_OPENCLAW_VERSION_MESSAGE = "incompatible openclaw version";
 const SERVER_SPEECH_SILENCE_MS = 900;
 const SERVER_SPEECH_MAX_SEGMENT_MS = 9_000;
 const SERVER_SPEECH_MONITOR_INTERVAL_MS = 150;
@@ -1296,6 +1296,7 @@ async function submitVoiceTranscript(rawTranscript) {
   setChatStatus("Sending message...");
 
   try {
+    await ensureGatewaySocketConnected();
     const payload = await requestJson("/plugins/video-chat/api/chat/send", {
       method: "POST",
       body: JSON.stringify({
@@ -2067,7 +2068,7 @@ function setHealthStatus(dotEl, valueEl, tone, text) {
 
 function setGatewayHealthStatus(tone, text) {
   if (openClawCompatibility.compatible === false) {
-    setHealthStatus(gatewayHealthDotEl, gatewayHealthValueEl, "danger", INCOMPATIABLE_OPENCLAW_VERSION_MESSAGE);
+    setHealthStatus(gatewayHealthDotEl, gatewayHealthValueEl, "danger", INCOMPATIBLE_OPENCLAW_VERSION_MESSAGE);
     return;
   }
   setHealthStatus(gatewayHealthDotEl, gatewayHealthValueEl, tone, text);
@@ -6210,6 +6211,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   setChatStatus("Sending message...");
 
   try {
+    await ensureGatewaySocketConnected();
     const payload = await requestJson("/plugins/video-chat/api/chat/send", {
       method: "POST",
       body: JSON.stringify({

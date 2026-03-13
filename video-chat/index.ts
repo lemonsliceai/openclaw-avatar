@@ -21,6 +21,7 @@ import {
 } from "./sidecar-process-control.js";
 
 const VIDEO_CHAT_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
+const VIDEO_CHAT_ATTACHMENT_CONTENT_MAX_BYTES = 10 * 1024 * 1024;
 const LIVEKIT_TOKEN_TTL_SECONDS = 60 * 60;
 const VIDEO_CHAT_ROOM_PREFIX = "openclaw";
 const VIDEO_CHAT_ROOM_PART_FALLBACK = "main";
@@ -36,6 +37,8 @@ const README_HTML_PLACEHOLDER_REGEX = /__README_HTML__/g;
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
 const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
+const INVALID_CHAT_HISTORY_PARAMS_ERROR = "invalid videoChat.chat.history params";
+const INVALID_CHAT_SEND_PARAMS_ERROR = "invalid videoChat.chat.send params";
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
@@ -156,6 +159,18 @@ type VideoChatChatHistoryResult = {
 };
 
 type VideoChatChatSendResult = Record<string, unknown>;
+
+type ParsedVideoChatHistoryParams = {
+  sessionKey: string;
+  limit?: number;
+};
+
+type ParsedVideoChatSendParams = {
+  sessionKey: string;
+  message: string;
+  attachments?: VideoChatChatAttachmentInput[];
+  idempotencyKey?: string;
+};
 
 type VideoChatSubagentRunParams = {
   sessionKey: string;
@@ -375,18 +390,79 @@ function normalizeChatAttachmentInputs(value: unknown): VideoChatChatAttachmentI
     return undefined;
   }
   if (!Array.isArray(value)) {
-    throw new Error("invalid videoChat.chat.send params");
+    throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
   }
   const attachments = value.filter((item) => item !== null && item !== undefined);
   if (!attachments.every(isValidChatAttachmentInput)) {
-    throw new Error("invalid videoChat.chat.send params");
+    throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
   }
-  return attachments.map((attachment) => ({
-    type: attachment.type.trim(),
-    mimeType: attachment.mimeType.trim(),
-    fileName: attachment.fileName.trim(),
-    content: attachment.content.trim(),
-  }));
+  return attachments.map((attachment) => {
+    const type = attachment.type.trim();
+    const mimeType = attachment.mimeType.trim();
+    const fileName = attachment.fileName.trim();
+    const content = attachment.content.trim();
+    if (
+      type.length === 0 ||
+      mimeType.length === 0 ||
+      fileName.length === 0 ||
+      content.length === 0 ||
+      Buffer.byteLength(content, "utf8") > VIDEO_CHAT_ATTACHMENT_CONTENT_MAX_BYTES
+    ) {
+      throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
+    }
+    return {
+      type,
+      mimeType,
+      fileName,
+      content,
+    };
+  });
+}
+
+function parseRequiredTrimmedString(value: unknown, errorMessage: string): string {
+  if (typeof value !== "string") {
+    throw new Error(errorMessage);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(errorMessage);
+  }
+  return trimmed;
+}
+
+function parseChatHistoryParams(params: Record<string, unknown>): ParsedVideoChatHistoryParams {
+  if (params.limit !== undefined && typeof params.limit !== "number") {
+    throw new Error(INVALID_CHAT_HISTORY_PARAMS_ERROR);
+  }
+  return {
+    sessionKey: parseRequiredTrimmedString(params.sessionKey, INVALID_CHAT_HISTORY_PARAMS_ERROR),
+    limit:
+      typeof params.limit === "number" && Number.isFinite(params.limit)
+        ? Math.max(1, Math.floor(params.limit))
+        : undefined,
+  };
+}
+
+async function readChatHistoryParams(
+  request: IncomingMessage,
+): Promise<ParsedVideoChatHistoryParams> {
+  return parseChatHistoryParams(await readRequestJson(request));
+}
+
+function parseChatSendParams(params: Record<string, unknown>): ParsedVideoChatSendParams {
+  if (params.idempotencyKey !== undefined && typeof params.idempotencyKey !== "string") {
+    throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
+  }
+  return {
+    sessionKey: parseRequiredTrimmedString(params.sessionKey, INVALID_CHAT_SEND_PARAMS_ERROR),
+    message: parseRequiredTrimmedString(params.message, INVALID_CHAT_SEND_PARAMS_ERROR),
+    attachments: normalizeChatAttachmentInputs(params.attachments),
+    idempotencyKey: normalizeOptionalString(params.idempotencyKey),
+  };
+}
+
+async function readChatSendParams(request: IncomingMessage): Promise<ParsedVideoChatSendParams> {
+  return parseChatSendParams(await readRequestJson(request));
 }
 
 function respondGatewayError(
@@ -2101,20 +2177,7 @@ function registerVideoChatHttpRoutes(
         }
 
         if (normalizedPath === "/plugins/video-chat/api/chat/history" && method === "POST") {
-          const params = await readRequestJson(req);
-          if (typeof params.sessionKey !== "string") {
-            throw new Error("invalid videoChat.chat.history params");
-          }
-          if (params.limit !== undefined && typeof params.limit !== "number") {
-            throw new Error("invalid videoChat.chat.history params");
-          }
-          const result = await handlers.loadHistory({
-            sessionKey: params.sessionKey,
-            limit:
-              typeof params.limit === "number" && Number.isFinite(params.limit)
-                ? Math.max(1, Math.floor(params.limit))
-                : undefined,
-          });
+          const result = await handlers.loadHistory(await readChatHistoryParams(req));
           sendHttpResponse(
             res,
             asJsonResponse({
@@ -2126,20 +2189,7 @@ function registerVideoChatHttpRoutes(
         }
 
         if (normalizedPath === "/plugins/video-chat/api/chat/send" && method === "POST") {
-          const params = await readRequestJson(req);
-          if (typeof params.sessionKey !== "string" || typeof params.message !== "string") {
-            throw new Error("invalid videoChat.chat.send params");
-          }
-          if (params.idempotencyKey !== undefined && typeof params.idempotencyKey !== "string") {
-            throw new Error("invalid videoChat.chat.send params");
-          }
-          const attachments = normalizeChatAttachmentInputs(params.attachments);
-          const result = await handlers.sendMessage({
-            sessionKey: params.sessionKey,
-            message: params.message,
-            attachments,
-            idempotencyKey: params.idempotencyKey,
-          });
+          const result = await handlers.sendMessage(await readChatSendParams(req));
           sendHttpResponse(
             res,
             asJsonResponse({
@@ -3221,35 +3271,15 @@ const videoChatPlugin = {
           if (!assertMethodParams(params, "videoChat.chat.history", respond)) {
             return;
           }
-          if (typeof params.sessionKey !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid videoChat.chat.history params",
-            );
-            return;
-          }
-          if (params.limit !== undefined && typeof params.limit !== "number") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid videoChat.chat.history params",
-            );
-            return;
-          }
-          const result = await loadManagedChatHistory({
-            sessionKey: params.sessionKey,
-            limit:
-              typeof params.limit === "number" && Number.isFinite(params.limit)
-                ? Math.max(1, Math.floor(params.limit))
-                : undefined,
-          });
+          const result = await loadManagedChatHistory(parseChatHistoryParams(params));
           respond(true, result);
         } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Claw Cast chat history failed";
           respondGatewayError(
             respond,
-            "UNAVAILABLE",
-            error instanceof Error ? error.message : "Claw Cast chat history failed",
+            message === INVALID_CHAT_HISTORY_PARAMS_ERROR ? "INVALID_REQUEST" : "UNAVAILABLE",
+            message,
           );
         }
       },
@@ -3262,36 +3292,14 @@ const videoChatPlugin = {
           if (!assertMethodParams(params, "videoChat.chat.send", respond)) {
             return;
           }
-          if (typeof params.sessionKey !== "string" || typeof params.message !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid videoChat.chat.send params",
-            );
-            return;
-          }
-          if (params.idempotencyKey !== undefined && typeof params.idempotencyKey !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid videoChat.chat.send params",
-            );
-            return;
-          }
-          const attachments = normalizeChatAttachmentInputs(params.attachments);
-          const result = await sendManagedChatMessage({
-            sessionKey: params.sessionKey,
-            message: params.message,
-            attachments,
-            idempotencyKey: params.idempotencyKey,
-          });
+          const result = await sendManagedChatMessage(parseChatSendParams(params));
           respond(true, result);
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "Claw Cast chat send failed";
           respondGatewayError(
             respond,
-            message.includes("invalid videoChat.chat.send params") ? "INVALID_REQUEST" : "UNAVAILABLE",
+            message === INVALID_CHAT_SEND_PARAMS_ERROR ? "INVALID_REQUEST" : "UNAVAILABLE",
             message,
           );
         }
