@@ -2839,14 +2839,15 @@ function resolveInitialChatPaneOpen() {
       storedWidth = parsedWidth;
     }
   } catch {
-    isOpen = true;
     storedWidth = 360;
   }
 
   return { isOpen, storedWidth };
 }
 
-async function initChatPane() {
+let chatPaneInitPromise = null;
+
+async function doInitChatPane() {
   let { isOpen, storedWidth } = resolveInitialChatPaneOpen();
 
   applyChatPaneWidth(storedWidth, { persist: false });
@@ -2944,6 +2945,19 @@ async function initChatPane() {
     setChatPaneOpen(false);
   });
 }
+
+function initChatPane() {
+  if (!chatPaneInitPromise) {
+    chatPaneInitPromise = doInitChatPane().catch((error) => {
+      chatPaneInitPromise = null;
+      throw error;
+    });
+  }
+
+  return chatPaneInitPromise;
+}
+
+globalThis.initChatPane = initChatPane;
 
 function getAvatarPaneWidthBounds() {
   const availableWidth =

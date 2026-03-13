@@ -49,6 +49,7 @@
   .shell {
     --shell-pad: 8px;
     --shell-gap: 8px;
+
     height: auto;
     min-height: 100dvh;
     overflow: visible;

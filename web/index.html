@@ -6,6 +6,25 @@
     <title>Claw Cast</title>
     <script>
       (() => {
+        let didRecoverChatPanePreload = false;
+        const recoverChatPanePreload = () => {
+          if (didRecoverChatPanePreload) {
+            return;
+          }
+          didRecoverChatPanePreload = true;
+          document.documentElement.classList.remove(
+            "video-chat-preload-layout-pending",
+            "video-chat-preload-chat-pane-pending",
+          );
+
+          const maybeInitChatPane = globalThis.initChatPane;
+          if (typeof maybeInitChatPane === "function") {
+            Promise.resolve(maybeInitChatPane()).catch(() => {
+              // Leave the page visible even if chat-pane init fails.
+            });
+          }
+        };
+
         document.documentElement.classList.add("video-chat-preload-layout-pending");
         document.documentElement.classList.add("video-chat-preload-chat-pane-pending");
         try {
@@ -25,6 +44,12 @@
             document.documentElement.classList.add("video-chat-preload-chat-pane-closed");
           }
         }
+
+        window.addEventListener("error", () => {
+          window.setTimeout(recoverChatPanePreload, 0);
+        });
+        window.addEventListener("DOMContentLoaded", recoverChatPanePreload, { once: true });
+        window.setTimeout(recoverChatPanePreload, 3000);
       })();
     </script>
     <style>

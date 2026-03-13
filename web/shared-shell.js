@@ -168,7 +168,7 @@ function renderNav(element) {
       <div class="nav-group__items">
         ${NAV_ITEMS.map(
           (item) => `
-          <a class="nav-item${item.key === activeItem ? " active" : ""}" href="${item.href}">
+          <a class="nav-item${item.key === activeItem ? " active" : ""}" href="${item.href}"${item.key === activeItem ? ' aria-current="page"' : ""}>
             <span class="nav-item__icon" aria-hidden="true">
               ${item.icon}
             </span>
