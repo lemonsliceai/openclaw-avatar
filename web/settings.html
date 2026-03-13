@@ -101,14 +101,20 @@
         align-items: center;
       }
 
+      .secret-copy,
       .secret-toggle {
         min-width: 42px;
         padding-inline: 10px;
       }
 
+      .secret-copy svg,
       .secret-toggle svg {
         width: 16px;
         height: 16px;
+      }
+
+      .secret-copy.is-copied {
+        color: var(--ok);
       }
 
       .config-nav__item {
@@ -319,6 +325,7 @@
               </div>
               <div class="config-actions__right">
                 <button class="btn btn--sm" type="button" id="reload-status">Reload</button>
+                <button class="btn btn--sm" type="button" id="config-cancel">Cancel</button>
                 <button class="btn btn--sm primary" type="submit" form="setup-form">Save</button>
               </div>
             </div>
@@ -357,7 +364,18 @@
                             <circle cx="12" cy="12" r="3"></circle>
                           </svg>
                         </button>
-                        <button class="btn btn--sm" type="button" id="replace-token">Replace</button>
+                        <button
+                          class="btn btn--sm secret-copy"
+                          type="button"
+                          id="copy-token"
+                          aria-label="Copy gateway token"
+                          title="Copy gateway token"
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
+                          </svg>
+                        </button>
                       </div>
                     </label>
                     <div class="row">
@@ -401,8 +419,18 @@
                                 <circle cx="12" cy="12" r="3"></circle>
                               </svg>
                             </button>
-                            <button class="btn btn--sm" type="button" data-replace-secret="lemonSliceApiKey">
-                              Replace
+                            <button
+                              class="btn btn--sm secret-copy"
+                              type="button"
+                              data-copy-secret="lemonSliceApiKey"
+                              data-secret-label="LemonSlice API key"
+                              aria-label="Copy LemonSlice API key"
+                              title="Copy LemonSlice API key"
+                            >
+                              <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
+                              </svg>
                             </button>
                           </div>
                         </label>
@@ -451,8 +479,18 @@
                                 <circle cx="12" cy="12" r="3"></circle>
                               </svg>
                             </button>
-                            <button class="btn btn--sm" type="button" data-replace-secret="livekitApiKey">
-                              Replace
+                            <button
+                              class="btn btn--sm secret-copy"
+                              type="button"
+                              data-copy-secret="livekitApiKey"
+                              data-secret-label="LiveKit API key"
+                              aria-label="Copy LiveKit API key"
+                              title="Copy LiveKit API key"
+                            >
+                              <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
+                              </svg>
                             </button>
                           </div>
                         </label>
@@ -479,8 +517,18 @@
                                 <circle cx="12" cy="12" r="3"></circle>
                               </svg>
                             </button>
-                            <button class="btn btn--sm" type="button" data-replace-secret="livekitApiSecret">
-                              Replace
+                            <button
+                              class="btn btn--sm secret-copy"
+                              type="button"
+                              data-copy-secret="livekitApiSecret"
+                              data-secret-label="LiveKit API secret"
+                              aria-label="Copy LiveKit API secret"
+                              title="Copy LiveKit API secret"
+                            >
+                              <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
+                              </svg>
                             </button>
                           </div>
                         </label>
@@ -521,8 +569,18 @@
                                 <circle cx="12" cy="12" r="3"></circle>
                               </svg>
                             </button>
-                            <button class="btn btn--sm" type="button" data-replace-secret="elevenLabsApiKey">
-                              Replace
+                            <button
+                              class="btn btn--sm secret-copy"
+                              type="button"
+                              data-copy-secret="elevenLabsApiKey"
+                              data-secret-label="ElevenLabs API key"
+                              aria-label="Copy ElevenLabs API key"
+                              title="Copy ElevenLabs API key"
+                            >
+                              <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
+                              </svg>
                             </button>
                           </div>
                         </label>

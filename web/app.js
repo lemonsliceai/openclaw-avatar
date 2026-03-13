@@ -11,13 +11,14 @@ const ttsForm = document.getElementById("tts-form");
 const ttsTextInput = document.getElementById("tts-text");
 const ttsGenerateButton = document.getElementById("tts-generate");
 const reloadButton = document.getElementById("reload-status");
+const configCancelButton = document.getElementById("config-cancel");
 const setupSaveButton = document.querySelector('button[form="setup-form"][type="submit"]');
 const stopSessionButton = document.getElementById("stop-session");
 const tokenForm = document.getElementById("token-form");
 const tokenInput = document.getElementById("gateway-token");
+const copyTokenButton = document.getElementById("copy-token");
 const toggleTokenVisibilityButton = document.getElementById("toggle-token-visibility");
 const clearTokenButton = document.getElementById("clear-token");
-const replaceTokenButton = document.getElementById("replace-token");
 const navCollapseButton = document.getElementById("nav-collapse-toggle");
 const chatPaneToggleButton = document.getElementById("chat-pane-toggle");
 const chatPaneCloseButton = document.getElementById("chat-pane-close");
@@ -181,20 +182,18 @@ let gatewayHandshakePromise = null;
 let gatewayConnectRequestId = null;
 let gatewayRequestCounter = 0;
 const gatewayPendingRequests = new Map();
-const sensitiveFieldReplaceButtons = Array.from(document.querySelectorAll("[data-replace-secret]"));
 const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
+const sensitiveFieldCopyButtons = Array.from(document.querySelectorAll("[data-copy-secret]"));
 const sensitiveFieldVisibilityButtons = Array.from(document.querySelectorAll("[data-toggle-secret-visibility]"));
 const configSectionFilterButtons = Array.from(document.querySelectorAll("[data-section-filter]"));
 const configSectionCards = Array.from(document.querySelectorAll("[data-config-section]"));
 const configModeButtons = Array.from(document.querySelectorAll("[data-config-mode]"));
-const secretEditState = new Set();
 const secretVisibilityState = new Set();
 const mobileChatPaneMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 960px)") : null;
 const systemThemeMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
 let activeThemePreference = "system";
-let tokenEditMode = false;
 let tokenVisible = false;
 let latestSetupStatus = null;
 let activeConfigSectionFilter = "all";
@@ -203,6 +202,10 @@ let setupFormBaseline = {
   lemonSliceImageUrl: "",
   livekitUrl: "",
   elevenLabsVoiceId: "",
+  lemonSliceApiKey: "",
+  livekitApiKey: "",
+  livekitApiSecret: "",
+  elevenLabsApiKey: "",
 };
 let setupRawBaseline = "";
 const renderedVoiceUserRuns = new Set();
@@ -2048,15 +2051,67 @@ function setKeysHealthStatus(tone, text) {
   setHealthStatus(keysHealthDotEl, keysHealthValueEl, tone, text);
 }
 
-function preventSensitiveCopy(event) {
-  event.preventDefault();
+async function copyTextToClipboard(text) {
+  const value = typeof text === "string" ? text : "";
+  if (!value) {
+    throw new Error("Nothing to copy.");
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const helper = document.createElement("textarea");
+  helper.value = value;
+  helper.setAttribute("readonly", "true");
+  helper.style.position = "fixed";
+  helper.style.opacity = "0";
+  document.body.append(helper);
+  helper.select();
+  const copied = document.execCommand("copy");
+  helper.remove();
+  if (!copied) {
+    throw new Error("Clipboard copy failed.");
+  }
+}
+
+function flashCopyButton(button) {
+  if (!button) {
+    return;
+  }
+  const originalLabel = button.getAttribute("data-copy-label") || "Copy";
+  if (!button.getAttribute("data-copy-label")) {
+    button.setAttribute("data-copy-label", originalLabel);
+  }
+  button.classList.add("is-copied");
+  button.title = "Copied";
+  button.setAttribute("aria-label", "Copied");
+  window.setTimeout(() => {
+    button.classList.remove("is-copied");
+    button.title = originalLabel;
+    button.setAttribute("aria-label", originalLabel);
+  }, 1200);
 }
 
 function setSensitiveInputVisible(input, visible) {
   if (!input) {
     return;
   }
+  const hadFocus = document.activeElement === input;
+  const selectionStart = typeof input.selectionStart === "number" ? input.selectionStart : null;
+  const selectionEnd = typeof input.selectionEnd === "number" ? input.selectionEnd : null;
+  const selectionDirection = input.selectionDirection || "none";
   input.type = visible ? "text" : "password";
+  if (!hadFocus || selectionStart === null || selectionEnd === null) {
+    return;
+  }
+  requestAnimationFrame(() => {
+    input.focus({ preventScroll: true });
+    try {
+      input.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+    } catch {
+      // Some browsers can briefly reject selection updates during type toggles.
+    }
+  });
 }
 
 function getStoredSetupSecretValue(setup, fieldName) {
@@ -2112,38 +2167,20 @@ function updateSensitiveFieldMasking(setup) {
 
   for (const [fieldName, configured] of configuredMap.entries()) {
     const input = setupForm.elements.namedItem(fieldName);
-    const editing = secretEditState.has(fieldName);
-    const storedValue = getStoredSetupSecretValue(setup, fieldName);
     const visible = secretVisibilityState.has(fieldName);
-    if (configured && !editing && input && typeof input.value === "string") {
-      input.value = storedValue;
-    }
-    maskSensitiveField(input, configured && !editing);
-    setSensitiveInputVisible(input, visible && configured && !editing);
-  }
-
-  for (const button of sensitiveFieldReplaceButtons) {
-    const fieldName = button.getAttribute("data-replace-secret");
-    const configured = configuredMap.get(fieldName);
-    if (!fieldName || !configured) {
-      button.style.display = "none";
-      continue;
-    }
-    button.style.display = "";
-    button.textContent = secretEditState.has(fieldName) ? "Cancel" : "Replace";
+    maskSensitiveField(input, false);
+    setSensitiveInputVisible(input, visible);
   }
 
   for (const button of sensitiveFieldVisibilityButtons) {
     const fieldName = button.getAttribute("data-toggle-secret-visibility");
     const configured = configuredMap.get(fieldName);
-    if (!fieldName || !configured) {
-      button.style.display = "none";
+    if (!fieldName) {
       continue;
     }
-    button.style.display = "";
     updateSensitiveVisibilityButton(
       button,
-      secretVisibilityState.has(fieldName),
+      secretVisibilityState.has(fieldName) && Boolean(configured || normalizeOptionalInputValue(setupForm.elements.namedItem(fieldName)?.value).length),
       button.getAttribute("data-secret-label") || "secret",
     );
   }
@@ -2206,7 +2243,12 @@ function buildSetupPayloadFromForm() {
       continue;
     }
     const isSecretField = isSetupSecretFieldName(name);
-    payload[name] = field.readOnly && isSecretField ? REDACTED_SECRET_VALUE : field.value;
+    const value = field.value;
+    if (isSecretField && shouldPreserveStoredSecret(name, value)) {
+      payload[name] = REDACTED_SECRET_VALUE;
+      continue;
+    }
+    payload[name] = value;
   }
   return payload;
 }
@@ -2216,17 +2258,7 @@ function applySetupPayloadToForm(payload) {
     return;
   }
 
-  secretEditState.clear();
   secretVisibilityState.clear();
-  for (const name of setupSecretFieldNames) {
-    if (!hasOwn(payload, name)) {
-      continue;
-    }
-    const value = payload[name];
-    if (typeof value === "string" && normalizeOptionalInputValue(value).length > 0) {
-      secretEditState.add(name);
-    }
-  }
   updateSensitiveFieldMasking(latestSetupStatus);
 
   for (const name of setupPayloadFieldNames) {
@@ -2234,7 +2266,7 @@ function applySetupPayloadToForm(payload) {
       continue;
     }
     const field = setupForm.elements.namedItem(name);
-    if (!field || field.readOnly || typeof field.value !== "string") {
+    if (!field || typeof field.value !== "string") {
       continue;
     }
     const value = payload[name];
@@ -2332,7 +2364,26 @@ function snapshotSetupFormBaseline() {
     lemonSliceImageUrl: getSetupFieldValue("lemonSliceImageUrl"),
     livekitUrl: getSetupFieldValue("livekitUrl"),
     elevenLabsVoiceId: getSetupFieldValue("elevenLabsVoiceId"),
+    lemonSliceApiKey: getSetupFieldValue("lemonSliceApiKey"),
+    livekitApiKey: getSetupFieldValue("livekitApiKey"),
+    livekitApiSecret: getSetupFieldValue("livekitApiSecret"),
+    elevenLabsApiKey: getSetupFieldValue("elevenLabsApiKey"),
   };
+}
+
+function restoreSetupFormBaseline() {
+  if (!setupForm) {
+    return;
+  }
+  for (const name of setupPayloadFieldNames) {
+    const field = setupForm.elements.namedItem(name);
+    if (!field || typeof field.value !== "string") {
+      continue;
+    }
+    field.value = setupFormBaseline[name] ?? "";
+  }
+  secretVisibilityState.clear();
+  updateSensitiveFieldMasking(latestSetupStatus);
 }
 
 function isSecretFieldDirty(name) {
@@ -2340,10 +2391,10 @@ function isSecretFieldDirty(name) {
     return false;
   }
   const field = setupForm.elements.namedItem(name);
-  if (!field || field.readOnly) {
+  if (!field || typeof field.value !== "string") {
     return false;
   }
-  return normalizeOptionalInputValue(field.value).length > 0;
+  return normalizeOptionalInputValue(field.value) !== normalizeOptionalInputValue(setupFormBaseline[name]);
 }
 
 function isSetupFormDirty() {
@@ -2371,6 +2422,17 @@ function isSetupRawDirty() {
     return false;
   }
   return setupRawInput.value !== setupRawBaseline;
+}
+
+function isTokenDirty() {
+  if (!tokenInput) {
+    return false;
+  }
+  return normalizeOptionalInputValue(tokenInput.value) !== normalizeOptionalInputValue(getGatewayToken());
+}
+
+function hasPendingConfigEdits() {
+  return isTokenDirty() || (activeConfigMode === "raw" ? isSetupRawDirty() : isSetupFormDirty());
 }
 
 function setConfigMode(nextMode, options = {}) {
@@ -2407,31 +2469,38 @@ function updateSetupSaveButtonState() {
     return;
   }
   setupSaveButton.disabled = activeConfigMode === "raw" ? !isSetupRawDirty() : !isSetupFormDirty();
+  if (configCancelButton) {
+    configCancelButton.disabled = !hasPendingConfigEdits();
+  }
 }
 
 function updateTokenFieldMasking() {
   if (!tokenInput) {
     return;
   }
-  const hasStoredToken = hasGatewayToken();
-  const shouldMask = hasStoredToken && !tokenEditMode;
-  if (shouldMask) {
-    tokenInput.value = getGatewayToken();
-    tokenInput.placeholder = "";
-    tokenInput.disabled = true;
-  } else {
-    tokenInput.disabled = false;
-    tokenInput.placeholder = "";
-  }
-  setSensitiveInputVisible(tokenInput, tokenVisible && shouldMask);
-  if (replaceTokenButton) {
-    replaceTokenButton.style.display = hasStoredToken ? "" : "none";
-    replaceTokenButton.textContent = tokenEditMode ? "Cancel" : "Replace";
+  const hasStoredToken = normalizeOptionalInputValue(getGatewayToken()).length > 0;
+  tokenInput.placeholder = "";
+  tokenInput.disabled = false;
+  setSensitiveInputVisible(tokenInput, tokenVisible);
+  if (copyTokenButton) {
+    copyTokenButton.style.display = hasStoredToken || normalizeOptionalInputValue(tokenInput.value).length ? "" : "none";
   }
   if (toggleTokenVisibilityButton) {
-    toggleTokenVisibilityButton.style.display = hasStoredToken && !tokenEditMode ? "" : "none";
-    updateSensitiveVisibilityButton(toggleTokenVisibilityButton, tokenVisible && shouldMask, "gateway token");
+    toggleTokenVisibilityButton.style.display = hasStoredToken || normalizeOptionalInputValue(tokenInput.value).length ? "" : "none";
+    updateSensitiveVisibilityButton(toggleTokenVisibilityButton, tokenVisible, "gateway token");
   }
+  if (configCancelButton) {
+    configCancelButton.disabled = !hasPendingConfigEdits();
+  }
+}
+
+function shouldPreserveStoredSecret(name, value) {
+  if (!latestSetupStatus) {
+    return false;
+  }
+  const normalizedValue = normalizeOptionalInputValue(value);
+  const storedValue = normalizeOptionalInputValue(getStoredSetupSecretValue(latestSetupStatus, name));
+  return Boolean(storedValue) && normalizedValue === storedValue;
 }
 
 function updateKeysHealthFromSetup(setup) {
@@ -5511,6 +5580,13 @@ function populateSetupFormFromSetupStatus(setup) {
   if (!setupForm) {
     return;
   }
+  for (const name of setupSecretFieldNames) {
+    const field = setupForm.elements.namedItem(name);
+    if (!field || typeof field.value !== "string") {
+      continue;
+    }
+    field.value = getStoredSetupSecretValue(setup, name);
+  }
   const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
   const imageUrlField = setupForm.elements.namedItem("lemonSliceImageUrl");
   const elevenLabsVoiceIdField = setupForm.elements.namedItem("elevenLabsVoiceId");
@@ -5523,6 +5599,7 @@ function populateSetupFormFromSetupStatus(setup) {
   if (elevenLabsVoiceIdField && typeof elevenLabsVoiceIdField.value === "string") {
     elevenLabsVoiceIdField.value = normalizeOptionalInputValue(setup?.tts?.elevenLabsVoiceId);
   }
+  updateSensitiveFieldMasking(setup);
 }
 
 function syncSetupEditorsFromCurrentForm() {
@@ -5545,7 +5622,6 @@ async function saveSetupPayload(body) {
   setGatewayHealthStatus("ok", "OK");
   updateKeysHealthFromSetup(payload.setup);
   populateSetupFormFromSetupStatus(payload.setup);
-  secretEditState.clear();
   secretVisibilityState.clear();
   syncSetupEditorsFromCurrentForm();
   setOutput({ action: "setup-saved", setup: payload.setup });
@@ -5555,7 +5631,6 @@ async function saveSetupPayload(body) {
 async function refreshSetupStatus() {
   if (!hasGatewayToken()) {
     latestSetupStatus = null;
-    secretEditState.clear();
     secretVisibilityState.clear();
     syncSetupEditorsFromCurrentForm();
     if (statusEl) {
@@ -5607,31 +5682,32 @@ if (setupForm) {
   });
 
   for (const input of sensitiveFieldInputs) {
-    input.addEventListener("copy", preventSensitiveCopy);
-    input.addEventListener("cut", preventSensitiveCopy);
-  }
-  for (const button of sensitiveFieldReplaceButtons) {
-    button.addEventListener("click", () => {
-      const fieldName = button.getAttribute("data-replace-secret");
-      if (!fieldName || !setupForm) {
-        return;
-      }
-      if (secretEditState.has(fieldName)) {
-        secretEditState.delete(fieldName);
-      } else {
-        secretEditState.add(fieldName);
-      }
-      secretVisibilityState.delete(fieldName);
-      updateSensitiveFieldMasking(latestSetupStatus);
-      const input = setupForm.elements.namedItem(fieldName);
-      if (input && !input.disabled) {
-        input.value = "";
-        input.focus();
-      }
+    input.addEventListener("input", () => {
       updateSetupSaveButtonState();
     });
   }
+  for (const button of sensitiveFieldCopyButtons) {
+    button.addEventListener("click", async () => {
+      const fieldName = button.getAttribute("data-copy-secret");
+      if (!fieldName || !setupForm) {
+        return;
+      }
+      const input = setupForm.elements.namedItem(fieldName);
+      if (!input || typeof input.value !== "string") {
+        return;
+      }
+      try {
+        await copyTextToClipboard(input.value);
+        flashCopyButton(button);
+      } catch (error) {
+        setOutput({ action: "secret-copy-failed", error: String(error) });
+      }
+    });
+  }
   for (const button of sensitiveFieldVisibilityButtons) {
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+    });
     button.addEventListener("click", () => {
       const fieldName = button.getAttribute("data-toggle-secret-visibility");
       if (!fieldName || !setupForm) {
@@ -5999,6 +6075,27 @@ if (reloadButton) {
   });
 }
 
+if (configCancelButton) {
+  configCancelButton.addEventListener("click", () => {
+    tokenVisible = false;
+    if (tokenInput) {
+      tokenInput.value = getGatewayToken();
+    }
+    if (activeConfigMode === "raw") {
+      if (setupRawInput) {
+        setupRawInput.value = setupRawBaseline;
+      }
+      setSetupRawError("");
+      syncFormFromRaw();
+    } else {
+      restoreSetupFormBaseline();
+      syncRawFromForm();
+    }
+    updateTokenFieldMasking();
+    updateSetupSaveButtonState();
+  });
+}
+
 if (tokenForm) {
   tokenForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -6013,23 +6110,26 @@ if (tokenForm) {
 }
 
 if (tokenInput) {
-  tokenInput.addEventListener("copy", preventSensitiveCopy);
-  tokenInput.addEventListener("cut", preventSensitiveCopy);
+  tokenInput.addEventListener("input", () => {
+    updateTokenFieldMasking();
+  });
 }
 
-if (replaceTokenButton) {
-  replaceTokenButton.addEventListener("click", () => {
-    tokenEditMode = !tokenEditMode;
-    tokenVisible = false;
-    updateTokenFieldMasking();
-    if (tokenEditMode && tokenInput) {
-      tokenInput.value = "";
-      tokenInput.focus();
+if (copyTokenButton) {
+  copyTokenButton.addEventListener("click", async () => {
+    try {
+      await copyTextToClipboard(String(tokenInput?.value || ""));
+      flashCopyButton(copyTokenButton);
+    } catch (error) {
+      setOutput({ action: "gateway-token-copy-failed", error: String(error) });
     }
   });
 }
 
 if (toggleTokenVisibilityButton) {
+  toggleTokenVisibilityButton.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
   toggleTokenVisibilityButton.addEventListener("click", () => {
     tokenVisible = !tokenVisible;
     updateTokenFieldMasking();
@@ -6044,7 +6144,6 @@ if (clearTokenButton) {
     if (tokenInput) {
       tokenInput.value = "";
     }
-    tokenEditMode = false;
     tokenVisible = false;
     updateTokenFieldMasking();
     updateRoomButtons();
@@ -6066,6 +6165,9 @@ initNavCollapseToggle();
 initChatPane();
 initAvatarPaneResize();
 applyAvatarSpeakerMuteState();
+if (tokenInput) {
+  tokenInput.value = getGatewayToken();
+}
 updateTokenFieldMasking();
 initThemeToggle();
 initConfigSectionFiltering();
