@@ -294,7 +294,7 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
     expect(methods.has("videoChat.tts.generate")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(7);
+    expect(httpRoutes).toHaveLength(9);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -313,6 +313,11 @@ describe("video-chat plugin", () => {
           match: "exact",
         }),
         expect.objectContaining({
+          path: "/plugins/video-chat/readme",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
           path: "/plugins/video-chat/settings",
           auth: "plugin",
           match: "exact",
@@ -326,6 +331,11 @@ describe("video-chat plugin", () => {
           path: "/plugins/video-chat/app.js",
           auth: "plugin",
           match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/assets",
+          auth: "plugin",
+          match: "prefix",
         }),
         expect.objectContaining({
           path: "/plugins/video-chat/styles",
@@ -1021,6 +1031,17 @@ describe("video-chat plugin", () => {
     expect(page.res.body).toContain("<title>Claw Cast</title>");
     expect(page.res.body).toContain('id="package-version-value"');
     expect(page.res.body).toContain(`>${packageJson.version}</span>`);
+
+    const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/readme", {
+      url: "/plugins/video-chat/readme",
+    });
+    expect(readmePage.handled).toBe(true);
+    expect(readmePage.res.statusCode).toBe(200);
+    expect(readmePage.res.header("content-type")).toBe("text/html; charset=utf-8");
+    expect(readmePage.res.body).toContain("<title>Claw Cast README</title>");
+    expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
+    expect(readmePage.res.body).toContain("/plugins/video-chat/assets/GreenConfig.png");
+    expect(readmePage.res.body).not.toContain("__README_HTML__");
 
     const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/setup",

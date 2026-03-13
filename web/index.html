@@ -225,6 +225,35 @@
         gap: 12px;
       }
 
+      .session-key-help {
+        display: grid;
+        gap: 8px;
+        padding: 12px 14px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--secondary);
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .session-key-help p,
+      .session-key-help ul {
+        margin: 0;
+      }
+
+      .session-key-help ul {
+        padding-left: 18px;
+      }
+
+      .session-key-help strong {
+        color: var(--text-strong);
+      }
+
+      .session-key-help code {
+        font-size: 0.95em;
+      }
+
       .session-form__toggles {
         display: flex;
         flex-wrap: wrap;
@@ -824,6 +853,18 @@
               </span>
               <span class="nav-item__text">Config</span>
             </a>
+            <a class="nav-item" href="/plugins/video-chat/readme">
+              <span class="nav-item__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <path d="M14 2v6h6"></path>
+                  <path d="M8 13h8"></path>
+                  <path d="M8 17h6"></path>
+                  <path d="M8 9h2"></path>
+                </svg>
+              </span>
+              <span class="nav-item__text">README</span>
+            </a>
           </div>
         </div>
       </nav>
@@ -855,13 +896,21 @@
           <section class="card stack video-chat-section" id="session-card">
             <header class="video-chat-head">
               <h2 class="card-title">Session</h2>
-              <p class="card-sub">Use a session key to connect to an existing OpenClaw agent session and open a LiveKit room with the agent.</p>
+              <p class="card-sub">Use a session key to connect to an OpenClaw agent session.</p>
             </header>
             <form id="session-form" class="video-chat-form">
               <label class="field full">
                 <span>Session key</span>
-                <input type="text" name="sessionKey" placeholder="agent:main:main" />
+                <input type="text" name="sessionKey" placeholder="main" />
               </label>
+              <div class="session-key-help">
+                <p><strong>How to pick a key:</strong> leave this blank or enter <code>main</code> to use the default OpenClaw session (<code>session.mainKey</code>, which falls back to <code>main</code>).</p>
+                <ul>
+                  <li>Enter a plain key like <code>research</code> if that is the session name you started in OpenClaw.</li>
+                  <li>For the default OpenClaw main agent, the fully qualified form is <code>agent:main:&lt;sessionKey&gt;</code>, for example <code>agent:main:main</code>.</li>
+                  <li>If OpenClaw already shows a full agent session key, paste it exactly as-is.</li>
+                </ul>
+              </div>
               <div class="row">
                 <button class="btn primary" type="submit">Start Session</button>
                 <button class="btn danger" type="button" id="stop-session">Stop Session</button>

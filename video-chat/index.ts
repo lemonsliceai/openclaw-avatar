@@ -30,6 +30,7 @@ const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
+const README_HTML_PLACEHOLDER_REGEX = /__README_HTML__/g;
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
 const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
@@ -129,7 +130,7 @@ type VideoChatSetupInput = {
 type HttpResponsePayload = {
   status: number;
   headers?: Record<string, string>;
-  body: string;
+  body: string | Buffer;
 };
 
 type VideoChatSessionHandlers = {
@@ -1196,6 +1197,322 @@ function modulePackageJsonCandidates(): string[] {
   ];
 }
 
+function moduleReadmeCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "README.md"),
+    path.resolve(moduleDir, "..", "..", "README.md"),
+  ];
+}
+
+function moduleAssetsRootCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "assets"),
+    path.resolve(moduleDir, "..", "..", "assets"),
+  ];
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value).replaceAll('"', "&quot;");
+}
+
+function encodePathSegments(value: string): string {
+  return value
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+function resolveReadmeHref(target: string): string {
+  const trimmed = target.trim();
+  if (!trimmed) {
+    return "#";
+  }
+  if (
+    trimmed.startsWith("#") ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("mailto:")
+  ) {
+    return trimmed;
+  }
+  if (trimmed === "README.md" || trimmed === "./README.md") {
+    return "/plugins/video-chat/readme";
+  }
+  if (trimmed.startsWith("assets/")) {
+    return `/plugins/video-chat/assets/${encodePathSegments(trimmed.slice("assets/".length))}`;
+  }
+  return trimmed;
+}
+
+function renderMarkdownInline(value: string): string {
+  const htmlTokens: string[] = [];
+  const storeHtmlToken = (html: string) => {
+    const token = `\u0000HTML${htmlTokens.length}\u0000`;
+    htmlTokens.push(html);
+    return token;
+  };
+
+  let rendered = value.replace(/`([^`]+)`/g, (_match, code: string) =>
+    storeHtmlToken(`<code>${escapeHtml(code)}</code>`),
+  );
+  rendered = escapeHtml(rendered);
+  rendered = rendered.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, href: string) => {
+    const src = resolveReadmeHref(href);
+    return storeHtmlToken(
+      `<img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}" loading="lazy" />`,
+    );
+  });
+  rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, href: string) => {
+    const resolvedHref = resolveReadmeHref(href);
+    return storeHtmlToken(`<a href="${escapeHtmlAttribute(resolvedHref)}">${label}</a>`);
+  });
+  rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  rendered = rendered.replace(/(^|[\s(])\*([^*]+)\*(?=[\s).,!?]|$)/g, "$1<em>$2</em>");
+  rendered = rendered.replace(
+    /(^|[\s(])(https?:\/\/[^\s<]*[^\s<).,!?])/g,
+    '$1<a href="$2">$2</a>',
+  );
+  return rendered.replace(/\u0000HTML(\d+)\u0000/g, (_match, index: string) => {
+    return htmlTokens[Number(index)] ?? "";
+  });
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$/.test(line);
+}
+
+function parseMarkdownTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+function renderMarkdownList(lines: string[], startIndex: number, indentLength: number) {
+  const items: string[] = [];
+  let index = startIndex;
+
+  while (index < lines.length) {
+    const itemMatch = lines[index]?.match(/^(\s*)-\s+(.*)$/);
+    if (!itemMatch) {
+      break;
+    }
+    const currentIndent = itemMatch[1]?.length ?? 0;
+    if (currentIndent < indentLength) {
+      break;
+    }
+    if (currentIndent !== indentLength) {
+      break;
+    }
+
+    const itemParts = [renderMarkdownInline(itemMatch[2] ?? "")];
+    index += 1;
+
+    while (index < lines.length) {
+      const nextLine = lines[index] ?? "";
+      if (!nextLine.trim()) {
+        index += 1;
+        break;
+      }
+
+      const nestedItemMatch = nextLine.match(/^(\s*)-\s+(.*)$/);
+      if (nestedItemMatch) {
+        const nestedIndent = nestedItemMatch[1]?.length ?? 0;
+        if (nestedIndent === indentLength) {
+          break;
+        }
+        if (nestedIndent > indentLength) {
+          const nestedList = renderMarkdownList(lines, index, nestedIndent);
+          itemParts.push(nestedList.html);
+          index = nestedList.nextIndex;
+          continue;
+        }
+        break;
+      }
+
+      const continuationIndent = nextLine.match(/^\s*/)?.[0].length ?? 0;
+      if (continuationIndent > indentLength) {
+        const paragraphLines = [nextLine.trim()];
+        index += 1;
+        while (index < lines.length) {
+          const candidate = lines[index] ?? "";
+          if (!candidate.trim()) {
+            index += 1;
+            break;
+          }
+          const candidateListMatch = candidate.match(/^(\s*)-\s+(.*)$/);
+          if (candidateListMatch) {
+            const candidateIndent = candidateListMatch[1]?.length ?? 0;
+            if (candidateIndent <= continuationIndent) {
+              break;
+            }
+          }
+          const candidateIndent = candidate.match(/^\s*/)?.[0].length ?? 0;
+          if (candidateIndent <= indentLength) {
+            break;
+          }
+          paragraphLines.push(candidate.trim());
+          index += 1;
+        }
+        itemParts.push(`<p>${renderMarkdownInline(paragraphLines.join(" "))}</p>`);
+        continue;
+      }
+
+      break;
+    }
+
+    items.push(`<li>${itemParts.join("")}</li>`);
+  }
+
+  return {
+    html: `<ul>${items.join("")}</ul>`,
+    nextIndex: index,
+  };
+}
+
+function renderMarkdownToHtml(markdown: string): string {
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  const html: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    if (/^```/.test(trimmed)) {
+      const language = trimmed.slice(3).trim();
+      index += 1;
+      const codeLines: string[] = [];
+      while (index < lines.length && !/^```/.test((lines[index] ?? "").trim())) {
+        codeLines.push(lines[index] ?? "");
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      const languageClass = language ? ` class="language-${escapeHtmlAttribute(language)}"` : "";
+      html.push(`<pre><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    if (trimmed.startsWith("<div")) {
+      const block: string[] = [];
+      while (index < lines.length) {
+        const currentLine = lines[index] ?? "";
+        block.push(currentLine);
+        index += 1;
+        if (currentLine.trim() === "</div>") {
+          break;
+        }
+      }
+      html.push(block.join("\n"));
+      continue;
+    }
+
+    if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
+      html.push(line);
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      const level = headingMatch[1]?.length ?? 1;
+      html.push(`<h${level}>${renderMarkdownInline(headingMatch[2] ?? "")}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (line.includes("|") && index + 1 < lines.length && isMarkdownTableSeparator(lines[index + 1] ?? "")) {
+      const headerCells = parseMarkdownTableRow(line);
+      index += 2;
+      const bodyRows: string[] = [];
+      while (index < lines.length) {
+        const rowLine = lines[index] ?? "";
+        if (!rowLine.trim() || !rowLine.includes("|")) {
+          break;
+        }
+        const cells = parseMarkdownTableRow(rowLine);
+        bodyRows.push(
+          `<tr>${cells.map((cell) => `<td>${renderMarkdownInline(cell)}</td>`).join("")}</tr>`,
+        );
+        index += 1;
+      }
+      html.push(
+        `<table><thead><tr>${headerCells
+          .map((cell) => `<th>${renderMarkdownInline(cell)}</th>`)
+          .join("")}</tr></thead><tbody>${bodyRows.join("")}</tbody></table>`,
+      );
+      continue;
+    }
+
+    const listMatch = line.match(/^(\s*)-\s+(.*)$/);
+    if (listMatch) {
+      const list = renderMarkdownList(lines, index, listMatch[1]?.length ?? 0);
+      html.push(list.html);
+      index = list.nextIndex;
+      continue;
+    }
+
+    const paragraphLines = [trimmed];
+    index += 1;
+    while (index < lines.length) {
+      const nextLine = lines[index] ?? "";
+      const nextTrimmed = nextLine.trim();
+      if (
+        !nextTrimmed ||
+        /^```/.test(nextTrimmed) ||
+        /^#{1,6}\s+/.test(nextLine) ||
+        /^(\s*)-\s+/.test(nextLine) ||
+        nextTrimmed.startsWith("<") ||
+        (nextLine.includes("|") &&
+          index + 1 < lines.length &&
+          isMarkdownTableSeparator(lines[index + 1] ?? ""))
+      ) {
+        break;
+      }
+      paragraphLines.push(nextTrimmed);
+      index += 1;
+    }
+    html.push(`<p>${renderMarkdownInline(paragraphLines.join(" "))}</p>`);
+  }
+
+  return html.join("\n");
+}
+
+function contentTypeForAssetPath(assetPath: string): string {
+  const extension = path.extname(assetPath).toLowerCase();
+  if (extension === ".png") {
+    return "image/png";
+  }
+  if (extension === ".jpg" || extension === ".jpeg") {
+    return "image/jpeg";
+  }
+  if (extension === ".gif") {
+    return "image/gif";
+  }
+  if (extension === ".webp") {
+    return "image/webp";
+  }
+  if (extension === ".svg") {
+    return "image/svg+xml";
+  }
+  return "application/octet-stream";
+}
+
 function registerVideoChatHttpRoutes(
   api: OpenClawPluginApi,
   sessionHandlers: VideoChatSessionHandlers,
@@ -1203,6 +1520,8 @@ function registerVideoChatHttpRoutes(
   let cachedWebRootPath: string | null | undefined;
   let cachedStylesRootPath: string | null | undefined;
   let cachedPackageVersion: string | undefined;
+  let cachedReadmePath: string | null | undefined;
+  let cachedAssetsRootPath: string | null | undefined;
 
   const resolveWebRootPath = async (): Promise<string> => {
     if (cachedWebRootPath !== undefined) {
@@ -1278,6 +1597,77 @@ function registerVideoChatHttpRoutes(
       resolvePackageVersion(),
     ]);
     return html.replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion);
+  };
+
+  const resolveReadmePath = async (): Promise<string> => {
+    if (cachedReadmePath !== undefined) {
+      if (!cachedReadmePath) {
+        throw new Error("unable to locate plugin README");
+      }
+      return cachedReadmePath;
+    }
+    const readmePath = await resolveExistingFile([
+      api.resolvePath("README.md"),
+      api.resolvePath("./README.md"),
+      api.resolvePath("../README.md"),
+      ...moduleReadmeCandidates(),
+    ]);
+    cachedReadmePath = readmePath;
+    if (!readmePath) {
+      throw new Error("unable to locate plugin README");
+    }
+    return readmePath;
+  };
+
+  const readRenderedReadmePage = async (): Promise<string> => {
+    const [template, packageVersion, readmePath] = await Promise.all([
+      readWebAsset("readme.html"),
+      resolvePackageVersion(),
+      resolveReadmePath(),
+    ]);
+    const markdown = await readFile(readmePath, "utf8");
+    const readmeHtml = renderMarkdownToHtml(markdown);
+    return template
+      .replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion)
+      .replace(README_HTML_PLACEHOLDER_REGEX, readmeHtml);
+  };
+
+  const resolveAssetsRootPath = async (): Promise<string> => {
+    if (cachedAssetsRootPath !== undefined) {
+      if (!cachedAssetsRootPath) {
+        throw new Error("unable to locate plugin assets");
+      }
+      return cachedAssetsRootPath;
+    }
+    const assetsRootPath = await resolveExistingDirectory([
+      api.resolvePath("assets"),
+      api.resolvePath("./assets"),
+      api.resolvePath("../assets"),
+      ...moduleAssetsRootCandidates(),
+    ]);
+    cachedAssetsRootPath = assetsRootPath;
+    if (!assetsRootPath) {
+      throw new Error("unable to locate plugin assets");
+    }
+    return assetsRootPath;
+  };
+
+  const readAssetBuffer = async (relativePath: string): Promise<{ contentType: string; body: Buffer }> => {
+    const normalized = path.posix.normalize(`/${relativePath}`).replace(/^\/+/, "");
+    if (!normalized || normalized.startsWith("..")) {
+      throw new Error("invalid asset path");
+    }
+    const assetsRootPath = await resolveAssetsRootPath();
+    const resolvedPath = path.resolve(assetsRootPath, normalized);
+    const relative = path.relative(assetsRootPath, resolvedPath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("invalid asset path");
+    }
+    const body = await readFile(resolvedPath);
+    return {
+      contentType: contentTypeForAssetPath(resolvedPath),
+      body,
+    };
   };
 
   const resolveStylesRootPath = async (): Promise<string> => {
@@ -1543,6 +1933,21 @@ function registerVideoChatHttpRoutes(
     }
     const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/video-chat";
     try {
+      if (normalizedPath.startsWith("/plugins/video-chat/assets/")) {
+        const assetPath = decodeURIComponent(
+          normalizedPath.slice("/plugins/video-chat/assets/".length),
+        );
+        const asset = await readAssetBuffer(assetPath);
+        sendHttpResponse(
+          res,
+          {
+            status: 200,
+            headers: { "content-type": asset.contentType },
+            body: asset.body,
+          },
+        );
+        return true;
+      }
       if (normalizedPath.startsWith("/plugins/video-chat/styles/")) {
         const assetPath = decodeURIComponent(
           normalizedPath.slice("/plugins/video-chat/styles/".length),
@@ -1553,6 +1958,11 @@ function registerVideoChatHttpRoutes(
       }
       if (normalizedPath === "/plugins/video-chat") {
         const html = await readRenderedHtmlAsset("index.html");
+        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        return true;
+      }
+      if (normalizedPath === "/plugins/video-chat/readme") {
+        const html = await readRenderedReadmePage();
         sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
         return true;
       }
@@ -1606,6 +2016,13 @@ function registerVideoChatHttpRoutes(
   });
 
   api.registerHttpRoute({
+    path: "/plugins/video-chat/readme",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
     path: "/plugins/video-chat/settings",
     auth: "plugin",
     match: "exact",
@@ -1651,6 +2068,13 @@ function registerVideoChatHttpRoutes(
     path: "/plugins/video-chat/app.js",
     auth: "plugin",
     match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/assets",
+    auth: "plugin",
+    match: "prefix",
     handler: uiHandler,
   });
 

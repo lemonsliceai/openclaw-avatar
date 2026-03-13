@@ -6,6 +6,7 @@
   "type": "module",
   "files": [
     "README.md",
+    "assets",
     "openclaw.plugin.json",
     "styles",
     "video-chat/index.ts",
@@ -15,6 +16,7 @@
     "video-chat/video-chat-agent-runner.js",
     "web/app.js",
     "web/index.html",
+    "web/readme.html",
     "web/settings.html"
   ],
   "openclaw": {
