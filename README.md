@@ -22,6 +22,7 @@ Claw Cast is an OpenClaw plugin that integrates LemonSlice, LiveKit, and ElevenL
 - [Install](#install)
 - [Configure](#configure)
 - [Join avatar session](#join-avatar-session)
+- [Usage tips](#usage-tips)
 - [Update](#update)
 - [Public Interface](#public-interface)
 - [Package Contents](#package-contents)
@@ -137,7 +138,25 @@ Start a session, join the room, and use the chat, STT, and TTS controls from the
 ```text
 http://127.0.0.1:18789/plugins/video-chat/
 ```
+Plugin documentation is also available in the web UI at:
+```text
+http://127.0.0.1:18789/plugins/video-chat/readme
+```
 If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
+
+<a id="usage-tips"></a>
+## Usage tips
+
+- The plugin is best used in a Chromium-based browser.
+
+Best image sizes:
+
+| aspect_ratio | resolution |
+|--------------|------------|
+| 2x3          | 560×368    |
+| 3x2          | 368×560    |
+| 9x16         | 608×336    |
+| 16x9         | 336×608    |
 
 <a id="update"></a>
 ## Update
@@ -162,7 +181,9 @@ openclaw plugins update video-chat
 - HTTP routes:
   - `/plugins/video-chat`
   - `/plugins/video-chat/config`
+  - `/plugins/video-chat/readme`
   - `/plugins/video-chat/api/*`
+  - `/plugins/video-chat/assets/*`
   - `/plugins/video-chat/styles/*`
 - Service:
   - `video-chat-agent`
@@ -180,8 +201,10 @@ openclaw plugins update video-chat
   - `video-chat/sidecar-process-control.ts`
 - Web UI:
   - `web/index.html`
+  - `web/readme.html`
   - `web/settings.html`
   - `web/app.js`
+  - `assets/`
   - `styles/`
 - Plugin manifest: [`openclaw.plugin.json`](openclaw.plugin.json)
 

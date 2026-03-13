@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claw Cast README</title>
+    <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
+    <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
+    <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
+    <link rel="stylesheet" href="/plugins/video-chat/styles/components.css" />
+    <style>
+      .readme-shell .nav {
+        border-right: 1px solid var(--border);
+      }
+
+      .readme-shell .nav-item {
+        text-decoration: none;
+      }
+
+      .readme-shell .content {
+        max-width: 100%;
+        margin: 0;
+        overflow: auto;
+      }
+
+      .readme-shell .content > * + * {
+        margin-top: 16px;
+      }
+
+      .readme-page {
+        display: grid;
+        gap: 16px;
+      }
+
+      .readme-intro {
+        display: grid;
+        gap: 8px;
+      }
+
+      .readme-intro p,
+      .readme-doc h1,
+      .readme-doc h2,
+      .readme-doc h3,
+      .readme-doc h4,
+      .readme-doc h5,
+      .readme-doc h6,
+      .readme-doc p {
+        margin: 0;
+      }
+
+      .readme-doc {
+        display: grid;
+        gap: 14px;
+        line-height: 1.65;
+      }
+
+      .readme-doc > * + * {
+        margin-top: 0;
+      }
+
+      .readme-doc h1,
+      .readme-doc h2,
+      .readme-doc h3,
+      .readme-doc h4,
+      .readme-doc h5,
+      .readme-doc h6 {
+        color: var(--text-strong);
+        letter-spacing: -0.03em;
+      }
+
+      .readme-doc h1 {
+        font-size: 28px;
+      }
+
+      .readme-doc h2 {
+        font-size: 22px;
+      }
+
+      .readme-doc h3 {
+        font-size: 18px;
+      }
+
+      .readme-doc a {
+        color: var(--accent-hover);
+      }
+
+      .readme-doc img {
+        max-width: 100%;
+        height: auto;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+      }
+
+      .readme-doc ul {
+        margin: 0;
+        padding-left: 22px;
+      }
+
+      .readme-doc li + li {
+        margin-top: 8px;
+      }
+
+      .readme-doc li > p {
+        margin-top: 8px;
+      }
+
+      .readme-doc pre {
+        margin: 0;
+        overflow-x: auto;
+        padding: 14px 16px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--bg-accent);
+        box-shadow: inset 0 1px 0 var(--card-highlight);
+      }
+
+      .readme-doc code {
+        font-family: var(--mono);
+        font-size: 0.95em;
+      }
+
+      .readme-doc :not(pre) > code {
+        padding: 0.14rem 0.38rem;
+        border-radius: 6px;
+        background: var(--bg-accent);
+        border: 1px solid var(--border);
+      }
+
+      .readme-doc table {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+      }
+
+      .readme-doc th,
+      .readme-doc td {
+        padding: 10px 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .readme-doc thead th {
+        background: var(--bg-accent);
+        color: var(--text-strong);
+      }
+
+      .readme-doc tbody tr:last-child td {
+        border-bottom: none;
+      }
+
+      .readme-doc > div {
+        display: grid;
+        gap: 12px;
+      }
+
+      .readme-doc iframe {
+        width: 100%;
+        border: 0;
+        border-radius: var(--radius-md);
+      }
+    </style>
+  </head>
+  <body class="video-chat-shell">
+    <div class="shell readme-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand">
+            <div class="brand-text">
+              <span class="brand-title">Claw Cast Plugin</span>
+              <span class="brand-sub">Documentation</span>
+            </div>
+          </div>
+        </div>
+        <div class="topbar-status">
+          <span class="pill" id="package-version-pill">
+            <span class="statusDot ok" aria-hidden="true"></span>
+            Package:
+            <span class="mono" id="package-version-value">__PACKAGE_VERSION__</span>
+          </span>
+        </div>
+      </header>
+
+      <nav class="nav" id="plugin-nav">
+        <div class="nav-group">
+          <div class="nav-label nav-label--static">
+            <span class="nav-label__text">Plugin</span>
+          </div>
+          <div class="nav-group__items">
+            <a class="nav-item" href="/plugins/video-chat">
+              <span class="nav-item__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="m22 8-6 4 6 4V8z"></path>
+                  <rect x="2" y="6" width="14" height="12" rx="2" ry="2"></rect>
+                </svg>
+              </span>
+              <span class="nav-item__text">Claw Cast</span>
+            </a>
+            <a class="nav-item" href="/plugins/video-chat/config">
+              <span class="nav-item__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+                  ></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+              </span>
+              <span class="nav-item__text">Config</span>
+            </a>
+            <a class="nav-item active" href="/plugins/video-chat/readme">
+              <span class="nav-item__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <path d="M14 2v6h6"></path>
+                  <path d="M8 13h8"></path>
+                  <path d="M8 17h6"></path>
+                  <path d="M8 9h2"></path>
+                </svg>
+              </span>
+              <span class="nav-item__text">README</span>
+            </a>
+          </div>
+        </div>
+      </nav>
+
+      <main class="content">
+        <div class="readme-page">
+          <header class="content-header">
+            <div class="readme-intro">
+              <h1 class="page-title">README</h1>
+              <p class="page-sub">This page renders the packaged plugin documentation directly inside the Claw Cast UI.</p>
+            </div>
+          </header>
+
+          <article class="card readme-doc">
+            __README_HTML__
+          </article>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>
