@@ -27,6 +27,7 @@ Claw Cast is an OpenClaw plugin that integrates LemonSlice, LiveKit, and ElevenL
 - [Package Contents](#package-contents)
 - [About The Install Warning](#about-the-install-warning)
 - [Verification/testing](#verification-testing)
+- [License](#license)
 
 <a id="prerequisites"></a>
 ## Prerequisites
@@ -231,3 +232,8 @@ Current automated coverage includes:
 - HTTP route serving for the shipped UI/API entry points
 - sidecar process-group shutdown and reset behavior
 - TTS and STT integration points through the plugin runtime mock
+
+<a id="license"></a>
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
