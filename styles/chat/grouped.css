@@ -5,9 +5,9 @@
 /* Chat Group Layout - default (assistant/other on left) */
 .chat-group {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: flex-start;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   margin-left: 4px;
   margin-right: 16px;
 }
@@ -83,22 +83,24 @@
 
 /* Avatar Styles */
 .chat-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   background: var(--panel-strong);
   display: grid;
   place-items: center;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 13px;
   flex-shrink: 0;
-  align-self: flex-end; /* Align with last message in group */
-  margin-bottom: 4px; /* Optical alignment */
+  align-self: flex-end;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
 }
 
 .chat-avatar.user {
   background: var(--accent-subtle);
   color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .chat-avatar.assistant {
@@ -116,6 +118,11 @@
   color: var(--muted);
 }
 
+.chat-avatar svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* Image avatar support */
 img.chat-avatar {
   display: block;
@@ -127,14 +134,14 @@ img.chat-avatar {
 .chat-bubble {
   position: relative;
   display: inline-block;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   background: var(--card);
   border-radius: var(--radius-lg);
   padding: 10px 14px;
   box-shadow: none;
   transition:
-    background 150ms ease-out,
-    border-color 150ms ease-out;
+    background var(--duration-fast) ease-out,
+    border-color var(--duration-fast) ease-out;
   max-width: 100%;
   word-wrap: break-word;
 }
@@ -297,4 +304,45 @@ img.chat-avatar {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+.msg-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  margin-left: 2px;
+  flex-wrap: wrap;
+}
+
+.msg-meta__tokens,
+.msg-meta__cache,
+.msg-meta__cost,
+.msg-meta__ctx,
+.msg-meta__model {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.msg-meta__model {
+  background: var(--bg-hover);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+}
+
+.msg-meta__cost {
+  color: var(--ok);
+}
+
+.msg-meta__ctx--warn {
+  color: var(--warn);
+}
+
+.msg-meta__ctx--danger {
+  color: var(--danger);
 }
