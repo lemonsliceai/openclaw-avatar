@@ -2078,7 +2078,11 @@ function flashCopyButton(button) {
   if (!button) {
     return;
   }
-  const originalLabel = button.getAttribute("data-copy-label") || "Copy";
+  const originalLabel =
+    button.getAttribute("data-copy-label") ||
+    button.getAttribute("aria-label") ||
+    button.getAttribute("title") ||
+    "Copy";
   if (!button.getAttribute("data-copy-label")) {
     button.setAttribute("data-copy-label", originalLabel);
   }
@@ -2127,6 +2131,41 @@ function getStoredSetupSecretValue(setup, fieldName) {
     default:
       return "";
   }
+}
+
+function redactSetupSecretValue(value, configured) {
+  if (configured || normalizeOptionalInputValue(value).length > 0) {
+    return REDACTED_SECRET_VALUE;
+  }
+  return "";
+}
+
+function sanitizeSetupStatusForClient(setup) {
+  if (!setup || typeof setup !== "object") {
+    return setup ?? null;
+  }
+  return {
+    ...setup,
+    lemonSlice: {
+      ...setup.lemonSlice,
+      apiKey: redactSetupSecretValue(setup?.lemonSlice?.apiKey, setup?.lemonSlice?.apiKeyConfigured),
+    },
+    livekit: {
+      ...setup.livekit,
+      apiKey: redactSetupSecretValue(setup?.livekit?.apiKey, setup?.livekit?.apiKeyConfigured),
+      apiSecret: redactSetupSecretValue(
+        setup?.livekit?.apiSecret,
+        setup?.livekit?.apiSecretConfigured,
+      ),
+    },
+    tts: {
+      ...setup.tts,
+      elevenLabsApiKey: redactSetupSecretValue(
+        setup?.tts?.elevenLabsApiKey,
+        setup?.tts?.elevenLabsApiKeyConfigured,
+      ),
+    },
+  };
 }
 
 function updateSensitiveVisibilityButton(button, visible, label) {
@@ -5615,16 +5654,17 @@ async function saveSetupPayload(body) {
     method: "POST",
     body: JSON.stringify(body),
   });
+  const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
   if (statusEl) {
-    statusEl.textContent = setupStatusLabel(payload.setup);
+    statusEl.textContent = setupStatusLabel(sanitizedSetup);
   }
-  latestSetupStatus = payload.setup ?? null;
+  latestSetupStatus = sanitizedSetup;
   setGatewayHealthStatus("ok", "OK");
-  updateKeysHealthFromSetup(payload.setup);
-  populateSetupFormFromSetupStatus(payload.setup);
+  updateKeysHealthFromSetup(sanitizedSetup);
+  populateSetupFormFromSetupStatus(sanitizedSetup);
   secretVisibilityState.clear();
   syncSetupEditorsFromCurrentForm();
-  setOutput({ action: "setup-saved", setup: payload.setup });
+  setOutput({ action: "setup-saved", setup: sanitizedSetup });
   return payload;
 }
 
@@ -5647,13 +5687,14 @@ async function refreshSetupStatus() {
   setKeysHealthStatus("warn", "Checking");
   try {
     const payload = await requestJson("/plugins/video-chat/api/setup");
-    latestSetupStatus = payload.setup ?? null;
+    const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
+    latestSetupStatus = sanitizedSetup;
     if (statusEl) {
-      statusEl.textContent = setupStatusLabel(payload.setup);
+      statusEl.textContent = setupStatusLabel(sanitizedSetup);
     }
     setGatewayHealthStatus("ok", "OK");
-    updateKeysHealthFromSetup(payload.setup);
-    populateSetupFormFromSetupStatus(payload.setup);
+    updateKeysHealthFromSetup(sanitizedSetup);
+    populateSetupFormFromSetupStatus(sanitizedSetup);
     syncSetupEditorsFromCurrentForm();
   } catch (error) {
     latestSetupStatus = null;
@@ -6086,6 +6127,7 @@ if (configCancelButton) {
         setupRawInput.value = setupRawBaseline;
       }
       setSetupRawError("");
+      restoreSetupFormBaseline();
       syncFormFromRaw();
     } else {
       restoreSetupFormBaseline();
@@ -6118,7 +6160,7 @@ if (tokenInput) {
 if (copyTokenButton) {
   copyTokenButton.addEventListener("click", async () => {
     try {
-      await copyTextToClipboard(String(tokenInput?.value || ""));
+      await copyTextToClipboard(String(tokenInput?.value || getGatewayToken() || ""));
       flashCopyButton(copyTokenButton);
     } catch (error) {
       setOutput({ action: "gateway-token-copy-failed", error: String(error) });
@@ -6165,9 +6207,6 @@ initNavCollapseToggle();
 initChatPane();
 initAvatarPaneResize();
 applyAvatarSpeakerMuteState();
-if (tokenInput) {
-  tokenInput.value = getGatewayToken();
-}
 updateTokenFieldMasking();
 initThemeToggle();
 initConfigSectionFiltering();
@@ -6179,6 +6218,9 @@ updateAvatarUiState();
 
 async function initializeGatewaySetupState() {
   await bootstrapGatewayTokenFromServer();
+  if (tokenInput) {
+    tokenInput.value = getGatewayToken();
+  }
   updateTokenFieldMasking();
   if (hasGatewayToken()) {
     setGatewayHealthStatus("warn", "Checking");
