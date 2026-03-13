@@ -580,6 +580,7 @@ describe("video-chat plugin", () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.create", {
       sessionKey: "agent:main/main",
+      interruptReplyOnNewMessage: true,
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -589,18 +590,20 @@ describe("video-chat plugin", () => {
           roomName?: string;
           participantToken?: string;
           agentName?: string;
+          interruptReplyOnNewMessage?: boolean;
         }
       | undefined;
     expect(payload?.roomName).toContain("openclaw-agent-main-main-");
     expect(payload?.participantToken?.split(".")).toHaveLength(3);
     expect(payload?.agentName).toBe("openclaw-video-chat");
+    expect(payload?.interruptReplyOnNewMessage).toBe(true);
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       roomConfig: {
         agents: [
           {
             agentName: "openclaw-video-chat",
             metadata:
-              '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png"}',
+              '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
           },
         ],
       },
@@ -627,7 +630,7 @@ describe("video-chat plugin", () => {
         agents: [
           {
             metadata:
-              '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png"}',
+              '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":false}',
           },
         ],
       },
@@ -862,7 +865,7 @@ describe("video-chat plugin", () => {
   it("rejects invalid session params", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.create", {
-      sessionKey: 12,
+      interruptReplyOnNewMessage: "yes",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;

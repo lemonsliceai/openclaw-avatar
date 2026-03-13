@@ -66,6 +66,7 @@ type VideoChatSessionResult = {
   participantIdentity: string;
   participantToken: string;
   agentName: string;
+  interruptReplyOnNewMessage: boolean;
 };
 
 type VideoChatSessionStopResult = {
@@ -135,6 +136,7 @@ type VideoChatSessionHandlers = {
   createSession: (params: {
     config: OpenClawConfig;
     sessionKey: string;
+    interruptReplyOnNewMessage?: boolean;
   }) => Promise<VideoChatSessionResult>;
   stopSession: (params: { roomName: string }) => Promise<VideoChatSessionStopResult>;
 };
@@ -467,10 +469,15 @@ function toBase64UrlJson(value: object): string {
   return toBase64Url(Buffer.from(JSON.stringify(value)));
 }
 
-function buildVideoChatDispatchMetadata(params: { sessionKey: string; imageUrl: string }): string {
+function buildVideoChatDispatchMetadata(params: {
+  sessionKey: string;
+  imageUrl: string;
+  interruptReplyOnNewMessage?: boolean;
+}): string {
   return JSON.stringify({
     sessionKey: params.sessionKey,
     imageUrl: params.imageUrl,
+    interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
   });
 }
 
@@ -1402,6 +1409,12 @@ function registerVideoChatHttpRoutes(
             if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
               throw new Error("invalid videoChat.session.create params");
             }
+            if (
+              params.interruptReplyOnNewMessage !== undefined &&
+              typeof params.interruptReplyOnNewMessage !== "boolean"
+            ) {
+              throw new Error("invalid videoChat.session.create params");
+            }
             const cfg = api.runtime.config.loadConfig();
             const sessionKey =
               (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
@@ -1410,6 +1423,7 @@ function registerVideoChatHttpRoutes(
             const session = await sessionHandlers.createSession({
               config: cfg,
               sessionKey,
+              interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
             });
             sendHttpResponse(
               res,
@@ -1777,6 +1791,7 @@ async function resolveSidecarLaunchCommand(
 async function createVideoChatSession(params: {
   config: OpenClawConfig;
   sessionKey: string;
+  interruptReplyOnNewMessage?: boolean;
   nowMs?: number;
 }): Promise<VideoChatSessionResult> {
   const effectiveConfig = resolveEffectiveVideoChatConfig(params.config);
@@ -1816,6 +1831,7 @@ async function createVideoChatSession(params: {
     requestedSessionKey: params.sessionKey,
     config: effectiveConfig,
   });
+  const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage === true;
   const participantIdentity = `control-ui-${randomUUID().slice(0, 12)}`;
   const participantToken = createLiveKitAccessToken({
     apiKey,
@@ -1833,6 +1849,7 @@ async function createVideoChatSession(params: {
           metadata: buildVideoChatDispatchMetadata({
             sessionKey: chatSessionKey,
             imageUrl: lemonSliceImageUrl,
+            interruptReplyOnNewMessage,
           }),
         },
       ],
@@ -1849,6 +1866,7 @@ async function createVideoChatSession(params: {
     participantIdentity,
     participantToken,
     agentName: VIDEO_CHAT_AGENT_NAME,
+    interruptReplyOnNewMessage,
   };
 }
 
@@ -2210,6 +2228,7 @@ const videoChatPlugin = {
     const createManagedSession = async (params: {
       config: OpenClawConfig;
       sessionKey: string;
+      interruptReplyOnNewMessage?: boolean;
     }): Promise<VideoChatSessionResult> => {
       await ensureSidecarRunning(params.config);
       return createVideoChatSession(params);
@@ -2303,6 +2322,17 @@ const videoChatPlugin = {
             );
             return;
           }
+          if (
+            params.interruptReplyOnNewMessage !== undefined &&
+            typeof params.interruptReplyOnNewMessage !== "boolean"
+          ) {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.session.create params",
+            );
+            return;
+          }
           const cfg = api.runtime.config.loadConfig();
           const sessionKey =
             (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
@@ -2312,6 +2342,7 @@ const videoChatPlugin = {
           const payload = await createManagedSession({
             config: cfg,
             sessionKey,
+            interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
           });
           respond(true, payload);
         } catch (error) {

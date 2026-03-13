@@ -225,6 +225,13 @@
         gap: 12px;
       }
 
+      .session-form__toggles {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 18px;
+        align-items: center;
+      }
+
       .session-form__toggle {
         display: inline-flex;
         align-items: center;
@@ -859,10 +866,16 @@
                 <button class="btn primary" type="submit">Start Session</button>
                 <button class="btn danger" type="button" id="stop-session">Stop Session</button>
               </div>
-              <label class="session-form__toggle" for="start-in-pip">
-                <input type="checkbox" id="start-in-pip" checked />
-                <span>Start in PiP</span>
-              </label>
+              <div class="session-form__toggles">
+                <label class="session-form__toggle" for="start-in-pip">
+                  <input type="checkbox" id="start-in-pip" checked />
+                  <span>Start in PiP</span>
+                </label>
+                <label class="session-form__toggle" for="interrupt-agent-speech">
+                  <input type="checkbox" id="interrupt-agent-speech" checked />
+                  <span>Interrupt avatar speech</span>
+                </label>
+              </div>
             </form>
           </section>
 

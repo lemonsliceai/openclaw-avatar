@@ -6,6 +6,7 @@ const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
 const sessionForm = document.getElementById("session-form");
 const startInPictureInPictureCheckbox = document.getElementById("start-in-pip");
+const interruptAgentSpeechCheckbox = document.getElementById("interrupt-agent-speech");
 const ttsForm = document.getElementById("tts-form");
 const ttsTextInput = document.getElementById("tts-text");
 const ttsGenerateButton = document.getElementById("tts-generate");
@@ -68,6 +69,7 @@ const CHAT_PANE_WIDTH_STORAGE_KEY = "videoChat.chatPaneWidth";
 const MIC_MUTED_STORAGE_KEY = "videoChat.microphoneMuted";
 const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
 const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "videoChat.avatarAutoStartInPictureInPicture";
+const AVATAR_INTERRUPT_REPLY_ON_NEW_MESSAGE_STORAGE_KEY = "videoChat.avatarInterruptReplyOnNewMessage";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -164,6 +166,7 @@ let avatarLoadMessage = "";
 let preferredMicMuted = false;
 let avatarSpeakerMuted = false;
 let avatarAutoStartInPictureInPicture = true;
+let avatarInterruptReplyOnNewMessage = true;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
 let avatarDocumentPictureInPictureElements = null;
@@ -1115,9 +1118,23 @@ function loadMediaPreferences() {
   preferredMicMuted = getStoredBooleanPreference(MIC_MUTED_STORAGE_KEY);
   avatarSpeakerMuted = getStoredBooleanPreference(AVATAR_SPEAKER_MUTED_STORAGE_KEY);
   avatarAutoStartInPictureInPicture = getStoredBooleanPreference(AVATAR_AUTO_START_IN_PIP_STORAGE_KEY, true);
+  avatarInterruptReplyOnNewMessage = getStoredBooleanPreference(
+    AVATAR_INTERRUPT_REPLY_ON_NEW_MESSAGE_STORAGE_KEY,
+    true,
+  );
   if (startInPictureInPictureCheckbox) {
     startInPictureInPictureCheckbox.checked = avatarAutoStartInPictureInPicture;
   }
+  if (interruptAgentSpeechCheckbox) {
+    interruptAgentSpeechCheckbox.checked = avatarInterruptReplyOnNewMessage;
+  }
+}
+
+function buildSessionCreatePayload(sessionKey) {
+  return {
+    sessionKey,
+    interruptReplyOnNewMessage: avatarInterruptReplyOnNewMessage,
+  };
 }
 
 function persistGatewayToken(token) {
@@ -5399,7 +5416,7 @@ async function reconnectAvatarSession(options = {}) {
     });
     const payload = await requestJson("/plugins/video-chat/api/session", {
       method: "POST",
-      body: JSON.stringify({ sessionKey: priorSessionKey }),
+      body: JSON.stringify(buildSessionCreatePayload(priorSessionKey)),
     });
     activeSession = payload.session;
     resetVoiceTranscriptDeduplication();
@@ -5693,7 +5710,7 @@ if (sessionForm) {
     try {
       const payload = await requestJson("/plugins/video-chat/api/session", {
         method: "POST",
-        body: JSON.stringify({ sessionKey }),
+        body: JSON.stringify(buildSessionCreatePayload(sessionKey)),
       });
       activeSession = payload.session;
       resetVoiceTranscriptDeduplication();
@@ -5732,6 +5749,16 @@ if (startInPictureInPictureCheckbox) {
   startInPictureInPictureCheckbox.addEventListener("change", () => {
     avatarAutoStartInPictureInPicture = startInPictureInPictureCheckbox.checked;
     persistBooleanPreference(AVATAR_AUTO_START_IN_PIP_STORAGE_KEY, avatarAutoStartInPictureInPicture);
+  });
+}
+
+if (interruptAgentSpeechCheckbox) {
+  interruptAgentSpeechCheckbox.addEventListener("change", () => {
+    avatarInterruptReplyOnNewMessage = interruptAgentSpeechCheckbox.checked;
+    persistBooleanPreference(
+      AVATAR_INTERRUPT_REPLY_ON_NEW_MESSAGE_STORAGE_KEY,
+      avatarInterruptReplyOnNewMessage,
+    );
   });
 }
 
