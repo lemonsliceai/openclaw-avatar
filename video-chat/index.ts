@@ -21,19 +21,28 @@ import {
 } from "./sidecar-process-control.js";
 
 const VIDEO_CHAT_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
+const VIDEO_CHAT_ATTACHMENT_COUNT_MAX = 4;
+const VIDEO_CHAT_ATTACHMENT_CONTENT_MAX_BYTES = 10 * 1024 * 1024;
+const VIDEO_CHAT_ATTACHMENT_TOTAL_MAX_BYTES =
+  VIDEO_CHAT_ATTACHMENT_COUNT_MAX * VIDEO_CHAT_ATTACHMENT_CONTENT_MAX_BYTES;
 const LIVEKIT_TOKEN_TTL_SECONDS = 60 * 60;
 const VIDEO_CHAT_ROOM_PREFIX = "openclaw";
 const VIDEO_CHAT_ROOM_PART_FALLBACK = "main";
 const VIDEO_CHAT_ROOM_PART_MAX_LENGTH = 48;
 const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
+const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.11";
 const VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
+const VIDEO_CHAT_SIDECAR_RESET_SETTLE_MS = 1_000;
 const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
+const SHARED_SHELL_BOOTSTRAP_PLACEHOLDER = "__SHARED_SHELL_BOOTSTRAP__";
 const README_HTML_PLACEHOLDER_REGEX = /__README_HTML__/g;
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
 const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
+const INVALID_CHAT_HISTORY_PARAMS_ERROR = "invalid videoChat.chat.history params";
+const INVALID_CHAT_SEND_PARAMS_ERROR = "invalid videoChat.chat.send params";
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
@@ -88,6 +97,7 @@ type SidecarCredentials = {
 type VideoChatAgentSidecar = {
   stop: () => Promise<void>;
   resetJobs: () => Promise<void>;
+  waitForIdle: () => Promise<void>;
 };
 
 type SidecarLogger = {
@@ -142,12 +152,109 @@ type VideoChatSessionHandlers = {
   stopSession: (params: { roomName: string }) => Promise<VideoChatSessionStopResult>;
 };
 
+type VideoChatChatAttachmentInput = {
+  type: string;
+  mimeType: string;
+  fileName: string;
+  content: string;
+};
+
+type VideoChatChatHistoryResult = {
+  messages?: unknown[];
+};
+
+type VideoChatChatSendResult = Record<string, unknown>;
+
+type ParsedVideoChatHistoryParams = {
+  sessionKey: string;
+  limit?: number;
+};
+
+type ParsedVideoChatSendParams = {
+  sessionKey: string;
+  message: string;
+  attachments?: VideoChatChatAttachmentInput[];
+  idempotencyKey?: string;
+};
+
+type VideoChatSubagentRunParams = {
+  sessionKey: string;
+  message: string;
+  extraSystemPrompt?: string;
+  lane?: string;
+  deliver?: boolean;
+  idempotencyKey?: string;
+  attachments?: VideoChatChatAttachmentInput[];
+};
+
+type VideoChatSubagentRuntime = {
+  run: (params: VideoChatSubagentRunParams) => Promise<VideoChatChatSendResult>;
+  getSessionMessages: (params: {
+    sessionKey: string;
+    limit?: number;
+  }) => Promise<VideoChatChatHistoryResult>;
+};
+
+type VideoChatChatHandlers = {
+  loadHistory: (params: {
+    sessionKey: string;
+    limit?: number;
+  }) => Promise<VideoChatChatHistoryResult>;
+  sendMessage: (params: {
+    sessionKey: string;
+    message: string;
+    attachments?: VideoChatChatAttachmentInput[];
+    idempotencyKey?: string;
+  }) => Promise<VideoChatChatSendResult>;
+};
+
 function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseVersionSegments(value: unknown): number[] | null {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return null;
+  }
+  const segments = normalized.match(/\d+/g);
+  if (!segments?.length) {
+    return null;
+  }
+  const parsed = segments.map((segment) => Number.parseInt(segment, 10));
+  return parsed.every((segment) => Number.isFinite(segment)) ? parsed : null;
+}
+
+function normalizeVersionString(value: unknown): string | null {
+  const normalized = normalizeOptionalString(value);
+  return normalized && parseVersionSegments(normalized) ? normalized : null;
+}
+
+function compareVersionSegments(left: number[], right: number[]): number {
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    if (delta !== 0) {
+      return delta > 0 ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+function isOpenClawVersionCompatible(
+  version: unknown,
+  minimumVersion: string = OPENCLAW_MIN_COMPATIBLE_VERSION,
+): boolean | null {
+  const normalizedVersion = parseVersionSegments(version);
+  const normalizedMinimumVersion = parseVersionSegments(minimumVersion);
+  if (!normalizedVersion || !normalizedMinimumVersion) {
+    return null;
+  }
+  return compareVersionSegments(normalizedVersion, normalizedMinimumVersion) >= 0;
 }
 
 function normalizeOptionalSetupSecretString(value: unknown): string | undefined {
@@ -256,6 +363,123 @@ function resolveGatewayRuntimeFromConfig(config: OpenClawConfig): SidecarGateway
         ? process.env.OPENCLAW_GATEWAY_TOKEN
         : undefined;
   return { port, auth: { mode: "token", token } };
+}
+
+function getVideoChatSubagentRuntime(api: OpenClawPluginApi): VideoChatSubagentRuntime {
+  const candidate = (api.runtime as OpenClawPluginApi["runtime"] & {
+    subagent?: VideoChatSubagentRuntime;
+  }).subagent;
+  if (
+    !candidate ||
+    typeof candidate.run !== "function" ||
+    typeof candidate.getSessionMessages !== "function"
+  ) {
+    throw new Error("Claw Cast chat runtime unavailable during this request");
+  }
+  return candidate;
+}
+
+function isValidChatAttachmentInput(value: unknown): value is VideoChatChatAttachmentInput {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { type?: unknown }).type === "string" &&
+      typeof (value as { mimeType?: unknown }).mimeType === "string" &&
+      typeof (value as { fileName?: unknown }).fileName === "string" &&
+      typeof (value as { content?: unknown }).content === "string",
+  );
+}
+
+function normalizeChatAttachmentInputs(value: unknown): VideoChatChatAttachmentInput[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
+  }
+  const attachments = value.filter((item) => item !== null && item !== undefined);
+  const totalAttachmentBytes = attachments.reduce((total, item) => {
+    const content = typeof (item as { content?: unknown }).content === "string"
+      ? (item as { content: string }).content
+      : "";
+    return total + Buffer.byteLength(content, "utf8");
+  }, 0);
+  if (
+    attachments.length > VIDEO_CHAT_ATTACHMENT_COUNT_MAX ||
+    totalAttachmentBytes > VIDEO_CHAT_ATTACHMENT_TOTAL_MAX_BYTES
+  ) {
+    throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
+  }
+  if (!attachments.every(isValidChatAttachmentInput)) {
+    throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
+  }
+  return attachments.map((attachment) => {
+    const type = attachment.type.trim();
+    const mimeType = attachment.mimeType.trim();
+    const fileName = attachment.fileName.trim();
+    const content = attachment.content.trim();
+    if (
+      type.length === 0 ||
+      mimeType.length === 0 ||
+      fileName.length === 0 ||
+      content.length === 0 ||
+      Buffer.byteLength(content, "utf8") > VIDEO_CHAT_ATTACHMENT_CONTENT_MAX_BYTES
+    ) {
+      throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
+    }
+    return {
+      type,
+      mimeType,
+      fileName,
+      content,
+    };
+  });
+}
+
+function parseRequiredTrimmedString(value: unknown, errorMessage: string): string {
+  if (typeof value !== "string") {
+    throw new Error(errorMessage);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(errorMessage);
+  }
+  return trimmed;
+}
+
+function parseChatHistoryParams(params: Record<string, unknown>): ParsedVideoChatHistoryParams {
+  if (params.limit !== undefined && typeof params.limit !== "number") {
+    throw new Error(INVALID_CHAT_HISTORY_PARAMS_ERROR);
+  }
+  return {
+    sessionKey: parseRequiredTrimmedString(params.sessionKey, INVALID_CHAT_HISTORY_PARAMS_ERROR),
+    limit:
+      typeof params.limit === "number" && Number.isFinite(params.limit)
+        ? Math.max(1, Math.floor(params.limit))
+        : undefined,
+  };
+}
+
+async function readChatHistoryParams(
+  request: IncomingMessage,
+): Promise<ParsedVideoChatHistoryParams> {
+  return parseChatHistoryParams(await readRequestJson(request));
+}
+
+function parseChatSendParams(params: Record<string, unknown>): ParsedVideoChatSendParams {
+  if (params.idempotencyKey !== undefined && typeof params.idempotencyKey !== "string") {
+    throw new Error(INVALID_CHAT_SEND_PARAMS_ERROR);
+  }
+  return {
+    sessionKey: parseRequiredTrimmedString(params.sessionKey, INVALID_CHAT_SEND_PARAMS_ERROR),
+    message: parseRequiredTrimmedString(params.message, INVALID_CHAT_SEND_PARAMS_ERROR),
+    attachments: normalizeChatAttachmentInputs(params.attachments),
+    idempotencyKey: normalizeOptionalString(params.idempotencyKey),
+  };
+}
+
+async function readChatSendParams(request: IncomingMessage): Promise<ParsedVideoChatSendParams> {
+  return parseChatSendParams(await readRequestJson(request));
 }
 
 function respondGatewayError(
@@ -1096,6 +1320,12 @@ function sendHttpResponse(res: ServerResponse, payload: HttpResponsePayload): vo
   res.end(payload.body);
 }
 
+function setNoStoreHeaders(res: ServerResponse): void {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+}
+
 function asJsonResponse(body: unknown, status = 200): HttpResponsePayload {
   return {
     status,
@@ -1118,6 +1348,17 @@ function withBrowserShellHeaders(payload: HttpResponsePayload): HttpResponsePayl
     headers: {
       ...(payload.headers ?? {}),
       "permissions-policy": "microphone=(self)",
+    },
+  };
+}
+
+function withNoStoreHeaders(payload: HttpResponsePayload): HttpResponsePayload {
+  return {
+    ...payload,
+    headers: {
+      ...(payload.headers ?? {}),
+      "cache-control": "no-store, max-age=0",
+      pragma: "no-cache",
     },
   };
 }
@@ -1194,6 +1435,14 @@ function modulePackageJsonCandidates(): string[] {
   return [
     path.resolve(moduleDir, "..", "package.json"),
     path.resolve(moduleDir, "..", "..", "package.json"),
+  ];
+}
+
+function moduleOpenClawPackageJsonCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "node_modules", "openclaw", "package.json"),
+    path.resolve(moduleDir, "..", "..", "node_modules", "openclaw", "package.json"),
   ];
 }
 
@@ -1515,11 +1764,12 @@ function contentTypeForAssetPath(assetPath: string): string {
 
 function registerVideoChatHttpRoutes(
   api: OpenClawPluginApi,
-  sessionHandlers: VideoChatSessionHandlers,
+  handlers: VideoChatSessionHandlers & VideoChatChatHandlers,
 ): void {
   let cachedWebRootPath: string | null | undefined;
   let cachedStylesRootPath: string | null | undefined;
   let cachedPackageVersion: string | undefined;
+  let cachedHostOpenClawVersion: string | null | undefined;
   let cachedReadmePath: string | null | undefined;
   let cachedAssetsRootPath: string | null | undefined;
 
@@ -1591,12 +1841,91 @@ function registerVideoChatHttpRoutes(
     }
   };
 
+  const collectOpenClawPackageJsonCandidates = (): string[] => {
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const pushCandidate = (candidate: string) => {
+      const normalized = candidate.trim();
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      candidates.push(normalized);
+    };
+    const addAncestorCandidates = (startPath: string, levels: number) => {
+      let current = path.resolve(startPath);
+      for (let depth = 0; depth <= levels; depth += 1) {
+        pushCandidate(path.join(current, "openclaw", "package.json"));
+        pushCandidate(path.join(current, "node_modules", "openclaw", "package.json"));
+        const parent = path.dirname(current);
+        if (parent === current) {
+          break;
+        }
+        current = parent;
+      }
+    };
+
+    pushCandidate(api.resolvePath("node_modules/openclaw/package.json"));
+    pushCandidate(api.resolvePath("./node_modules/openclaw/package.json"));
+    pushCandidate(api.resolvePath("../node_modules/openclaw/package.json"));
+    for (const candidate of moduleOpenClawPackageJsonCandidates()) {
+      pushCandidate(candidate);
+    }
+    addAncestorCandidates(path.dirname(fileURLToPath(import.meta.url)), 6);
+    addAncestorCandidates(process.cwd(), 4);
+    return candidates;
+  };
+
+  const resolveHostOpenClawVersion = async (): Promise<string | null> => {
+    if (cachedHostOpenClawVersion !== undefined) {
+      return cachedHostOpenClawVersion;
+    }
+
+    const runtimeRecord = asObjectRecord(api.runtime);
+    const directCandidates = [
+      runtimeRecord.openclawVersion,
+      runtimeRecord.hostVersion,
+      runtimeRecord.appVersion,
+      process.env.OPENCLAW_VERSION,
+      process.env.OPENCLAW_APP_VERSION,
+    ];
+    for (const candidate of directCandidates) {
+      const normalized = normalizeVersionString(candidate);
+      if (normalized) {
+        cachedHostOpenClawVersion = normalized;
+        return cachedHostOpenClawVersion;
+      }
+    }
+
+    const packageJsonPath = await resolveExistingFile(collectOpenClawPackageJsonCandidates());
+    if (!packageJsonPath) {
+      cachedHostOpenClawVersion = null;
+      return cachedHostOpenClawVersion;
+    }
+
+    try {
+      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+      cachedHostOpenClawVersion = normalizeVersionString(packageJson.version);
+      return cachedHostOpenClawVersion;
+    } catch {
+      cachedHostOpenClawVersion = null;
+      return cachedHostOpenClawVersion;
+    }
+  };
+
   const readRenderedHtmlAsset = async (relativePath: string): Promise<string> => {
-    const [html, packageVersion] = await Promise.all([
+    const [html, packageVersion, sharedShellScript] = await Promise.all([
       readWebAsset(relativePath),
       resolvePackageVersion(),
+      readWebAsset("shared-shell.js"),
     ]);
-    return html.replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion);
+    const renderedSharedShellScript = sharedShellScript.replaceAll(
+      PACKAGE_VERSION_PLACEHOLDER,
+      packageVersion,
+    );
+    return html
+      .replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion)
+      .replace(SHARED_SHELL_BOOTSTRAP_PLACEHOLDER, renderedSharedShellScript);
   };
 
   const resolveReadmePath = async (): Promise<string> => {
@@ -1620,15 +1949,21 @@ function registerVideoChatHttpRoutes(
   };
 
   const readRenderedReadmePage = async (): Promise<string> => {
-    const [template, packageVersion, readmePath] = await Promise.all([
+    const [template, packageVersion, readmePath, sharedShellScript] = await Promise.all([
       readWebAsset("readme.html"),
       resolvePackageVersion(),
       resolveReadmePath(),
+      readWebAsset("shared-shell.js"),
     ]);
     const markdown = await readFile(readmePath, "utf8");
     const readmeHtml = renderMarkdownToHtml(markdown);
+    const renderedSharedShellScript = sharedShellScript.replaceAll(
+      PACKAGE_VERSION_PLACEHOLDER,
+      packageVersion,
+    );
     return template
       .replaceAll(PACKAGE_VERSION_PLACEHOLDER, packageVersion)
+      .replace(SHARED_SHELL_BOOTSTRAP_PLACEHOLDER, renderedSharedShellScript)
       .replace(README_HTML_PLACEHOLDER_REGEX, readmeHtml);
   };
 
@@ -1707,11 +2042,18 @@ function registerVideoChatHttpRoutes(
     return readFile(resolvedPath, "utf8");
   };
 
-  const buildBrowserBootstrapPayload = (config: OpenClawConfig) => {
+  const buildBrowserBootstrapPayload = async (config: OpenClawConfig) => {
     const gateway = resolveGatewayRuntimeFromConfig(config);
+    const openclawVersion = await resolveHostOpenClawVersion();
+    const openclaw = {
+      version: openclawVersion,
+      minimumCompatibleVersion: OPENCLAW_MIN_COMPATIBLE_VERSION,
+      compatible: openclawVersion === null ? null : isOpenClawVersionCompatible(openclawVersion),
+    };
     if (!gateway) {
       return {
         success: true,
+        openclaw,
         gateway: {
           auth: { mode: "none" as const },
         },
@@ -1720,6 +2062,7 @@ function registerVideoChatHttpRoutes(
     if (gateway.auth.mode === "token") {
       return {
         success: true,
+        openclaw,
         gateway: {
           auth: {
             mode: "token" as const,
@@ -1730,6 +2073,7 @@ function registerVideoChatHttpRoutes(
     }
     return {
       success: true,
+      openclaw,
       gateway: {
         auth: { mode: gateway.auth.mode },
       },
@@ -1810,7 +2154,7 @@ function registerVideoChatHttpRoutes(
               (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
               cfg.session?.mainKey ||
               "main";
-            const session = await sessionHandlers.createSession({
+            const session = await handlers.createSession({
               config: cfg,
               sessionKey,
               interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
@@ -1842,7 +2186,7 @@ function registerVideoChatHttpRoutes(
           if (typeof params.roomName !== "string") {
             throw new Error("invalid videoChat.session.stop params");
           }
-          const result = await sessionHandlers.stopSession({
+          const result = await handlers.stopSession({
             roomName: params.roomName,
           });
           sendHttpResponse(
@@ -1850,6 +2194,30 @@ function registerVideoChatHttpRoutes(
             asJsonResponse({
               success: true,
               ...result,
+            }),
+          );
+          return true;
+        }
+
+        if (normalizedPath === "/plugins/video-chat/api/chat/history" && method === "POST") {
+          const result = await handlers.loadHistory(await readChatHistoryParams(req));
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              ...result,
+            }),
+          );
+          return true;
+        }
+
+        if (normalizedPath === "/plugins/video-chat/api/chat/send" && method === "POST") {
+          const result = await handlers.sendMessage(await readChatSendParams(req));
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              response: result,
             }),
           );
           return true;
@@ -1958,12 +2326,18 @@ function registerVideoChatHttpRoutes(
       }
       if (normalizedPath === "/plugins/video-chat") {
         const html = await readRenderedHtmlAsset("index.html");
-        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+        );
         return true;
       }
       if (normalizedPath === "/plugins/video-chat/readme") {
         const html = await readRenderedReadmePage();
-        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+        );
         return true;
       }
       if (
@@ -1971,12 +2345,18 @@ function registerVideoChatHttpRoutes(
         normalizedPath === "/plugins/video-chat/config"
       ) {
         const html = await readRenderedHtmlAsset("settings.html");
-        sendHttpResponse(res, withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")));
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+        );
         return true;
       }
       if (normalizedPath === "/plugins/video-chat/app.js") {
         const script = await readWebAsset("app.js");
-        sendHttpResponse(res, asTextResponse(script, "application/javascript; charset=utf-8"));
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(asTextResponse(script, "application/javascript; charset=utf-8")),
+        );
         return true;
       }
       sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
@@ -2042,9 +2422,10 @@ function registerVideoChatHttpRoutes(
       if (normalizedPath !== "/plugins/video-chat/bootstrap") {
         return false;
       }
+      setNoStoreHeaders(res);
       try {
         const config = api.runtime.config.loadConfig();
-        sendHttpResponse(res, asJsonResponse(buildBrowserBootstrapPayload(config)));
+        sendHttpResponse(res, asJsonResponse(await buildBrowserBootstrapPayload(config)));
         return true;
       } catch (error) {
         const message =
@@ -2477,6 +2858,7 @@ async function startVideoChatAgentSidecar(params: {
   let child: ChildProcess | null = null;
   let childProcessGroupId: number | null = null;
   let respawnTimer: ReturnType<typeof setTimeout> | null = null;
+  let resetJobsPromise: Promise<void> | null = null;
   let stopping = false;
   const recentExits: number[] = [];
   let unsupportedLegacyCommand = false;
@@ -2550,24 +2932,45 @@ async function startVideoChatAgentSidecar(params: {
   spawnChild();
 
   return {
+    waitForIdle: async () => {
+      if (resetJobsPromise) {
+        await resetJobsPromise;
+      }
+    },
     resetJobs: async () => {
       if (stopping) {
         return;
       }
-      const processGroupId = childProcessGroupId;
-      if (process.platform === "win32" || !processGroupId || processGroupId <= 0) {
+      if (resetJobsPromise) {
+        await resetJobsPromise;
         return;
       }
-      await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
-      await stopMatchingProcesses({
-        commandPatterns: buildSessionResetCleanupPatterns({
-          wrapperScriptPath,
-          instanceArg,
-        }),
-        keepPids: [processGroupId],
-        termTimeoutMs: 400,
-        postKillDelayMs: 200,
-      });
+      const nextResetPromise = (async () => {
+        const processGroupId = childProcessGroupId;
+        if (process.platform === "win32" || !processGroupId || processGroupId <= 0) {
+          return;
+        }
+        await resetProcessGroupChildren({ processGroupId, settleMs: 300 });
+        await stopMatchingProcesses({
+          commandPatterns: buildSessionResetCleanupPatterns({
+            wrapperScriptPath,
+            instanceArg,
+          }),
+          keepPids: [processGroupId],
+          termTimeoutMs: 400,
+          postKillDelayMs: 200,
+        });
+        // Give the worker a brief window to advertise itself idle again before the next dispatch.
+        await sleep(VIDEO_CHAT_SIDECAR_RESET_SETTLE_MS);
+      })();
+      resetJobsPromise = nextResetPromise;
+      try {
+        await nextResetPromise;
+      } finally {
+        if (resetJobsPromise === nextResetPromise) {
+          resetJobsPromise = null;
+        }
+      }
     },
     stop: async () => {
       stopping = true;
@@ -2610,10 +3013,14 @@ const videoChatPlugin = {
       gateway?: OpenClawPluginServiceContext["gateway"],
     ): Promise<void> => {
       if (sidecar) {
+        await sidecar.waitForIdle();
         return;
       }
       if (sidecarStartupPromise) {
         sidecar = sidecar ?? (await sidecarStartupPromise);
+        if (sidecar) {
+          await sidecar.waitForIdle();
+        }
         return;
       }
       const runtimeGateway = gateway ?? resolveGatewayRuntimeFromConfig(config);
@@ -2631,6 +3038,9 @@ const videoChatPlugin = {
       sidecarStartupPromise = startupPromise;
       try {
         sidecar = await startupPromise;
+        if (sidecar) {
+          await sidecar.waitForIdle();
+        }
       } finally {
         if (sidecarStartupPromise === startupPromise) {
           sidecarStartupPromise = null;
@@ -2666,10 +3076,47 @@ const videoChatPlugin = {
       return result;
     };
 
+    const loadManagedChatHistory = async (params: {
+      sessionKey: string;
+      limit?: number;
+    }): Promise<VideoChatChatHistoryResult> => {
+      const subagentRuntime = getVideoChatSubagentRuntime(api);
+      const result = await subagentRuntime.getSessionMessages({
+        sessionKey: params.sessionKey,
+        limit: params.limit ?? 30,
+      });
+      return {
+        messages: Array.isArray(result.messages) ? result.messages : [],
+      };
+    };
+
+    const sendManagedChatMessage = async (params: {
+      sessionKey: string;
+      message: string;
+      attachments?: VideoChatChatAttachmentInput[];
+      idempotencyKey?: string;
+    }): Promise<VideoChatChatSendResult> => {
+      const subagentRuntime = getVideoChatSubagentRuntime(api);
+      // The gateway agent schema accepts attachments even though the current runtime typings
+      // only expose the text-centric subset.
+      const runParams: VideoChatSubagentRunParams = {
+        sessionKey: params.sessionKey,
+        message: params.message,
+        deliver: false,
+        ...(params.attachments && params.attachments.length > 0
+          ? { attachments: params.attachments }
+          : {}),
+        ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
+      };
+      return await subagentRuntime.run(runParams);
+    };
+
     registerVideoChatSetupCli(api);
     registerVideoChatHttpRoutes(api, {
       createSession: createManagedSession,
       stopSession: stopManagedSession,
+      loadHistory: loadManagedChatHistory,
+      sendMessage: sendManagedChatMessage,
     });
 
     api.registerGatewayMethod(
@@ -2864,6 +3311,48 @@ const videoChatPlugin = {
           respondGatewayError(
             respond,
             invalidMessages.has(message) ? "INVALID_REQUEST" : "UNAVAILABLE",
+            message,
+          );
+        }
+      },
+    );
+
+    api.registerGatewayMethod(
+      "videoChat.chat.history",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          if (!assertMethodParams(params, "videoChat.chat.history", respond)) {
+            return;
+          }
+          const result = await loadManagedChatHistory(parseChatHistoryParams(params));
+          respond(true, result);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Claw Cast chat history failed";
+          respondGatewayError(
+            respond,
+            message === INVALID_CHAT_HISTORY_PARAMS_ERROR ? "INVALID_REQUEST" : "UNAVAILABLE",
+            message,
+          );
+        }
+      },
+    );
+
+    api.registerGatewayMethod(
+      "videoChat.chat.send",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          if (!assertMethodParams(params, "videoChat.chat.send", respond)) {
+            return;
+          }
+          const result = await sendManagedChatMessage(parseChatSendParams(params));
+          respond(true, result);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Claw Cast chat send failed";
+          respondGatewayError(
+            respond,
+            message === INVALID_CHAT_SEND_PARAMS_ERROR ? "INVALID_REQUEST" : "UNAVAILABLE",
             message,
           );
         }

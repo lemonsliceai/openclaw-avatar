@@ -1,6 +1,6 @@
 {
   "name": "openclaw-video-chat-do-not-install-7f3c9d1",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "OpenClaw Claw Cast plugin",
   "license": "MIT",
   "type": "module",
@@ -15,6 +15,7 @@
     "video-chat/video-chat-agent-runner-wrapper.mjs",
     "video-chat/video-chat-agent-runner.js",
     "web/app.js",
+    "web/shared-shell.js",
     "web/index.html",
     "web/readme.html",
     "web/settings.html"
@@ -25,7 +26,7 @@
     ]
   },
   "peerDependencies": {
-    "openclaw": ">=2026.0.0"
+    "openclaw": ">=2026.3.11"
   },
   "dependencies": {
     "@livekit/agents": "1.0.48",

@@ -236,6 +236,8 @@ async function invoke(
     | "videoChat.setup.save"
     | "videoChat.session.create"
     | "videoChat.session.stop"
+    | "videoChat.chat.history"
+    | "videoChat.chat.send"
     | "videoChat.audio.transcribe"
     | "videoChat.tts.generate",
   params: Record<string, unknown>,
@@ -695,6 +697,351 @@ describe("video-chat plugin", () => {
     });
   });
 
+  it("waits for an in-flight sidecar reset before creating the next session", async () => {
+    const { methods } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    let resolveReset: () => void = () => {};
+    const resetPromise = new Promise<void>((resolve) => {
+      resolveReset = resolve;
+    });
+    mockResetProcessGroupChildren.mockImplementationOnce(() => resetPromise);
+
+    const stopPromise = invoke(methods, "videoChat.session.stop", {
+      roomName: "openclaw-main-12345678",
+    });
+
+    await flushMicrotasks();
+
+    let createFinished = false;
+    const createPromise = invoke(methods, "videoChat.session.create", {}).then((respond) => {
+      createFinished = true;
+      return respond;
+    });
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 20);
+    });
+
+    expect(createFinished).toBe(false);
+
+    resolveReset();
+
+    await Promise.all([stopPromise, createPromise]);
+    expect(createFinished).toBe(true);
+  });
+
+  it("loads chat history through the runtime subagent API", async () => {
+    const { httpRoutes, runtime } = setup();
+    vi.mocked(runtime.subagent.getSessionMessages).mockResolvedValueOnce({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          idempotencyKey: "voice-chat-run-browser-123",
+        },
+      ],
+    });
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/history",
+      method: "POST",
+      body: {
+        sessionKey: "agent:main:main",
+        limit: 12,
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.getSessionMessages).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      limit: 12,
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      success: true,
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          idempotencyKey: "voice-chat-run-browser-123",
+        },
+      ],
+    });
+  });
+
+  it("rejects invalid chat history route payloads before calling the runtime subagent API", async () => {
+    const { httpRoutes, runtime } = setup();
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/history",
+      method: "POST",
+      body: {
+        limit: "12",
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.getSessionMessages).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      success: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "invalid videoChat.chat.history params",
+      },
+    });
+  });
+
+  it("sends chat messages through the runtime subagent API", async () => {
+    const { httpRoutes, runtime } = setup();
+    vi.mocked(runtime.subagent.run).mockResolvedValueOnce({
+      runId: "run-123",
+    });
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/send",
+      method: "POST",
+      body: {
+        sessionKey: "agent:main:main",
+        message: "show me the bug",
+        idempotencyKey: "video-chat-ui-123",
+        attachments: [
+          {
+            type: "image",
+            mimeType: "image/png",
+            fileName: "error.png",
+            content: "Zm9v",
+          },
+        ],
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.run).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      deliver: false,
+      idempotencyKey: "video-chat-ui-123",
+      attachments: [
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "error.png",
+          content: "Zm9v",
+        },
+      ],
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      success: true,
+      response: {
+        runId: "run-123",
+      },
+    });
+  });
+
+  it("rejects invalid chat send route payloads before calling the runtime subagent API", async () => {
+    const { httpRoutes, runtime } = setup();
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/send",
+      method: "POST",
+      body: {
+        sessionKey: "agent:main:main",
+        message: "show me the bug",
+        attachments: [
+          {
+            type: "image",
+            mimeType: "image/png",
+            fileName: "error.png",
+          },
+        ],
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.run).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      success: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "invalid videoChat.chat.send params",
+      },
+    });
+  });
+
+  it("rejects chat send route payloads with too many attachments", async () => {
+    const { httpRoutes, runtime } = setup();
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/chat/send",
+      method: "POST",
+      body: {
+        sessionKey: "agent:main:main",
+        message: "show me the bug",
+        attachments: Array.from({ length: 5 }, (_, index) => ({
+          type: "image",
+          mimeType: "image/png",
+          fileName: `error-${index}.png`,
+          content: "Zm9v",
+        })),
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(runtime.subagent.run).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      success: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "invalid videoChat.chat.send params",
+      },
+    });
+  });
+
+  it("loads chat history through the gateway method", async () => {
+    const { methods, runtime } = setup();
+    vi.mocked(runtime.subagent.getSessionMessages).mockResolvedValueOnce({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          idempotencyKey: "voice-chat-run-browser-123",
+        },
+      ],
+    });
+
+    const respond = await invoke(methods, "videoChat.chat.history", {
+      sessionKey: "agent:main:main",
+      limit: 12,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(runtime.subagent.getSessionMessages).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      limit: 12,
+    });
+    expect(call?.[1]).toEqual({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          idempotencyKey: "voice-chat-run-browser-123",
+        },
+      ],
+    });
+  });
+
+  it("sends chat messages through the gateway method", async () => {
+    const { methods, runtime } = setup();
+    vi.mocked(runtime.subagent.run).mockResolvedValueOnce({
+      runId: "run-123",
+    });
+
+    const respond = await invoke(methods, "videoChat.chat.send", {
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      idempotencyKey: "video-chat-ui-123",
+      attachments: [
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "error.png",
+          content: "Zm9v",
+        },
+      ],
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(runtime.subagent.run).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      deliver: false,
+      idempotencyKey: "video-chat-ui-123",
+      attachments: [
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "error.png",
+          content: "Zm9v",
+        },
+      ],
+    });
+    expect(call?.[1]).toEqual({
+      runId: "run-123",
+    });
+  });
+
+  it("rejects invalid chat history params through the gateway method", async () => {
+    const { methods, runtime } = setup();
+
+    const respond = await invoke(methods, "videoChat.chat.history", {
+      sessionKey: "   ",
+      limit: 12,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]).toEqual({
+      code: "INVALID_REQUEST",
+      message: "invalid videoChat.chat.history params",
+    });
+    expect(runtime.subagent.getSessionMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid chat send params through the gateway method", async () => {
+    const { methods, runtime } = setup();
+    const oversizedContent = "x".repeat(10 * 1024 * 1024 + 1);
+
+    const respond = await invoke(methods, "videoChat.chat.send", {
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      attachments: [
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "error.png",
+          content: oversizedContent,
+        },
+      ],
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]).toEqual({
+      code: "INVALID_REQUEST",
+      message: "invalid videoChat.chat.send params",
+    });
+    expect(runtime.subagent.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects chat send params through the gateway method when attachment count exceeds the cap", async () => {
+    const { methods, runtime } = setup();
+
+    const respond = await invoke(methods, "videoChat.chat.send", {
+      sessionKey: "agent:main:main",
+      message: "show me the bug",
+      attachments: Array.from({ length: 5 }, (_, index) => ({
+        type: "image",
+        mimeType: "image/png",
+        fileName: `error-${index}.png`,
+        content: "Zm9v",
+      })),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]).toEqual({
+      code: "INVALID_REQUEST",
+      message: "invalid videoChat.chat.send params",
+    });
+    expect(runtime.subagent.run).not.toHaveBeenCalled();
+  });
+
   it("returns setup state for plugin-owned setup surfaces", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.setup.get", {});
@@ -1029,8 +1376,10 @@ describe("video-chat plugin", () => {
     expect(page.res.header("content-type")).toBe("text/html; charset=utf-8");
     expect(page.res.header("permissions-policy")).toBe("microphone=(self)");
     expect(page.res.body).toContain("<title>Claw Cast</title>");
+    expect(page.res.body).toContain('data-shared-topbar');
     expect(page.res.body).toContain('id="package-version-value"');
     expect(page.res.body).toContain(`>${packageJson.version}</span>`);
+    expect(page.res.body).not.toContain("__SHARED_SHELL_BOOTSTRAP__");
 
     const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/readme", {
       url: "/plugins/video-chat/readme",
@@ -1068,13 +1417,14 @@ describe("video-chat plugin", () => {
   });
 
   it("bootstraps the configured gateway token for the browser settings page", async () => {
-    const { httpRoutes } = setup({
+    const { httpRoutes, runtime } = setup({
       ...baseConfig,
       gateway: {
         port: 18789,
         auth: { mode: "token", token: "gateway-token" },
       },
     });
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.11";
 
     const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/bootstrap", {
       url: "/plugins/video-chat/bootstrap",
@@ -1082,13 +1432,40 @@ describe("video-chat plugin", () => {
     expect(bootstrap.handled).toBe(true);
     expect(bootstrap.res.statusCode).toBe(200);
     expect(bootstrap.res.header("content-type")).toBe("application/json; charset=utf-8");
+    expect(bootstrap.res.header("cache-control")).toBe("no-store");
+    expect(bootstrap.res.header("pragma")).toBe("no-cache");
+    expect(bootstrap.res.header("expires")).toBe("0");
     expect(JSON.parse(bootstrap.res.body)).toEqual({
       success: true,
+      openclaw: {
+        version: "2026.3.11",
+        minimumCompatibleVersion: "2026.3.11",
+        compatible: true,
+      },
       gateway: {
         auth: {
           mode: "token",
           token: "gateway-token",
         },
+      },
+    });
+  });
+
+  it("reports incompatible OpenClaw versions in the browser bootstrap payload", async () => {
+    const { httpRoutes, runtime } = setup();
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.10";
+
+    const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/bootstrap", {
+      url: "/plugins/video-chat/bootstrap",
+    });
+    expect(bootstrap.handled).toBe(true);
+    expect(bootstrap.res.statusCode).toBe(200);
+    expect(JSON.parse(bootstrap.res.body)).toMatchObject({
+      success: true,
+      openclaw: {
+        version: "2026.3.10",
+        minimumCompatibleVersion: "2026.3.11",
+        compatible: false,
       },
     });
   });
