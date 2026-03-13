@@ -57,9 +57,13 @@ const togglePictureInPictureButton = document.getElementById("toggle-picture-in-
 const chatStatusEl = document.getElementById("chat-status");
 const chatLogEl = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
+const chatComposerInputEl = document.getElementById("chat-composer-input");
 let chatAttachmentsEl = document.getElementById("chat-attachments");
+const chatFileInput = document.getElementById("chat-file-input");
 const chatInput = document.getElementById("chat-input");
+const chatAttachButton = document.getElementById("chat-attach");
 const chatSendButton = document.getElementById("chat-send");
+const chatTokenEstimateEl = document.getElementById("chat-token-estimate");
 
 const OPENCLAW_SETTINGS_STORAGE_KEY = "openclaw.control.settings.v1";
 const LEGACY_TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
@@ -125,6 +129,8 @@ const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
 const SERVER_SPEECH_MIN_SEGMENT_BYTES = 1_024;
 const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
 const CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const CHAT_JSON_RENDER_LIMIT = 20_000;
+const CHAT_TOKEN_ESTIMATE_MIN_CHARS = 100;
 const CHAT_SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -132,6 +138,12 @@ const CHAT_SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/gif",
   "image/avif",
 ]);
+const CHAT_WELCOME_SUGGESTIONS = [
+  "What can you do?",
+  "Help me test the avatar",
+  "Summarize the latest exchange",
+  "Give me a next step",
+];
 
 let activeSession = null;
 let activeRoom = null;
@@ -230,6 +242,7 @@ const chatComposerDrafts = {
 let chatAwaitingReply = false;
 let chatComposerAttachmentIdCounter = 0;
 const debugLogEntries = [];
+const assistantMetadataBackfillTimers = new Map();
 
 function isTextAreaElement(element) {
   return Boolean(element && typeof element === "object" && element.nodeType === 1 && element.tagName === "TEXTAREA");
@@ -419,6 +432,71 @@ function extractImageFilesFromClipboardEvent(event) {
   );
 }
 
+async function addChatComposerAttachments(files, key = "main", options = {}) {
+  const imageFiles = Array.from(files || []).filter(
+    (file) => isBlobLike(file) && isSupportedChatImageMimeType(file?.type),
+  );
+  if (imageFiles.length === 0) {
+    return false;
+  }
+
+  const sourceLabel = typeof options.sourceLabel === "string" && options.sourceLabel.trim()
+    ? options.sourceLabel.trim()
+    : "image";
+  const attachments = getChatComposerDraft(key).attachments;
+  const remainingSlots = CHAT_MAX_IMAGE_ATTACHMENTS - attachments.length;
+  if (remainingSlots <= 0) {
+    setChatStatus(`You can attach up to ${CHAT_MAX_IMAGE_ATTACHMENTS} images per message.`);
+    return true;
+  }
+
+  const filesToRead = imageFiles.slice(0, remainingSlots);
+  const skippedForLimit = imageFiles.length - filesToRead.length;
+  let skippedInvalid = 0;
+  const nextAttachments = [];
+
+  for (const file of filesToRead) {
+    if (!file || !isSupportedChatImageMimeType(file.type)) {
+      skippedInvalid += 1;
+      continue;
+    }
+    if (Number.isFinite(file.size) && file.size > CHAT_MAX_IMAGE_ATTACHMENT_BYTES) {
+      skippedInvalid += 1;
+      setChatStatus(`${sourceLabel} is too large. Limit ${Math.round(CHAT_MAX_IMAGE_ATTACHMENT_BYTES / (1024 * 1024))} MB.`);
+      continue;
+    }
+    const dataUrl = await readFileAsDataUrl(file).catch(() => "");
+    if (!dataUrl) {
+      skippedInvalid += 1;
+      continue;
+    }
+    nextAttachments.push({
+      id: nextChatComposerAttachmentId(),
+      dataUrl,
+      mimeType: file.type,
+      name: file.name || "Pasted image",
+    });
+  }
+
+  if (nextAttachments.length === 0) {
+    return true;
+  }
+
+  attachments.push(...nextAttachments);
+  renderChatComposerAttachments();
+  if (normalizeChatComposerKey(key) === "pip") {
+    syncAvatarDocumentPictureInPictureChatComposer();
+  }
+
+  const skippedCount = Math.max(0, skippedForLimit + skippedInvalid);
+  setChatStatus(
+    skippedCount > 0
+      ? `Added ${nextAttachments.length} image${nextAttachments.length === 1 ? "" : "s"}. Extra images were skipped.`
+      : `Added ${nextAttachments.length} image${nextAttachments.length === 1 ? "" : "s"} to the message.`,
+  );
+  return true;
+}
+
 function createChatComposerAttachmentPreview(attachment, ownerDocument, options = {}) {
   const previewEl = ownerDocument.createElement("div");
   previewEl.className = "chat-attachment";
@@ -487,14 +565,14 @@ function setChatComposerAttachmentRemoveButtonsInteractive(container, interactiv
 }
 
 function ensureChatComposerAttachmentsContainer() {
-  if (!chatForm) {
+  if (!chatForm || !chatComposerInputEl) {
     return null;
   }
   if (!chatAttachmentsEl) {
     chatAttachmentsEl = createChatComposerAttachmentsContainer(document, "chat-attachments", "chat-attachments");
   }
   if (!chatAttachmentsEl.isConnected) {
-    chatForm.insertBefore(chatAttachmentsEl, chatInput?.closest(".chat-compose__row") || null);
+    chatComposerInputEl.insertBefore(chatAttachmentsEl, chatInput || chatComposerInputEl.firstChild || null);
   }
   return chatAttachmentsEl;
 }
@@ -614,59 +692,9 @@ async function addChatComposerAttachmentsFromClipboardEvent(event, key = "main")
   }
 
   event.preventDefault();
-
-  const attachments = getChatComposerDraft(key).attachments;
-  const remainingSlots = CHAT_MAX_IMAGE_ATTACHMENTS - attachments.length;
-  if (remainingSlots <= 0) {
-    setChatStatus(`You can attach up to ${CHAT_MAX_IMAGE_ATTACHMENTS} images per message.`);
-    return true;
-  }
-
-  const filesToRead = imageFiles.slice(0, remainingSlots);
-  const skippedForLimit = imageFiles.length - filesToRead.length;
-  let skippedInvalid = 0;
-  const nextAttachments = [];
-
-  for (const file of filesToRead) {
-    if (!file || !isSupportedChatImageMimeType(file.type)) {
-      skippedInvalid += 1;
-      continue;
-    }
-    if (Number.isFinite(file.size) && file.size > CHAT_MAX_IMAGE_ATTACHMENT_BYTES) {
-      skippedInvalid += 1;
-      setChatStatus(`Pasted image is too large. Limit ${Math.round(CHAT_MAX_IMAGE_ATTACHMENT_BYTES / (1024 * 1024))} MB.`);
-      continue;
-    }
-    const dataUrl = await readFileAsDataUrl(file).catch(() => "");
-    if (!dataUrl) {
-      skippedInvalid += 1;
-      continue;
-    }
-    nextAttachments.push({
-      id: nextChatComposerAttachmentId(),
-      dataUrl,
-      mimeType: file.type,
-      name: file.name || "Pasted image",
-    });
-  }
-
-  if (nextAttachments.length === 0) {
-    return true;
-  }
-
-  attachments.push(...nextAttachments);
-  renderChatComposerAttachments();
-  if (normalizeChatComposerKey(key) === "pip") {
-    syncAvatarDocumentPictureInPictureChatComposer();
-  }
-
-  const skippedCount = Math.max(0, skippedForLimit + skippedInvalid);
-  setChatStatus(
-    skippedCount > 0
-      ? `Added ${nextAttachments.length} image${nextAttachments.length === 1 ? "" : "s"}. Extra images were skipped.`
-      : `Added ${nextAttachments.length} image${nextAttachments.length === 1 ? "" : "s"} to the message.`,
-  );
-  return true;
+  return addChatComposerAttachments(imageFiles, key, {
+    sourceLabel: "Pasted image",
+  });
 }
 
 function hasChatComposerDraftValue(value, attachments = []) {
@@ -809,6 +837,17 @@ function extractChatMessageContent(message) {
   }
 
   return { text, images };
+}
+
+function stripStoredUserTimestampPrefix(text) {
+  const normalized = typeof text === "string" ? text.trim() : "";
+  if (!normalized) {
+    return "";
+  }
+  return normalized.replace(
+    /^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\s+\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?\s+[A-Z]{2,5}\]\s*/u,
+    "",
+  );
 }
 
 function openChatImage(url) {
@@ -3708,12 +3747,34 @@ function syncChatInputHeight() {
   syncTextareaHeight(chatInput);
 }
 
+function estimateChatTokens(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (normalized.length < CHAT_TOKEN_ESTIMATE_MIN_CHARS) {
+    return "";
+  }
+  return `~${Math.ceil(normalized.length / 4)} tokens`;
+}
+
+function syncChatTokenEstimate() {
+  if (!chatTokenEstimateEl) {
+    return;
+  }
+  const estimate = estimateChatTokens(chatInput?.value || "");
+  chatTokenEstimateEl.textContent = estimate;
+  chatTokenEstimateEl.hidden = !estimate;
+}
+
+function syncChatComposerUi() {
+  syncChatInputHeight();
+  syncChatTokenEstimate();
+}
+
 function syncChatComposerInputHeight(input) {
   if (!isTextAreaElement(input)) {
     return;
   }
   if (input === chatInput) {
-    syncChatInputHeight();
+    syncChatComposerUi();
     return;
   }
   syncTextareaHeight(input, {
@@ -4319,6 +4380,7 @@ function clearChatLog() {
   chatAwaitingReply = false;
   clearRecentAvatarReplies();
   clearAllChatComposerAttachments();
+  updateChatControls();
   renderChatLog({ scrollToBottom: false });
 }
 
@@ -4406,16 +4468,6 @@ function getChatSenderLabel(roleClass) {
   return "System";
 }
 
-function getChatAvatarLabel(roleClass) {
-  if (roleClass === "user") {
-    return "Y";
-  }
-  if (roleClass === "assistant") {
-    return "A";
-  }
-  return "S";
-}
-
 function formatChatTimestamp(timestamp) {
   return new Date(resolveChatTimestamp(timestamp) ?? Date.now()).toLocaleTimeString([], {
     hour: "numeric",
@@ -4423,39 +4475,503 @@ function formatChatTimestamp(timestamp) {
   });
 }
 
+function escapeChatHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeChatHtmlAttribute(value) {
+  return escapeChatHtml(value).replaceAll('"', "&quot;");
+}
+
+function normalizeChatHref(href) {
+  const trimmed = String(href || "").trim();
+  if (!trimmed) {
+    return "#";
+  }
+  if (
+    trimmed.startsWith("#") ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("mailto:")
+  ) {
+    return trimmed;
+  }
+  return "#";
+}
+
+function normalizeChatImageSrc(src) {
+  const trimmed = String(src || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("data:image/") ||
+    trimmed.startsWith("blob:") ||
+    trimmed.startsWith("/")
+  ) {
+    return trimmed;
+  }
+  return "";
+}
+
+function renderChatMarkdownInline(value) {
+  const htmlTokens = [];
+  const storeHtmlToken = (html) => {
+    const token = `\u0000HTML${htmlTokens.length}\u0000`;
+    htmlTokens.push(html);
+    return token;
+  };
+
+  let rendered = String(value || "").replace(/`([^`]+)`/g, (_match, code) =>
+    storeHtmlToken(`<code>${escapeChatHtml(code)}</code>`),
+  );
+  rendered = escapeChatHtml(rendered);
+  rendered = rendered.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt, href) => {
+    const src = normalizeChatImageSrc(href);
+    if (!src) {
+      return escapeChatHtml(_match);
+    }
+    return storeHtmlToken(
+      `<img class="markdown-inline-image" src="${escapeChatHtmlAttribute(src)}" alt="${escapeChatHtmlAttribute(alt)}" loading="lazy" />`,
+    );
+  });
+  rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const resolvedHref = normalizeChatHref(href);
+    return storeHtmlToken(
+      `<a href="${escapeChatHtmlAttribute(resolvedHref)}" target="_blank" rel="noopener noreferrer">${escapeChatHtml(label)}</a>`,
+    );
+  });
+  rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  rendered = rendered.replace(/(^|[\s(])\*([^*]+)\*(?=[\s).,!?]|$)/g, "$1<em>$2</em>");
+  rendered = rendered.replace(
+    /(^|[\s(])(https?:\/\/[^\s<]*[^\s<).,!?])/g,
+    '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>',
+  );
+  return rendered.replace(/\u0000HTML(\d+)\u0000/g, (_match, index) => {
+    return htmlTokens[Number(index)] ?? "";
+  });
+}
+
+function isChatMarkdownTableSeparator(line) {
+  return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$/.test(line);
+}
+
+function parseChatMarkdownTableRow(line) {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+function renderChatMarkdownList(lines, startIndex, indentLength) {
+  const items = [];
+  let index = startIndex;
+
+  while (index < lines.length) {
+    const itemMatch = lines[index]?.match(/^(\s*)-\s+(.*)$/);
+    if (!itemMatch) {
+      break;
+    }
+    const currentIndent = itemMatch[1]?.length ?? 0;
+    if (currentIndent !== indentLength) {
+      break;
+    }
+
+    const itemParts = [renderChatMarkdownInline(itemMatch[2] ?? "")];
+    index += 1;
+
+    while (index < lines.length) {
+      const nextLine = lines[index] ?? "";
+      if (!nextLine.trim()) {
+        index += 1;
+        break;
+      }
+
+      const nestedItemMatch = nextLine.match(/^(\s*)-\s+(.*)$/);
+      if (nestedItemMatch) {
+        const nestedIndent = nestedItemMatch[1]?.length ?? 0;
+        if (nestedIndent === indentLength) {
+          break;
+        }
+        if (nestedIndent > indentLength) {
+          const nestedList = renderChatMarkdownList(lines, index, nestedIndent);
+          itemParts.push(nestedList.html);
+          index = nestedList.nextIndex;
+          continue;
+        }
+        break;
+      }
+
+      const continuationIndent = nextLine.match(/^\s*/)?.[0].length ?? 0;
+      if (continuationIndent <= indentLength) {
+        break;
+      }
+      itemParts.push(`<p>${renderChatMarkdownInline(nextLine.trim())}</p>`);
+      index += 1;
+    }
+
+    items.push(`<li>${itemParts.join("")}</li>`);
+  }
+
+  return {
+    html: `<ul>${items.join("")}</ul>`,
+    nextIndex: index,
+  };
+}
+
+function renderChatMarkdownToHtml(markdown) {
+  const lines = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+  const html = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    if (/^```/.test(trimmed)) {
+      const language = trimmed.slice(3).trim();
+      index += 1;
+      const codeLines = [];
+      while (index < lines.length && !/^```/.test((lines[index] ?? "").trim())) {
+        codeLines.push(lines[index] ?? "");
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      const languageClass = language ? ` class="language-${escapeChatHtmlAttribute(language)}"` : "";
+      html.push(`<pre><code${languageClass}>${escapeChatHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      const level = headingMatch[1]?.length ?? 1;
+      html.push(`<h${level}>${renderChatMarkdownInline(headingMatch[2] ?? "")}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (line.includes("|") && index + 1 < lines.length && isChatMarkdownTableSeparator(lines[index + 1] ?? "")) {
+      const headerCells = parseChatMarkdownTableRow(line);
+      index += 2;
+      const bodyRows = [];
+      while (index < lines.length) {
+        const rowLine = lines[index] ?? "";
+        if (!rowLine.trim() || !rowLine.includes("|")) {
+          break;
+        }
+        const cells = parseChatMarkdownTableRow(rowLine);
+        bodyRows.push(`<tr>${cells.map((cell) => `<td>${renderChatMarkdownInline(cell)}</td>`).join("")}</tr>`);
+        index += 1;
+      }
+      html.push(
+        `<table><thead><tr>${headerCells.map((cell) => `<th>${renderChatMarkdownInline(cell)}</th>`).join("")}</tr></thead><tbody>${bodyRows.join("")}</tbody></table>`,
+      );
+      continue;
+    }
+
+    const listMatch = line.match(/^(\s*)-\s+(.*)$/);
+    if (listMatch) {
+      const list = renderChatMarkdownList(lines, index, listMatch[1]?.length ?? 0);
+      html.push(list.html);
+      index = list.nextIndex;
+      continue;
+    }
+
+    const paragraphLines = [trimmed];
+    index += 1;
+    while (index < lines.length) {
+      const nextLine = lines[index] ?? "";
+      const nextTrimmed = nextLine.trim();
+      if (
+        !nextTrimmed ||
+        /^```/.test(nextTrimmed) ||
+        /^#{1,6}\s+/.test(nextLine) ||
+        /^(\s*)-\s+/.test(nextLine) ||
+        (nextLine.includes("|") && index + 1 < lines.length && isChatMarkdownTableSeparator(lines[index + 1] ?? ""))
+      ) {
+        break;
+      }
+      paragraphLines.push(nextTrimmed);
+      index += 1;
+    }
+    html.push(`<p>${renderChatMarkdownInline(paragraphLines.join(" "))}</p>`);
+  }
+
+  return html.join("\n");
+}
+
+function detectChatJsonBlock(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || trimmed.length > CHAT_JSON_RENDER_LIMIT) {
+    return null;
+  }
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      return {
+        parsed,
+        pretty: JSON.stringify(parsed, null, 2),
+      };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function formatChatTokensCompact(n) {
+  if (n >= 1_000_000) {
+    return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (n >= 1_000) {
+    return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return String(n);
+}
+
+function extractMessageUsageMeta(rawMessage) {
+  if (!rawMessage || typeof rawMessage !== "object") {
+    return null;
+  }
+  const usage = rawMessage.usage && typeof rawMessage.usage === "object" ? rawMessage.usage : null;
+  const cost = rawMessage.cost && typeof rawMessage.cost === "object" ? rawMessage.cost : null;
+  const model = typeof rawMessage.model === "string" && rawMessage.model !== "gateway-injected"
+    ? rawMessage.model
+    : "";
+
+  const meta = {
+    input: Number(usage?.input ?? usage?.inputTokens ?? 0) || 0,
+    output: Number(usage?.output ?? usage?.outputTokens ?? 0) || 0,
+    cacheRead: Number(usage?.cacheRead ?? usage?.cache_read_input_tokens ?? 0) || 0,
+    cacheWrite: Number(usage?.cacheWrite ?? usage?.cache_creation_input_tokens ?? 0) || 0,
+    cost: Number(cost?.total ?? 0) || 0,
+    model,
+  };
+
+  if (!meta.input && !meta.output && !meta.cacheRead && !meta.cacheWrite && !meta.cost && !meta.model) {
+    return null;
+  }
+  return meta;
+}
+
+function mergeGroupMessageMeta(messages) {
+  const merged = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    model: "",
+  };
+
+  for (const message of messages) {
+    const meta = extractMessageUsageMeta(message?.rawMessage);
+    if (!meta) {
+      continue;
+    }
+    merged.input += meta.input;
+    merged.output += meta.output;
+    merged.cacheRead += meta.cacheRead;
+    merged.cacheWrite += meta.cacheWrite;
+    merged.cost += meta.cost;
+    if (meta.model) {
+      merged.model = meta.model;
+    }
+  }
+
+  if (!merged.input && !merged.output && !merged.cacheRead && !merged.cacheWrite && !merged.cost && !merged.model) {
+    return null;
+  }
+  return merged;
+}
+
+function createMessageMetaEl(meta) {
+  if (!meta) {
+    return null;
+  }
+  const metaEl = document.createElement("span");
+  metaEl.className = "msg-meta";
+
+  const appendPart = (className, text) => {
+    const part = document.createElement("span");
+    part.className = className;
+    part.textContent = text;
+    metaEl.appendChild(part);
+  };
+
+  if (meta.input) {
+    appendPart("msg-meta__tokens", `↑${formatChatTokensCompact(meta.input)}`);
+  }
+  if (meta.output) {
+    appendPart("msg-meta__tokens", `↓${formatChatTokensCompact(meta.output)}`);
+  }
+  if (meta.cacheRead) {
+    appendPart("msg-meta__cache", `R${formatChatTokensCompact(meta.cacheRead)}`);
+  }
+  if (meta.cacheWrite) {
+    appendPart("msg-meta__cache", `W${formatChatTokensCompact(meta.cacheWrite)}`);
+  }
+  if (meta.cost > 0) {
+    appendPart("msg-meta__cost", `$${meta.cost.toFixed(4)}`);
+  }
+  if (meta.model) {
+    const shortModel = meta.model.includes("/") ? meta.model.split("/").pop() : meta.model;
+    appendPart("msg-meta__model", shortModel || meta.model);
+  }
+
+  return metaEl.childElementCount > 0 ? metaEl : null;
+}
+
+function createSvgFromMarkup(markup) {
+  const template = document.createElement("template");
+  template.innerHTML = markup.trim();
+  return template.content.firstElementChild;
+}
+
+function buildWelcomeState() {
+  const emptyState = document.createElement("div");
+  emptyState.className = "agent-chat__welcome";
+
+  const avatar = document.createElement("div");
+  avatar.className = "agent-chat__avatar--logo";
+  avatar.appendChild(
+    createSvgFromMarkup(`
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2v4"></path>
+        <path d="M12 18v4"></path>
+        <path d="m4.93 4.93 2.83 2.83"></path>
+        <path d="m16.24 16.24 2.83 2.83"></path>
+        <path d="M2 12h4"></path>
+        <path d="M18 12h4"></path>
+        <path d="m4.93 19.07 2.83-2.83"></path>
+        <path d="m16.24 7.76 2.83-2.83"></path>
+        <circle cx="12" cy="12" r="3.5"></circle>
+      </svg>
+    `),
+  );
+  emptyState.appendChild(avatar);
+
+  const heading = document.createElement("h2");
+  heading.textContent = activeSession ? "Ready to chat" : "Start a session to chat";
+  emptyState.appendChild(heading);
+
+  const badges = document.createElement("div");
+  badges.className = "agent-chat__badges";
+  const badge = document.createElement("span");
+  badge.className = "agent-chat__badge";
+  badge.textContent = activeSession ? "Active session connected" : "Waiting for a session";
+  badges.appendChild(badge);
+  emptyState.appendChild(badges);
+
+  const hint = document.createElement("p");
+  hint.className = "agent-chat__hint";
+  hint.innerHTML = activeSession
+    ? 'Type a message below or pick a suggestion to get moving.'
+    : 'Use the main controls to start a session, then your chat will appear here.';
+  emptyState.appendChild(hint);
+
+  if (activeSession) {
+    const suggestions = document.createElement("div");
+    suggestions.className = "agent-chat__suggestions";
+    for (const suggestion of CHAT_WELCOME_SUGGESTIONS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "agent-chat__suggestion";
+      button.textContent = suggestion;
+      button.addEventListener("click", () => {
+        if (!isTextAreaElement(chatInput)) {
+          return;
+        }
+        chatInput.value = suggestion;
+        syncChatComposerUi();
+        chatForm?.requestSubmit();
+      });
+      suggestions.appendChild(button);
+    }
+    emptyState.appendChild(suggestions);
+  }
+
+  return emptyState;
+}
+
 function buildChatTextContent(text) {
   const content = document.createElement("div");
   content.className = "chat-text";
-
   const normalizedText = String(text || "").replace(/\r\n/g, "\n").trim();
-  const paragraphs = normalizedText ? normalizedText.split(/\n{2,}/) : [];
+  const jsonBlock = detectChatJsonBlock(normalizedText);
+  if (jsonBlock) {
+    const details = document.createElement("details");
+    details.className = "chat-json-collapse";
 
-  if (!paragraphs.length) {
-    const paragraph = document.createElement("p");
-    paragraph.textContent = "";
-    content.appendChild(paragraph);
+    const summary = document.createElement("summary");
+    summary.className = "chat-json-summary";
+    summary.innerHTML = `
+      <span class="chat-json-badge">JSON</span>
+      <span class="chat-json-label">${
+        Array.isArray(jsonBlock.parsed)
+          ? `Array (${jsonBlock.parsed.length} item${jsonBlock.parsed.length === 1 ? "" : "s"})`
+          : jsonBlock.parsed && typeof jsonBlock.parsed === "object"
+            ? `Object (${Object.keys(jsonBlock.parsed).length} keys)`
+            : "JSON"
+      }</span>
+    `;
+    details.appendChild(summary);
+
+    const pre = document.createElement("pre");
+    pre.className = "chat-json-content";
+    const code = document.createElement("code");
+    code.textContent = jsonBlock.pretty;
+    pre.appendChild(code);
+    details.appendChild(pre);
+    content.appendChild(details);
     return content;
   }
 
-  for (const paragraphText of paragraphs) {
-    const paragraph = document.createElement("p");
-    const lines = paragraphText.split("\n");
-    lines.forEach((line, index) => {
-      if (index > 0) {
-        paragraph.appendChild(document.createElement("br"));
-      }
-      paragraph.appendChild(document.createTextNode(line));
-    });
-    content.appendChild(paragraph);
-  }
-
+  content.innerHTML = renderChatMarkdownToHtml(normalizedText);
   return content;
 }
 
 function createChatAvatar(roleClass) {
   const avatar = document.createElement("div");
   avatar.className = `chat-avatar ${roleClass}`;
-  avatar.textContent = getChatAvatarLabel(roleClass);
+  const svgMarkup =
+    roleClass === "user"
+      ? `
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="8" r="4"></circle>
+          <path d="M20 21a8 8 0 1 0-16 0"></path>
+        </svg>
+      `
+      : roleClass === "assistant"
+        ? `
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+            <path d="M12 2l2.4 7.2H22l-6 4.8 2.4 7.2L12 16l-6.4 5.2L8 14 2 9.2h7.6z"></path>
+          </svg>
+        `
+        : `
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M12 8h.01"></path>
+            <path d="M11 12h1v4h1"></path>
+          </svg>
+        `;
+  const icon = createSvgFromMarkup(svgMarkup);
+  if (icon) {
+    avatar.appendChild(icon);
+  }
   return avatar;
 }
 
@@ -4535,10 +5051,7 @@ function renderChatLog(options = {}) {
   chatLogEl.textContent = "";
 
   if (!chatMessages.length && !chatAwaitingReply) {
-    const emptyState = document.createElement("div");
-    emptyState.className = "video-chat-chat-empty";
-    emptyState.textContent = "Chat history will appear here once the active session starts.";
-    chatLogEl.appendChild(emptyState);
+    chatLogEl.appendChild(buildWelcomeState());
   } else {
     const groups = [];
     for (const message of chatMessages) {
@@ -4576,6 +5089,10 @@ function renderChatLog(options = {}) {
 
       footer.appendChild(sender);
       footer.appendChild(timestamp);
+      const meta = createMessageMetaEl(mergeGroupMessageMeta(group.messages));
+      if (meta) {
+        footer.appendChild(meta);
+      }
       messagesEl.appendChild(footer);
       groupEl.appendChild(messagesEl);
       chatLogEl.appendChild(groupEl);
@@ -4607,9 +5124,11 @@ function replaceChatLog(entries) {
       text: typeof entry.text === "string" ? entry.text : "",
       images: hasImages ? entry.images : [],
       timestamp: resolveChatTimestamp(entry.timestamp) ?? Date.now(),
+      rawMessage: entry?.rawMessage && typeof entry.rawMessage === "object" ? entry.rawMessage : null,
     });
   }
   chatAwaitingReply = false;
+  updateChatControls();
   renderChatLog({ scrollToBottom: false });
 }
 
@@ -4619,6 +5138,7 @@ function setChatAwaitingReply(nextValue) {
     return;
   }
   chatAwaitingReply = normalized;
+  updateChatControls();
   renderChatLog();
 }
 
@@ -4643,9 +5163,11 @@ function appendChatLine(role, textOrMessage, options = {}) {
     text: content.text,
     images: content.images,
     timestamp: resolveChatTimestamp(options.timestamp) ?? Date.now(),
+    rawMessage: options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null,
   });
   if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
     chatAwaitingReply = Boolean(options.awaitingReply);
+    updateChatControls();
   }
   renderChatLog();
 }
@@ -4746,13 +5268,19 @@ function updateChatControls() {
   }
   const hasSession = Boolean(activeSession);
   chatInput.disabled = !hasSession;
-  chatSendButton.disabled = !hasSession;
+  if (chatAttachButton) {
+    chatAttachButton.disabled = !hasSession;
+  }
+  if (chatFileInput) {
+    chatFileInput.disabled = !hasSession;
+  }
+  chatSendButton.disabled = !hasSession || chatAwaitingReply;
   if (getChatComposerDraft("main").attachments.length > 0) {
     ensureChatComposerAttachmentsContainer();
   } else {
     removeChatComposerAttachmentsContainer();
   }
-  syncChatInputHeight();
+  syncChatComposerUi();
   syncAvatarDocumentPictureInPictureChatComposer();
 }
 
@@ -4781,6 +5309,7 @@ function closeGatewaySocket(reason) {
   gatewaySocket = null;
   gatewayHandshakePromise = null;
   clearGatewayPendingRequests(new Error(reason));
+  updateChatControls();
   renderChatLog({ scrollToBottom: false });
 }
 
@@ -4809,8 +5338,16 @@ function handleGatewayChatEvent(payload) {
       {
         awaitingReply: false,
         timestamp: resolveMessageTimestamp(payload.message),
+        rawMessage: payload.message,
       },
     );
+    if (!extractMessageUsageMeta(payload.message) && content.text) {
+      scheduleAssistantMessageMetadataBackfill({
+        sessionKey: expectedSessionKey,
+        text: content.text,
+        timestamp: resolveMessageTimestamp(payload.message),
+      });
+    }
     setChatStatus("Reply received.");
     return;
   }
@@ -5020,12 +5557,16 @@ async function loadChatHistory() {
       continue;
     }
     const content = extractChatMessageContent(message);
+    if (role === "user") {
+      content.text = stripStoredUserTimestampPrefix(content.text);
+    }
     if (content.text || content.images.length > 0) {
       entries.push({
         role,
         text: content.text,
         images: content.images,
         timestamp: resolveMessageTimestamp(message),
+        rawMessage: message,
       });
       if (role === "assistant" && content.text) {
         rememberRecentAvatarReply(content.text, resolveMessageTimestamp(message));
@@ -5040,6 +5581,85 @@ async function loadChatHistory() {
     }
   }
   replaceChatLog(entries);
+}
+
+async function backfillAssistantMessageMetadataFromHistory(params = {}) {
+  const sessionKey = typeof params.sessionKey === "string" ? params.sessionKey.trim() : "";
+  const targetText = typeof params.text === "string" ? params.text.trim() : "";
+  const targetTimestamp = resolveChatTimestamp(params.timestamp) ?? Date.now();
+  if (!sessionKey || !targetText) {
+    return;
+  }
+
+  const history = await requestJson("/plugins/video-chat/api/chat/history", {
+    method: "POST",
+    body: JSON.stringify({
+      sessionKey,
+      limit: 30,
+    }),
+  });
+
+  const normalizedTarget = normalizeComparableSpeechText(targetText);
+  const historyMessages = Array.isArray(history?.messages) ? history.messages : [];
+  let matchedHistoryMessage = null;
+
+  for (let index = historyMessages.length - 1; index >= 0; index -= 1) {
+    const historyMessage = historyMessages[index];
+    if (!historyMessage || typeof historyMessage !== "object" || historyMessage.role !== "assistant") {
+      continue;
+    }
+    if (!extractMessageUsageMeta(historyMessage)) {
+      continue;
+    }
+    const historyContent = extractChatMessageContent(historyMessage);
+    const normalizedHistoryText = normalizeComparableSpeechText(historyContent.text);
+    const historyTimestamp = resolveMessageTimestamp(historyMessage);
+    if (
+      normalizedHistoryText &&
+      normalizedHistoryText === normalizedTarget &&
+      Math.abs(historyTimestamp - targetTimestamp) <= 5 * 60 * 1000
+    ) {
+      matchedHistoryMessage = historyMessage;
+      break;
+    }
+  }
+
+  if (!matchedHistoryMessage) {
+    return;
+  }
+
+  for (let index = chatMessages.length - 1; index >= 0; index -= 1) {
+    const message = chatMessages[index];
+    if (!message || message.role !== "assistant" || extractMessageUsageMeta(message.rawMessage)) {
+      continue;
+    }
+    const normalizedLocalText = normalizeComparableSpeechText(message.text);
+    if (!normalizedLocalText || normalizedLocalText !== normalizedTarget) {
+      continue;
+    }
+    if (Math.abs((resolveChatTimestamp(message.timestamp) ?? Date.now()) - targetTimestamp) > 5 * 60 * 1000) {
+      continue;
+    }
+    message.rawMessage = matchedHistoryMessage;
+    renderChatLog({ scrollToBottom: false });
+    break;
+  }
+}
+
+function scheduleAssistantMessageMetadataBackfill(params = {}) {
+  const sessionKey = typeof params.sessionKey === "string" ? params.sessionKey.trim() : "";
+  if (!sessionKey) {
+    return;
+  }
+  const existingTimer = assistantMetadataBackfillTimers.get(sessionKey);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+  const timer = setTimeout(() => {
+    assistantMetadataBackfillTimers.delete(sessionKey);
+    void backfillAssistantMessageMetadataFromHistory(params).catch(() => {});
+  }, 350);
+  assistantMetadataBackfillTimers.set(sessionKey, timer);
 }
 
 function clearRemoteTiles(options = {}) {
@@ -6241,7 +6861,7 @@ async function submitChatMessage(rawMessage, options = {}) {
 
 if (isTextAreaElement(chatInput)) {
   chatInput.addEventListener("input", () => {
-    syncChatInputHeight();
+    syncChatComposerUi();
   });
 
   chatInput.addEventListener("paste", (event) => {
@@ -6256,6 +6876,63 @@ if (isTextAreaElement(chatInput)) {
     }
     event.preventDefault();
     chatForm?.requestSubmit();
+  });
+}
+
+if (chatAttachButton && chatFileInput) {
+  chatAttachButton.addEventListener("click", () => {
+    if (chatAttachButton.disabled) {
+      return;
+    }
+    chatFileInput.click();
+  });
+}
+
+if (chatFileInput) {
+  chatFileInput.addEventListener("change", () => {
+    void addChatComposerAttachments(chatFileInput.files || [], "main", {
+      sourceLabel: "Image",
+    }).finally(() => {
+      chatFileInput.value = "";
+    });
+  });
+}
+
+if (chatComposerInputEl) {
+  chatComposerInputEl.addEventListener("dragenter", (event) => {
+    if (!activeSession) {
+      return;
+    }
+    event.preventDefault();
+    chatComposerInputEl.classList.add("agent-chat__input--dragover");
+  });
+
+  chatComposerInputEl.addEventListener("dragover", (event) => {
+    if (!activeSession) {
+      return;
+    }
+    event.preventDefault();
+    chatComposerInputEl.classList.add("agent-chat__input--dragover");
+  });
+
+  chatComposerInputEl.addEventListener("dragleave", (event) => {
+    const nextTarget = event.relatedTarget;
+    if (!(nextTarget instanceof Node) || !chatComposerInputEl.contains(nextTarget)) {
+      chatComposerInputEl.classList.remove("agent-chat__input--dragover");
+    }
+  });
+
+  chatComposerInputEl.addEventListener("drop", (event) => {
+    chatComposerInputEl.classList.remove("agent-chat__input--dragover");
+    if (!activeSession) {
+      return;
+    }
+    event.preventDefault();
+    void addChatComposerAttachments(event.dataTransfer?.files || [], "main", {
+      sourceLabel: "Dropped image",
+    }).catch((error) => {
+      setChatStatus(error instanceof Error ? error.message : "Failed to attach dropped image.");
+    });
   });
 }
 

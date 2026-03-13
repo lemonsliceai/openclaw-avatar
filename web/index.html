@@ -1216,13 +1216,48 @@
           <section class="chat" aria-label="Text chat conversation">
             <div class="chat-thread" id="chat-log" role="log" aria-live="polite"></div>
             <form id="chat-form" class="chat-compose">
-              <div class="chat-compose__row">
-                <label class="field chat-compose__field">
-                  <span>Message</span>
-                  <textarea id="chat-input" placeholder="Message (↵ to send, Shift+↵ for line breaks, paste images)"></textarea>
-                </label>
-                <div class="chat-compose__actions">
-                  <button class="btn primary" type="submit" id="chat-send">Send</button>
+              <div class="agent-chat__input" id="chat-composer-input">
+                <input
+                  id="chat-file-input"
+                  class="agent-chat__file-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+                  multiple
+                />
+                <textarea
+                  id="chat-input"
+                  rows="1"
+                  placeholder="Message the active session. Press Enter to send, Shift+Enter for a new line."
+                ></textarea>
+                <div class="agent-chat__toolbar">
+                  <div class="agent-chat__toolbar-left">
+                    <button
+                      class="agent-chat__input-btn"
+                      type="button"
+                      id="chat-attach"
+                      aria-label="Attach image"
+                      title="Attach image"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 1 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48"></path>
+                      </svg>
+                    </button>
+                    <span class="agent-chat__token-count" id="chat-token-estimate" hidden></span>
+                  </div>
+                  <div class="agent-chat__toolbar-right">
+                    <button
+                      class="chat-send-btn"
+                      type="submit"
+                      id="chat-send"
+                      aria-label="Send message"
+                      title="Send message"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M22 2 11 13"></path>
+                        <path d="m22 2-7 20-4-9-9-4Z"></path>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </div>
             </form>
