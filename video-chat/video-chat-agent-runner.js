@@ -90,10 +90,11 @@ function parseJobMetadata(raw) {
   const parsed = JSON.parse(raw);
   const sessionKey = typeof parsed.sessionKey === "string" ? parsed.sessionKey.trim() : "";
   const imageUrl = typeof parsed.imageUrl === "string" ? parsed.imageUrl.trim() : "";
+  const interruptReplyOnNewMessage = parsed.interruptReplyOnNewMessage === true;
   if (!sessionKey || !imageUrl) {
     throw new Error("LiveKit Claw Cast job metadata is incomplete");
   }
-  return { sessionKey, imageUrl };
+  return { sessionKey, imageUrl, interruptReplyOnNewMessage };
 }
 
 function extractTextFromMessage(message) {
@@ -380,6 +381,7 @@ async function runVideoChatAgentEntry(ctx) {
 
   const spokenRuns = new Set();
   let gatewayClient = null;
+  const interruptReplyOnNewMessage = metadata.interruptReplyOnNewMessage === true;
 
   console.log("[video-chat-agent] connecting gateway bridge");
   gatewayClient = await connectGatewayBridge({
@@ -407,15 +409,23 @@ async function runVideoChatAgentEntry(ctx) {
         return;
       }
       console.log(
-        `[video-chat-agent] speaking gateway reply${runId ? ` run=${runId}` : ""} length=${text.length}`,
+        `[video-chat-agent] speaking gateway reply${runId ? ` run=${runId}` : ""} length=${text.length} interruptible=${interruptReplyOnNewMessage}`,
       );
       logRoomSnapshot("before-session-say", ctx.room);
       try {
-        await session.say(text, { allowInterruptions: false });
+        if (interruptReplyOnNewMessage) {
+          await session.interrupt({ force: true }).await;
+        }
+        const speechHandle = session.say(text, {
+          allowInterruptions: interruptReplyOnNewMessage,
+        });
         if (runId) {
           spokenRuns.add(runId);
         }
-        console.log(`[video-chat-agent] finished speaking gateway reply${runId ? ` run=${runId}` : ""}`);
+        await speechHandle.waitForPlayout();
+        console.log(
+          `[video-chat-agent] ${speechHandle.interrupted ? "interrupted" : "finished"} gateway reply${runId ? ` run=${runId}` : ""}`,
+        );
         logRoomSnapshot("after-session-say", ctx.room);
       } catch (error) {
         console.error(
