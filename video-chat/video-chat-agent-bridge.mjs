@@ -136,6 +136,9 @@ async function main() {
       logLevel,
     }),
   );
+  worker.event.once("worker_registered", (workerId) => {
+    console.log(`[video-chat-agent] worker registered and ready id=${workerId}`);
+  });
 
   let shuttingDown = false;
   const shutdownWorker = async ({ drain, exitCode, reason }) => {

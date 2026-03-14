@@ -106,6 +106,7 @@ const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const AVATAR_JOIN_TIMEOUT_ERROR_CODE = "AVATAR_JOIN_TIMEOUT";
+const AVATAR_AUTO_RECOVERY_MAX_ATTEMPTS = 3;
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
 const AVATAR_RECONNECTING_STATUS = "Reconnecting avatar...";
@@ -3835,7 +3836,7 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   const hasDraft = hasChatComposerDraftValue(pipChatInput.value, pipAttachments);
   pipChatInput.disabled = !hasSession;
   pipChatInput.placeholder = hasSession
-    ? "Message (↵ to send, Shift+↵ for line breaks, paste images)"
+    ? "Message the active session. Press Enter to send, Shift+Enter for a new line."
     : "Start a session to message";
   pipChatInput.title = disabledTitle;
   pipChatSendButton.disabled = !hasSession;
@@ -3987,7 +3988,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
 
   const chatInputEl = pictureInPictureDocument.createElement("textarea");
   chatInputEl.rows = 1;
-  chatInputEl.placeholder = "Message (↵ to send, Shift+↵ for line breaks, paste images)";
+  chatInputEl.placeholder = "Message the active session. Press Enter to send, Shift+Enter for a new line.";
   chatInputEl.autocomplete = "off";
   chatInputEl.spellcheck = true;
   chatInputEl.setAttribute("aria-label", "Message");
@@ -5896,7 +5897,38 @@ async function waitForAvatarParticipant(room, options = {}) {
   throw createAvatarJoinTimeoutError("Timed out waiting for avatar to join the room.");
 }
 
+async function restartVideoChatSidecar() {
+  const payload = await requestJson("/plugins/video-chat/api/sidecar/restart", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (payload?.restarted !== true) {
+    throw new Error(
+      `Sidecar restart was not acknowledged: ${JSON.stringify(payload ?? {})}`,
+    );
+  }
+  setOutput({
+    action: "sidecar-restarted",
+    restarted: true,
+  });
+  return payload;
+}
+
+async function stopVideoChatSidecar() {
+  const payload = await requestJson("/plugins/video-chat/api/sidecar/stop", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (payload?.stopped !== true) {
+    throw new Error(`Sidecar stop was not acknowledged: ${JSON.stringify(payload ?? {})}`);
+  }
+  return payload;
+}
+
 async function connectToRoomAndEnsureAvatar(options = {}) {
+  const remainingAutoRecoveryAttempts = Number.isFinite(options.autoRecoveryAttemptsRemaining)
+    ? Math.max(0, Math.floor(options.autoRecoveryAttemptsRemaining))
+    : AVATAR_AUTO_RECOVERY_MAX_ATTEMPTS;
   await connectToRoom(options);
   const room = activeRoom;
   if (!room) {
@@ -5911,7 +5943,8 @@ async function connectToRoomAndEnsureAvatar(options = {}) {
       !isAvatarJoinTimeoutError(error) ||
       options.allowAutoRecovery === false ||
       avatarSessionAutoRecovering ||
-      !activeSession
+      !activeSession ||
+      remainingAutoRecoveryAttempts <= 0
     ) {
       throw error;
     }
@@ -5921,11 +5954,14 @@ async function connectToRoomAndEnsureAvatar(options = {}) {
       roomName: activeSession?.roomName ?? null,
       error: error instanceof Error ? error.message : String(error),
     });
-    setAvatarLoadingState(true, "Avatar did not join. Recreating session...");
+    setAvatarLoadingState(true, "Avatar did not join. Restarting worker and recreating session...");
     updateRoomButtons();
     try {
+      const nextAutoRecoveryAttemptsRemaining = remainingAutoRecoveryAttempts - 1;
       await reconnectAvatarSession({
-        allowAutoRecovery: false,
+        allowAutoRecovery: nextAutoRecoveryAttemptsRemaining > 0,
+        restartSidecar: true,
+        autoRecoveryAttemptsRemaining: nextAutoRecoveryAttemptsRemaining,
       });
       return;
     } finally {
@@ -6309,6 +6345,10 @@ async function reconnectAvatarSession(options = {}) {
         roomName: priorRoomName,
       }),
     });
+    if (options.restartSidecar !== false) {
+      setAvatarLoadingState(true, "Restarting Claw Cast worker...");
+      await restartVideoChatSidecar();
+    }
     const payload = await requestJson("/plugins/video-chat/api/session", {
       method: "POST",
       body: JSON.stringify(buildSessionCreatePayload(priorSessionKey)),
@@ -6326,10 +6366,23 @@ async function reconnectAvatarSession(options = {}) {
       setChatStatus(chatError instanceof Error ? chatError.message : "Failed to initialize chat.");
       appendChatLine("system", "Text chat initialization failed.");
     }
-    await connectToRoomAndEnsureAvatar({
-      loadingMessage: AVATAR_RECONNECTING_STATUS,
-      allowAutoRecovery: options.allowAutoRecovery,
-    });
+    const restoreAutoRecovering = avatarSessionAutoRecovering;
+    const allowNestedAutoRecovery =
+      options.allowAutoRecovery !== false &&
+      Number.isFinite(options.autoRecoveryAttemptsRemaining) &&
+      options.autoRecoveryAttemptsRemaining > 0;
+    if (allowNestedAutoRecovery) {
+      avatarSessionAutoRecovering = false;
+    }
+    try {
+      await connectToRoomAndEnsureAvatar({
+        loadingMessage: AVATAR_RECONNECTING_STATUS,
+        allowAutoRecovery: options.allowAutoRecovery,
+        autoRecoveryAttemptsRemaining: options.autoRecoveryAttemptsRemaining,
+      });
+    } finally {
+      avatarSessionAutoRecovering = restoreAutoRecovering;
+    }
     setOutput({ action: "avatar-reconnected", roomName: activeSession?.roomName ?? null });
   } catch (error) {
     setAvatarConnectionState(activeSession ? "disconnected" : "idle");
@@ -6351,24 +6404,48 @@ async function stopActiveSession() {
   clearChatLog();
   setChatStatus("Start a session to use text chat.");
 
+  let sessionOutput;
   if (!session?.roomName) {
-    setOutput({ action: "session-stopped" });
-    return;
+    sessionOutput = { action: "session-stopped" };
+  } else {
+    try {
+      await requestJson("/plugins/video-chat/api/session/stop", {
+        method: "POST",
+        body: JSON.stringify({ roomName: session.roomName }),
+      });
+      sessionOutput = { action: "session-stopped", roomName: session.roomName };
+    } catch (error) {
+      sessionOutput = {
+        action: "session-stop-failed",
+        roomName: session.roomName,
+        error: String(error),
+      };
+    }
   }
 
+  setOutput(sessionOutput);
+
   try {
-    await requestJson("/plugins/video-chat/api/session/stop", {
-      method: "POST",
-      body: JSON.stringify({ roomName: session.roomName }),
+    await stopVideoChatSidecarForSession();
+    setOutput({
+      ...sessionOutput,
+      sidecar: {
+        stopped: true,
+      },
     });
-    setOutput({ action: "session-stopped", roomName: session.roomName });
   } catch (error) {
     setOutput({
-      action: "session-stop-failed",
-      roomName: session.roomName,
-      error: String(error),
+      ...sessionOutput,
+      sidecar: {
+        stopped: false,
+        error: String(error),
+      },
     });
   }
+}
+
+async function stopVideoChatSidecarForSession() {
+  await stopVideoChatSidecar();
 }
 
 async function requestJson(path, options = {}) {
@@ -6626,6 +6703,8 @@ if (sessionForm) {
     });
     setAvatarLoadingState(true, SESSION_STARTING_STATUS);
     try {
+      setAvatarLoadingState(true, "Restarting Claw Cast worker...");
+      await restartVideoChatSidecar();
       const payload = await requestJson("/plugins/video-chat/api/session", {
         method: "POST",
         body: JSON.stringify(buildSessionCreatePayload(sessionKey)),
