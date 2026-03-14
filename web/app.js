@@ -5922,10 +5922,6 @@ async function stopVideoChatSidecar() {
   if (payload?.stopped !== true) {
     throw new Error(`Sidecar stop was not acknowledged: ${JSON.stringify(payload ?? {})}`);
   }
-  setOutput({
-    action: "sidecar-stopped",
-    stopped: true,
-  });
   return payload;
 }
 
@@ -6408,37 +6404,48 @@ async function stopActiveSession() {
   clearChatLog();
   setChatStatus("Start a session to use text chat.");
 
+  let sessionOutput;
   if (!session?.roomName) {
-    setOutput({ action: "session-stopped" });
-    await stopVideoChatSidecarForSession(null);
-    return;
+    sessionOutput = { action: "session-stopped" };
+  } else {
+    try {
+      await requestJson("/plugins/video-chat/api/session/stop", {
+        method: "POST",
+        body: JSON.stringify({ roomName: session.roomName }),
+      });
+      sessionOutput = { action: "session-stopped", roomName: session.roomName };
+    } catch (error) {
+      sessionOutput = {
+        action: "session-stop-failed",
+        roomName: session.roomName,
+        error: String(error),
+      };
+    }
   }
 
+  setOutput(sessionOutput);
+
   try {
-    await requestJson("/plugins/video-chat/api/session/stop", {
-      method: "POST",
-      body: JSON.stringify({ roomName: session.roomName }),
+    await stopVideoChatSidecarForSession();
+    setOutput({
+      ...sessionOutput,
+      sidecar: {
+        stopped: true,
+      },
     });
-    setOutput({ action: "session-stopped", roomName: session.roomName });
   } catch (error) {
     setOutput({
-      action: "session-stop-failed",
-      roomName: session.roomName,
-      error: String(error),
+      ...sessionOutput,
+      sidecar: {
+        stopped: false,
+        error: String(error),
+      },
     });
-  } finally {
-    await stopVideoChatSidecarForSession(session.roomName);
   }
 }
 
-async function stopVideoChatSidecarForSession(roomName) {
-  await stopVideoChatSidecar().catch((error) => {
-    setOutput({
-      action: "sidecar-stop-failed",
-      roomName,
-      error: String(error),
-    });
-  });
+async function stopVideoChatSidecarForSession() {
+  await stopVideoChatSidecar();
 }
 
 async function requestJson(path, options = {}) {
