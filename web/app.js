@@ -5953,10 +5953,11 @@ async function connectToRoomAndEnsureAvatar(options = {}) {
     setAvatarLoadingState(true, "Avatar did not join. Restarting worker and recreating session...");
     updateRoomButtons();
     try {
+      const nextAutoRecoveryAttemptsRemaining = remainingAutoRecoveryAttempts - 1;
       await reconnectAvatarSession({
-        allowAutoRecovery: false,
+        allowAutoRecovery: nextAutoRecoveryAttemptsRemaining > 0,
         restartSidecar: true,
-        autoRecoveryAttemptsRemaining: remainingAutoRecoveryAttempts - 1,
+        autoRecoveryAttemptsRemaining: nextAutoRecoveryAttemptsRemaining,
       });
       return;
     } finally {

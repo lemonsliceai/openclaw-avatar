@@ -2933,6 +2933,7 @@ async function startVideoChatAgentSidecar(params: {
       resolveReady = resolve;
       rejectReady = reject;
     });
+    void readyPromise.catch(() => {});
     readyTimer = setTimeout(() => {
       settleReady(
         new Error(
@@ -3120,12 +3121,29 @@ const videoChatPlugin = {
   register(api: OpenClawPluginApi) {
     let sidecar: VideoChatAgentSidecar | null = null;
     let sidecarStartupPromise: Promise<VideoChatAgentSidecar | null> | null = null;
+    let sidecarGeneration = 0;
+    let lastGateway: GatewayRuntime | null = null;
+
+    const isCurrentSidecarGeneration = (generation: number): boolean =>
+      generation === sidecarGeneration;
+
+    const nextSidecarGeneration = (): number => {
+      sidecarGeneration += 1;
+      return sidecarGeneration;
+    };
+
+    const isGatewayRuntime = (gateway: SidecarGatewayRuntime): gateway is GatewayRuntime =>
+      gateway.auth.mode !== "none";
 
     const ensureSidecarRunning = async (
       config: OpenClawConfig,
-      gateway?: OpenClawPluginServiceContext["gateway"],
+      gateway?: SidecarGatewayRuntime,
     ): Promise<void> => {
-      const runtimeGateway = gateway ?? resolveGatewayRuntimeFromConfig(config);
+      if (gateway && isGatewayRuntime(gateway)) {
+        lastGateway = gateway;
+      }
+      const attemptGeneration = sidecarGeneration;
+      const runtimeGateway = gateway ?? lastGateway ?? resolveGatewayRuntimeFromConfig(config);
       if (!runtimeGateway) {
         api.logger.warn(
           "Claw Cast agent sidecar disabled: gateway runtime details are unavailable",
@@ -3134,11 +3152,18 @@ const videoChatPlugin = {
       }
 
       const getOrStartSidecar = async (): Promise<VideoChatAgentSidecar | null> => {
+        if (!isCurrentSidecarGeneration(attemptGeneration)) {
+          return null;
+        }
         if (sidecar) {
           return sidecar;
         }
         if (sidecarStartupPromise) {
-          sidecar = sidecar ?? (await sidecarStartupPromise);
+          const startingSidecar = await sidecarStartupPromise;
+          if (!isCurrentSidecarGeneration(attemptGeneration)) {
+            return null;
+          }
+          sidecar = sidecar ?? startingSidecar;
           return sidecar;
         }
         const startupPromise = startVideoChatAgentSidecar({
@@ -3148,7 +3173,12 @@ const videoChatPlugin = {
         });
         sidecarStartupPromise = startupPromise;
         try {
-          sidecar = await startupPromise;
+          const startedSidecar = await startupPromise;
+          if (!isCurrentSidecarGeneration(attemptGeneration)) {
+            await startedSidecar?.stop().catch(() => {});
+            return null;
+          }
+          sidecar = startedSidecar;
           return sidecar;
         } finally {
           if (sidecarStartupPromise === startupPromise) {
@@ -3158,27 +3188,49 @@ const videoChatPlugin = {
       };
 
       for (let attempt = 1; attempt <= VIDEO_CHAT_SIDECAR_START_MAX_ATTEMPTS; attempt += 1) {
-        if (sidecar && !sidecar.isRunning()) {
+        if (!isCurrentSidecarGeneration(attemptGeneration)) {
+          return;
+        }
+
+        const staleSidecar = sidecar;
+        if (staleSidecar && !staleSidecar.isRunning()) {
           api.logger.warn("[video-chat-agent] detected stale sidecar state; restarting worker");
-          await sidecar.stop().catch(() => {});
-          sidecar = null;
+          await staleSidecar.stop().catch(() => {});
+          if (!isCurrentSidecarGeneration(attemptGeneration)) {
+            return;
+          }
+          if (sidecar === staleSidecar) {
+            sidecar = null;
+          }
         }
 
         const activeSidecar = await getOrStartSidecar();
-        if (!activeSidecar) {
+        if (!isCurrentSidecarGeneration(attemptGeneration) || !activeSidecar) {
           return;
         }
 
         try {
           await activeSidecar.waitForReady();
+          if (!isCurrentSidecarGeneration(attemptGeneration) || sidecar !== activeSidecar) {
+            return;
+          }
           await activeSidecar.waitForIdle();
+          if (!isCurrentSidecarGeneration(attemptGeneration) || sidecar !== activeSidecar) {
+            return;
+          }
           return;
         } catch (error) {
+          if (!isCurrentSidecarGeneration(attemptGeneration)) {
+            return;
+          }
           const message = error instanceof Error ? error.message : String(error);
           api.logger.warn(
             `[video-chat-agent] startup attempt ${attempt}/${VIDEO_CHAT_SIDECAR_START_MAX_ATTEMPTS} failed: ${message}`,
           );
           await activeSidecar.stop().catch(() => {});
+          if (!isCurrentSidecarGeneration(attemptGeneration)) {
+            return;
+          }
           if (sidecar === activeSidecar) {
             sidecar = null;
           }
@@ -3203,25 +3255,39 @@ const videoChatPlugin = {
     };
 
     const stopManagedSidecar = async (): Promise<{ stopped: boolean }> => {
-      if (!sidecar && sidecarStartupPromise) {
-        sidecar = await sidecarStartupPromise.catch(() => null);
+      const stopGeneration = nextSidecarGeneration();
+      const startupPromise = sidecarStartupPromise;
+      let activeSidecar = sidecar;
+      if (!activeSidecar && startupPromise) {
+        activeSidecar = await startupPromise.catch(() => null);
       }
-      if (!sidecar) {
-        sidecarStartupPromise = null;
+      if (!activeSidecar) {
+        if (sidecarStartupPromise === startupPromise) {
+          sidecarStartupPromise = null;
+        }
+        if (isCurrentSidecarGeneration(stopGeneration)) {
+          sidecar = null;
+        }
         return { stopped: false };
       }
-      await sidecar.stop().catch(() => {});
-      sidecar = null;
-      sidecarStartupPromise = null;
+      await activeSidecar.stop().catch(() => {});
+      if (sidecar === activeSidecar) {
+        sidecar = null;
+      }
+      if (sidecarStartupPromise === startupPromise) {
+        sidecarStartupPromise = null;
+      }
       return { stopped: true };
     };
 
     const restartManagedSidecar = async (params: {
       config: OpenClawConfig;
-      gateway?: OpenClawPluginServiceContext["gateway"];
+      gateway?: GatewayRuntime;
     }): Promise<{ restarted: boolean }> => {
       await stopManagedSidecar();
-      await ensureSidecarRunning(params.config, params.gateway);
+      const runtimeGateway =
+        params.gateway ?? lastGateway ?? resolveGatewayRuntimeFromConfig(params.config) ?? undefined;
+      await ensureSidecarRunning(params.config, runtimeGateway);
       return { restarted: Boolean(sidecar) };
     };
 
@@ -3606,14 +3672,7 @@ const videoChatPlugin = {
         await ensureSidecarRunning(ctx.config, ctx.gateway);
       },
       stop: async () => {
-        if (!sidecar && sidecarStartupPromise) {
-          sidecar = await sidecarStartupPromise.catch(() => null);
-        }
-        if (!sidecar) {
-          return;
-        }
-        await sidecar.stop().catch(() => {});
-        sidecar = null;
+        await stopManagedSidecar();
       },
     });
   },
