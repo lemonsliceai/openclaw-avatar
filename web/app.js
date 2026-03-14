@@ -5902,9 +5902,14 @@ async function restartVideoChatSidecar() {
     method: "POST",
     body: JSON.stringify({}),
   });
+  if (payload?.restarted !== true) {
+    throw new Error(
+      `Sidecar restart was not acknowledged: ${JSON.stringify(payload ?? {})}`,
+    );
+  }
   setOutput({
     action: "sidecar-restarted",
-    restarted: payload?.restarted === true,
+    restarted: true,
   });
   return payload;
 }
@@ -5914,9 +5919,12 @@ async function stopVideoChatSidecar() {
     method: "POST",
     body: JSON.stringify({}),
   });
+  if (payload?.stopped !== true) {
+    throw new Error(`Sidecar stop was not acknowledged: ${JSON.stringify(payload ?? {})}`);
+  }
   setOutput({
     action: "sidecar-stopped",
-    stopped: payload?.stopped === true,
+    stopped: true,
   });
   return payload;
 }
@@ -6402,6 +6410,7 @@ async function stopActiveSession() {
 
   if (!session?.roomName) {
     setOutput({ action: "session-stopped" });
+    await stopVideoChatSidecarForSession(null);
     return;
   }
 
@@ -6418,14 +6427,18 @@ async function stopActiveSession() {
       error: String(error),
     });
   } finally {
-    await stopVideoChatSidecar().catch((error) => {
-      setOutput({
-        action: "sidecar-stop-failed",
-        roomName: session.roomName,
-        error: String(error),
-      });
-    });
+    await stopVideoChatSidecarForSession(session.roomName);
   }
+}
+
+async function stopVideoChatSidecarForSession(roomName) {
+  await stopVideoChatSidecar().catch((error) => {
+    setOutput({
+      action: "sidecar-stop-failed",
+      roomName,
+      error: String(error),
+    });
+  });
 }
 
 async function requestJson(path, options = {}) {
