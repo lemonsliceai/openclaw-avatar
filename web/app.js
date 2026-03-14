@@ -3836,7 +3836,7 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   const hasDraft = hasChatComposerDraftValue(pipChatInput.value, pipAttachments);
   pipChatInput.disabled = !hasSession;
   pipChatInput.placeholder = hasSession
-    ? "Message (↵ to send, Shift+↵ for line breaks, paste images)"
+    ? "Message the active session. Press Enter to send, Shift+Enter for a new line."
     : "Start a session to message";
   pipChatInput.title = disabledTitle;
   pipChatSendButton.disabled = !hasSession;
@@ -3988,7 +3988,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
 
   const chatInputEl = pictureInPictureDocument.createElement("textarea");
   chatInputEl.rows = 1;
-  chatInputEl.placeholder = "Message (↵ to send, Shift+↵ for line breaks, paste images)";
+  chatInputEl.placeholder = "Message the active session. Press Enter to send, Shift+Enter for a new line.";
   chatInputEl.autocomplete = "off";
   chatInputEl.spellcheck = true;
   chatInputEl.setAttribute("aria-label", "Message");
