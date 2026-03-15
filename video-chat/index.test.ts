@@ -779,6 +779,26 @@ describe("video-chat plugin", () => {
     );
   });
 
+  it("refuses to create a session when the sidecar does not start", async () => {
+    const { methods } = setup({
+      ...baseConfig,
+      gateway: {
+        auth: {
+          mode: "none",
+        },
+      },
+    });
+
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.message).toContain("sidecar did not start");
+    expect(mockRoomServiceCreateRoom).not.toHaveBeenCalled();
+    expect(mockAgentDispatchCreateDispatch).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
   it("stops a session", async () => {
     const { methods } = setup();
     const createRespond = await invoke(methods, "videoChat.session.create", {});
@@ -854,6 +874,66 @@ describe("video-chat plugin", () => {
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.message).toContain("delete failed");
+  });
+
+  it("preserves managed room tracking when remote room deletion fails", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockRoomServiceDeleteRoom
+      .mockRejectedValueOnce(new Error("delete failed"))
+      .mockResolvedValueOnce(undefined);
+
+    const firstRespond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+    const firstCall = firstRespond.mock.calls[0] as RespondCall | undefined;
+    expect(firstCall?.[0]).toBe(false);
+    expect(firstCall?.[2]?.message).toContain("delete failed");
+
+    const secondRespond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+    const secondCall = secondRespond.mock.calls[0] as RespondCall | undefined;
+    expect(secondCall?.[0]).toBe(true);
+    expect(secondCall?.[1]).toEqual({
+      stopped: true,
+      roomName,
+    });
+    expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves managed room tracking when dispatch deletion fails", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockAgentDispatchDeleteDispatch
+      .mockRejectedValueOnce(new Error("dispatch delete failed"))
+      .mockResolvedValueOnce(undefined);
+
+    const firstRespond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+    const firstCall = firstRespond.mock.calls[0] as RespondCall | undefined;
+    expect(firstCall?.[0]).toBe(false);
+    expect(firstCall?.[2]?.message).toContain("dispatch delete failed");
+    expect(mockRoomServiceDeleteRoom).not.toHaveBeenCalled();
+
+    const secondRespond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+    const secondCall = secondRespond.mock.calls[0] as RespondCall | undefined;
+    expect(secondCall?.[0]).toBe(true);
+    expect(secondCall?.[1]).toEqual({
+      stopped: true,
+      roomName,
+    });
+    expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledTimes(2);
+    expect(mockRoomServiceDeleteRoom).toHaveBeenCalledTimes(1);
   });
 
   it("uses the room's stored LiveKit snapshot during session stop", async () => {
@@ -1102,18 +1182,18 @@ describe("video-chat plugin", () => {
   });
 
   it("skips redispatch when the replacement sidecar does not start", async () => {
-    const { methods } = setup({
+    const { methods, runtime } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    vi.mocked(runtime.config.loadConfig).mockReturnValue({
       ...baseConfig,
       gateway: {
         auth: {
           mode: "none",
         },
       },
-    });
-
-    await invoke(methods, "videoChat.session.create", {});
-
-    expect(mockSpawn).not.toHaveBeenCalled();
+    } as never);
 
     const respond = await invoke(methods, "videoChat.sidecar.restart", {});
 
@@ -1124,7 +1204,7 @@ describe("video-chat plugin", () => {
     });
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(1);
     expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
-    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
   });
 
   it("stops the sidecar through the HTTP API", async () => {

@@ -199,6 +199,7 @@ const avatarMessageOverlayState = {
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
+let gatewayHandshakeError = null;
 let gatewayConnectRequestId = null;
 let gatewayRequestCounter = 0;
 let gatewayReconnectTimer = null;
@@ -5343,6 +5344,31 @@ function clearGatewayReconnectTimer() {
   gatewayReconnectTimer = null;
 }
 
+function createGatewayAuthError(message) {
+  const error = new Error(message);
+  error.code = "GATEWAY_AUTH_FAILED";
+  return error;
+}
+
+function isGatewaySocketAuthError(error) {
+  if (!error) {
+    return false;
+  }
+  const code = typeof error?.code === "string" ? error.code : "";
+  if (code === "GATEWAY_AUTH_FAILED") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /unauthorized|invalid token|auth|401|403|forbidden/i.test(message);
+}
+
+function reportGatewaySocketAuthFailure(error) {
+  setOutput({
+    action: "auth-failed",
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
 function scheduleGatewaySocketReconnect(delayMs = 1_000) {
   if (
     gatewayReconnectTimer !== null ||
@@ -5359,6 +5385,10 @@ function scheduleGatewaySocketReconnect(delayMs = 1_000) {
       return;
     }
     void ensureGatewaySocketConnected().catch((error) => {
+      if (isGatewaySocketAuthError(error)) {
+        reportGatewaySocketAuthFailure(error);
+        return;
+      }
       setOutput({
         action: "chat-websocket-reconnect-failed",
         error: error instanceof Error ? error.message : String(error),
@@ -5391,6 +5421,11 @@ async function primeGatewaySocketForChat() {
     clearGatewayReconnectTimer();
     return true;
   } catch (error) {
+    if (isGatewaySocketAuthError(error)) {
+      reportGatewaySocketAuthFailure(error);
+      setChatStatus(error instanceof Error ? error.message : "Gateway authentication failed.");
+      return false;
+    }
     setOutput({
       action: "chat-websocket-unavailable",
       error: error instanceof Error ? error.message : String(error),
@@ -5492,6 +5527,7 @@ function handleGatewaySocketMessage(raw) {
       gatewayConnectRequestId = null;
       if (!frame.ok) {
         const message = frame?.error?.message || "Gateway websocket authorization failed.";
+        gatewayHandshakeError = createGatewayAuthError(message);
         closeGatewaySocket(message);
         setChatStatus(message);
         return;
@@ -5554,6 +5590,7 @@ async function ensureGatewaySocketConnected() {
     const ws = new WebSocket(socketUrl);
     gatewaySocket = ws;
     gatewaySocketReady = false;
+    gatewayHandshakeError = null;
     gatewayConnectRequestId = null;
 
     const connectTimer = setTimeout(() => {
@@ -5572,14 +5609,27 @@ async function ensureGatewaySocketConnected() {
     ws.addEventListener("close", (evt) => {
       const handshakeStillPending = !settled || gatewayConnectRequestId !== null;
       const closeReason = typeof evt?.reason === "string" ? evt.reason.toLowerCase() : "";
-      const authFailure = evt?.code === 1008 || closeReason.includes("auth");
+      const authFailure =
+        gatewayHandshakeError ||
+        evt?.code === 1008 ||
+        /unauthorized|invalid token|auth|401|403|forbidden/i.test(closeReason);
       if (!settled) {
         clearTimeout(connectTimer);
-        onSettledError(new Error("Gateway websocket closed before connect completed."));
+        const closeError =
+          gatewayHandshakeError ||
+          (authFailure
+            ? createGatewayAuthError(
+                typeof evt?.reason === "string" && evt.reason.trim()
+                  ? evt.reason.trim()
+                  : "Gateway websocket authorization failed.",
+              )
+            : new Error("Gateway websocket closed before connect completed."));
+        onSettledError(closeError);
       }
       if (gatewaySocket === ws) {
         gatewaySocket = null;
       }
+      gatewayHandshakeError = null;
       gatewaySocketReady = false;
       gatewayConnectRequestId = null;
       chatAwaitingReply = false;
@@ -5723,6 +5773,9 @@ async function refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKe
         limit: 30,
       }),
     });
+    if (resolveChatSessionKey() !== sessionKey) {
+      return false;
+    }
     const messages = applyChatHistory(history);
     return historyHasAssistantReplyAfterIdempotencyKey(messages, idempotencyKey);
   } catch (error) {

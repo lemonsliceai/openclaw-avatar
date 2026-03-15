@@ -3326,6 +3326,7 @@ async function deleteVideoChatAgentDispatch(params: {
       dispatchId: params.dispatchId,
       error: error instanceof Error ? error.message : String(error),
     });
+    throw error;
   }
 }
 
@@ -4231,7 +4232,10 @@ const videoChatPlugin = {
       });
       let session: VideoChatSessionResult | null = null;
       try {
-        await ensureSidecarRunning(params.config);
+        const started = await ensureSidecarRunning(params.config);
+        if (!started) {
+          throw new Error("Claw Cast agent sidecar did not start.");
+        }
         session = await createVideoChatSession({
           ...params,
           agentName: sidecarAgentName ?? VIDEO_CHAT_AGENT_NAME,
@@ -4293,12 +4297,10 @@ const videoChatPlugin = {
         });
         throw new Error(message);
       }
-      sessionObservationIdsByRoom.delete(params.roomName);
       const roomConfig = getManagedRoomConfig(params.roomName);
-      const result = await stopVideoChatSession({ roomName: params.roomName });
       const dispatchId = agentDispatchIdsByRoom.get(params.roomName);
+      const result = await stopVideoChatSession({ roomName: params.roomName });
       if (dispatchId) {
-        agentDispatchIdsByRoom.delete(params.roomName);
         await deleteVideoChatAgentDispatch({
           config: roomConfig,
           roomName: params.roomName,
