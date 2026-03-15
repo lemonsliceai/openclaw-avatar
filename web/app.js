@@ -1376,9 +1376,12 @@ async function submitVoiceTranscript(rawTranscript) {
       idempotencyKey,
       response,
     });
-    setChatStatus(
-      liveUpdatesReady ? "Awaiting agent reply..." : "Message sent. Reconnecting chat updates...",
-    );
+    if (liveUpdatesReady) {
+      setChatStatus("Awaiting agent reply...");
+    } else {
+      const replyReceived = await refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey);
+      setChatStatus(replyReceived ? "Reply received." : "Message sent. Reconnecting chat updates...");
+    }
     return true;
   } catch (error) {
     appendChatLine("system", error instanceof Error ? error.message : "Voice chat send failed.", {
@@ -5629,6 +5632,10 @@ async function loadChatHistory() {
       limit: 30,
     }),
   });
+  applyChatHistory(history);
+}
+
+function applyChatHistory(history) {
   renderedVoiceUserRuns.clear();
   clearRecentAvatarReplies();
   const entries = [];
@@ -5666,6 +5673,61 @@ async function loadChatHistory() {
     }
   }
   replaceChatLog(entries);
+  return messages;
+}
+
+function historyHasAssistantReplyAfterIdempotencyKey(messages, idempotencyKey) {
+  const expectedKey = typeof idempotencyKey === "string" ? idempotencyKey.trim() : "";
+  if (!expectedKey) {
+    return false;
+  }
+  let sawMatchingUserMessage = false;
+  for (const message of messages) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    const role = typeof message.role === "string" ? message.role : "";
+    if (!sawMatchingUserMessage) {
+      if (role !== "user") {
+        continue;
+      }
+      const messageIdempotencyKey =
+        typeof message.idempotencyKey === "string" ? message.idempotencyKey.trim() : "";
+      if (messageIdempotencyKey === expectedKey) {
+        sawMatchingUserMessage = true;
+      }
+      continue;
+    }
+    if (role !== "assistant") {
+      continue;
+    }
+    const content = extractChatMessageContent(message);
+    if (content.text || content.images.length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey) {
+  try {
+    const history = await requestJson("/plugins/video-chat/api/chat/history", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionKey,
+        limit: 30,
+      }),
+    });
+    const messages = applyChatHistory(history);
+    return historyHasAssistantReplyAfterIdempotencyKey(messages, idempotencyKey);
+  } catch (error) {
+    setOutput({
+      action: "chat-history-refresh-failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    setChatAwaitingReply(false);
+    return false;
+  }
 }
 
 async function backfillAssistantMessageMetadataFromHistory(params = {}) {
@@ -5943,14 +6005,18 @@ function hasAvatarBackendProgress(status) {
         status.avatarStartConnectedAt ||
         status.gatewayChatFinalAt ||
         status.speechBeginAt ||
-        status.speechFinishedAt ||
-        status.speechFailedAt),
+        status.speechFinishedAt),
   );
 }
 
 function describeAvatarSessionProgress(status) {
   if (!status || typeof status !== "object") {
     return "";
+  }
+  if (status.speechFailedAt) {
+    return status.speechError
+      ? `Avatar speech failed on the worker: ${status.speechError}`
+      : "Avatar speech failed on the worker.";
   }
   if (status.speechBeginAt && !status.speechFinishedAt) {
     return "Avatar started speaking. Waiting for the room media to catch up...";
@@ -6035,6 +6101,12 @@ async function waitForAvatarParticipant(room, options = {}) {
       const status = await fetchAvatarSessionStatus(roomName);
       if (status) {
         lastObservedStatus = status;
+        if (status.speechFailedAt) {
+          setAvatarLoadingState(false);
+          throw new Error(
+            describeAvatarSessionProgress(status) || "Avatar worker failed before joining the room.",
+          );
+        }
         const nextLoadingMessage = describeAvatarSessionProgress(status);
         if (nextLoadingMessage && nextLoadingMessage !== activeLoadingMessage) {
           activeLoadingMessage = nextLoadingMessage;
@@ -7118,9 +7190,12 @@ async function submitChatMessage(rawMessage, options = {}) {
     });
     const response = payload?.response ?? {};
     setOutput({ action: "chat-sent", sessionKey, response });
-    setChatStatus(
-      liveUpdatesReady ? "Awaiting agent reply..." : "Message sent. Reconnecting chat updates...",
-    );
+    if (liveUpdatesReady) {
+      setChatStatus("Awaiting agent reply...");
+    } else {
+      const replyReceived = await refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey);
+      setChatStatus(replyReceived ? "Reply received." : "Message sent. Reconnecting chat updates...");
+    }
     return true;
   } catch (error) {
     setChatComposerInputValue(sourceInput, message);

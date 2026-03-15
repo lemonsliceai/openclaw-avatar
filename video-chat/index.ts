@@ -254,6 +254,13 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function cloneConfigSnapshot(config: OpenClawConfig): OpenClawConfig {
+  if (typeof structuredClone === "function") {
+    return structuredClone(config);
+  }
+  return JSON.parse(JSON.stringify(config)) as OpenClawConfig;
+}
+
 function formatLogValue(value: unknown): string {
   if (value === undefined) {
     return "undefined";
@@ -3684,6 +3691,8 @@ const videoChatPlugin = {
     const agentDispatchIdsByRoom = new Map<string, string>();
     const sessionObservationIdsByRoom = new Map<string, string>();
     const sessionRuntimeStatusByRoom = new Map<string, VideoChatSessionRuntimeStatus>();
+    const roomConfigByName = new Map<string, OpenClawConfig>();
+    const sessionByRoom = new Map<string, VideoChatSessionResult>();
 
     const updateSessionRuntimeStatus = (
       roomName: string,
@@ -3707,6 +3716,93 @@ const videoChatPlugin = {
 
     const clearSessionRuntimeStatus = (roomName: string): void => {
       sessionRuntimeStatusByRoom.delete(roomName);
+    };
+
+    const rememberManagedRoom = (session: VideoChatSessionResult, config: OpenClawConfig): void => {
+      sessionByRoom.set(session.roomName, { ...session });
+      roomConfigByName.set(session.roomName, cloneConfigSnapshot(config));
+    };
+
+    const getManagedRoomConfig = (roomName: string): OpenClawConfig =>
+      roomConfigByName.get(roomName) ?? api.runtime.config.loadConfig();
+
+    const clearManagedRoom = (roomName: string): void => {
+      agentDispatchIdsByRoom.delete(roomName);
+      sessionObservationIdsByRoom.delete(roomName);
+      clearSessionRuntimeStatus(roomName);
+      sessionByRoom.delete(roomName);
+      roomConfigByName.delete(roomName);
+    };
+
+    const startManagedRoomObservation = (params: {
+      session: VideoChatSessionResult;
+      config: OpenClawConfig;
+      dispatchId: string;
+    }): void => {
+      const sessionObservationId = randomUUID();
+      const observedRoomName = params.session.roomName;
+      sessionObservationIdsByRoom.set(observedRoomName, sessionObservationId);
+      void observeVideoChatSessionState({
+        config: params.config,
+        roomName: observedRoomName,
+        participantIdentity: params.session.participantIdentity,
+        dispatchId: params.dispatchId,
+        logger: api.logger,
+        isActive: () => sessionObservationIdsByRoom.get(observedRoomName) === sessionObservationId,
+      });
+    };
+
+    const assignManagedRoomDispatch = async (params: {
+      session: VideoChatSessionResult;
+      config: OpenClawConfig;
+    }): Promise<VideoChatAgentDispatchResult> => {
+      const dispatch = await createVideoChatAgentDispatch({
+        config: params.config,
+        session: params.session,
+        logger: api.logger,
+      });
+      sessionByRoom.set(params.session.roomName, { ...params.session });
+      agentDispatchIdsByRoom.set(params.session.roomName, dispatch.id);
+      startManagedRoomObservation({
+        session: params.session,
+        config: params.config,
+        dispatchId: dispatch.id,
+      });
+      return dispatch;
+    };
+
+    const collectRoomsForRedispatch = (): Array<{
+      roomName: string;
+      session: VideoChatSessionResult;
+      config: OpenClawConfig;
+      dispatchId?: string;
+    }> => {
+      const roomNames = new Set<string>([
+        ...sessionByRoom.keys(),
+        ...roomConfigByName.keys(),
+        ...agentDispatchIdsByRoom.keys(),
+        ...sessionRuntimeStatusByRoom.keys(),
+      ]);
+      const rooms: Array<{
+        roomName: string;
+        session: VideoChatSessionResult;
+        config: OpenClawConfig;
+        dispatchId?: string;
+      }> = [];
+      for (const roomName of roomNames) {
+        const session = sessionByRoom.get(roomName);
+        const config = roomConfigByName.get(roomName);
+        if (!session || !config) {
+          continue;
+        }
+        rooms.push({
+          roomName,
+          session: { ...session },
+          config,
+          dispatchId: agentDispatchIdsByRoom.get(roomName),
+        });
+      }
+      return rooms;
     };
 
     const observeWorkerRuntimeLine = (message: string): void => {
@@ -3967,8 +4063,10 @@ const videoChatPlugin = {
 
     const stopManagedSidecar = async (params?: {
       reason?: string;
+      clearRoomTracking?: boolean;
     }): Promise<{ stopped: boolean }> => {
       const reason = params?.reason ?? "unspecified";
+      const clearRoomTracking = params?.clearRoomTracking === true;
       logVideoChatEvent(api.logger, "info", "sidecar.stop.requested", {
         reason,
         agentName: sidecarAgentName,
@@ -3989,9 +4087,13 @@ const videoChatPlugin = {
         if (isCurrentSidecarGeneration(stopGeneration)) {
           sidecar = null;
         }
-        agentDispatchIdsByRoom.clear();
-        sessionObservationIdsByRoom.clear();
-        sessionRuntimeStatusByRoom.clear();
+        if (clearRoomTracking) {
+          agentDispatchIdsByRoom.clear();
+          sessionObservationIdsByRoom.clear();
+          sessionRuntimeStatusByRoom.clear();
+          sessionByRoom.clear();
+          roomConfigByName.clear();
+        }
         logVideoChatEvent(api.logger, "info", "sidecar.stop.completed", {
           reason,
           agentName: null,
@@ -4006,9 +4108,13 @@ const videoChatPlugin = {
       if (sidecarStartupPromise === startupPromise) {
         sidecarStartupPromise = null;
       }
-      agentDispatchIdsByRoom.clear();
-      sessionObservationIdsByRoom.clear();
-      sessionRuntimeStatusByRoom.clear();
+      if (clearRoomTracking) {
+        agentDispatchIdsByRoom.clear();
+        sessionObservationIdsByRoom.clear();
+        sessionRuntimeStatusByRoom.clear();
+        sessionByRoom.clear();
+        roomConfigByName.clear();
+      }
       logVideoChatEvent(api.logger, "info", "sidecar.stop.completed", {
         reason,
         agentName: null,
@@ -4032,15 +4138,51 @@ const videoChatPlugin = {
           resolveGatewayRuntimeFromConfig(params.config)?.auth.mode ??
           "unknown",
       });
+      const roomsToRedispatch = collectRoomsForRedispatch();
       await stopManagedSidecar({ reason: `restart:${params.reason ?? "unspecified"}` });
       const runtimeGateway =
         params.gateway ?? lastGateway ?? resolveGatewayRuntimeFromConfig(params.config) ?? undefined;
       await ensureSidecarRunning(params.config, runtimeGateway);
+      let redispatchedRoomCount = 0;
+      for (const room of roomsToRedispatch) {
+        const nextSession = {
+          ...room.session,
+          agentName: sidecarAgentName ?? VIDEO_CHAT_AGENT_NAME,
+        };
+        try {
+          const nextDispatch = await assignManagedRoomDispatch({
+            session: nextSession,
+            config: room.config,
+          });
+          redispatchedRoomCount += 1;
+          if (room.dispatchId && room.dispatchId !== nextDispatch.id) {
+            await deleteVideoChatAgentDispatch({
+              config: room.config,
+              roomName: room.roomName,
+              dispatchId: room.dispatchId,
+              logger: api.logger,
+            });
+          }
+          logVideoChatEvent(api.logger, "info", "sidecar.restart.redispatch.succeeded", {
+            roomName: room.roomName,
+            priorDispatchId: room.dispatchId,
+            dispatchId: nextDispatch.id,
+            agentName: nextSession.agentName,
+          });
+        } catch (error) {
+          logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.failed", {
+            roomName: room.roomName,
+            priorDispatchId: room.dispatchId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       logVideoChatEvent(api.logger, "info", "sidecar.restart.completed", {
         reason: params.reason ?? "unspecified",
         restarted: Boolean(sidecar),
         agentName: sidecarAgentName,
         gatewayPort: runtimeGateway?.port,
+        redispatchedRoomCount,
       });
       return { restarted: Boolean(sidecar) };
     };
@@ -4061,30 +4203,19 @@ const videoChatPlugin = {
           ...params,
           agentName: sidecarAgentName ?? VIDEO_CHAT_AGENT_NAME,
         });
+        const roomConfigSnapshot = cloneConfigSnapshot(params.config);
+        rememberManagedRoom(session, roomConfigSnapshot);
         updateSessionRuntimeStatus(session.roomName, {
           createdAt: Date.now(),
         });
         await createVideoChatRoom({
-          config: params.config,
+          config: roomConfigSnapshot,
           roomName: session.roomName,
           logger: api.logger,
         });
-        const dispatch = await createVideoChatAgentDispatch({
-          config: params.config,
+        const dispatch = await assignManagedRoomDispatch({
           session,
-          logger: api.logger,
-        });
-        agentDispatchIdsByRoom.set(session.roomName, dispatch.id);
-        const sessionObservationId = randomUUID();
-        const observedRoomName = session.roomName;
-        sessionObservationIdsByRoom.set(observedRoomName, sessionObservationId);
-        void observeVideoChatSessionState({
-          config: params.config,
-          roomName: observedRoomName,
-          participantIdentity: session.participantIdentity,
-          dispatchId: dispatch.id,
-          logger: api.logger,
-          isActive: () => sessionObservationIdsByRoom.get(observedRoomName) === sessionObservationId,
+          config: roomConfigSnapshot,
         });
         logVideoChatEvent(api.logger, "info", "session.create.succeeded", {
           sessionKey: session.sessionKey,
@@ -4098,14 +4229,13 @@ const videoChatPlugin = {
         return session;
       } catch (error) {
         if (session?.roomName) {
-          sessionObservationIdsByRoom.delete(session.roomName);
-          agentDispatchIdsByRoom.delete(session.roomName);
-          clearSessionRuntimeStatus(session.roomName);
+          const roomConfig = getManagedRoomConfig(session.roomName);
           await deleteVideoChatRoom({
-            config: params.config,
+            config: roomConfig,
             roomName: session.roomName,
             logger: api.logger,
           });
+          clearManagedRoom(session.roomName);
         }
         logVideoChatEvent(api.logger, "error", "session.create.failed", {
           sessionKey: params.sessionKey,
@@ -4123,12 +4253,13 @@ const videoChatPlugin = {
         roomName: params.roomName,
       });
       sessionObservationIdsByRoom.delete(params.roomName);
+      const roomConfig = getManagedRoomConfig(params.roomName);
       const result = await stopVideoChatSession({ roomName: params.roomName });
       const dispatchId = agentDispatchIdsByRoom.get(params.roomName);
       if (dispatchId) {
         agentDispatchIdsByRoom.delete(params.roomName);
         await deleteVideoChatAgentDispatch({
-          config: api.runtime.config.loadConfig(),
+          config: roomConfig,
           roomName: params.roomName,
           dispatchId,
           logger: api.logger,
@@ -4136,11 +4267,11 @@ const videoChatPlugin = {
       }
       await resetSidecarJobs(`session-stop:${params.roomName}`);
       await deleteVideoChatRoom({
-        config: api.runtime.config.loadConfig(),
+        config: roomConfig,
         roomName: params.roomName,
         logger: api.logger,
       });
-      clearSessionRuntimeStatus(params.roomName);
+      clearManagedRoom(params.roomName);
       logVideoChatEvent(api.logger, "info", "session.stop.completed", {
         roomName: result.roomName,
       });
@@ -4556,7 +4687,7 @@ const videoChatPlugin = {
         logVideoChatEvent(api.logger, "info", "service.stop", {
           serviceId: "video-chat-agent",
         });
-        await stopManagedSidecar({ reason: "service-stop" });
+        await stopManagedSidecar({ reason: "service-stop", clearRoomTracking: true });
       },
     });
   },

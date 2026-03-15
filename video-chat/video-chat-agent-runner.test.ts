@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -77,8 +77,12 @@ async function waitForSignalEvent(
         .map((line) => line.trim())
         .filter(Boolean)
         .some((line) => {
-          const parsed = JSON.parse(line) as { type?: string };
-          return parsed.type === eventType;
+          try {
+            const parsed = JSON.parse(line) as { type?: string };
+            return parsed.type === eventType;
+          } catch {
+            return false;
+          }
         });
       if (hasEvent) {
         return;
@@ -270,5 +274,17 @@ describe("videoChatAgent test mode", () => {
     );
     expect(ctx.connect).toHaveBeenCalledTimes(1);
     expect(ctx.waitForParticipant).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores incomplete NDJSON lines while waiting for a signal event", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "video-chat-runner-test-"));
+    const signalFile = path.join(tmpDir, "signals.ndjson");
+    await writeFile(signalFile, '{"type":"unrelated"}\n{"type":"awaiting-room-disconnect"', "utf8");
+
+    const waitPromise = waitForSignalEvent(signalFile, "awaiting-room-disconnect", 1_000);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await appendFile(signalFile, '\n{"type":"awaiting-room-disconnect"}\n', "utf8");
+
+    await expect(waitPromise).resolves.toBeUndefined();
   });
 });

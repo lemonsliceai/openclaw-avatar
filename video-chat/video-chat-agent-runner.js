@@ -745,68 +745,71 @@ async function runVideoChatAgentEntry(ctx) {
       }
     },
   });
+  try {
+    console.log("[video-chat-agent] connecting agent session to room");
+    emitParentDebug("agent-session.start.begin", {
+      sessionKey: metadata.sessionKey,
+      roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+    });
+    await session.start({
+      agent,
+      room: ctx.room,
+      inputOptions: {
+        audioEnabled: true,
+        textEnabled: true,
+      },
+      outputOptions: { audioEnabled: true },
+    });
+    console.log("[video-chat-agent] agent session connected");
+    emitParentDebug("agent-session.start.connected", {
+      sessionKey: metadata.sessionKey,
+      roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+      outputAudioSink:
+        session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
+    });
+    logRoomSnapshot("after-agent-session-start", ctx.room);
 
-  console.log("[video-chat-agent] connecting agent session to room");
-  emitParentDebug("agent-session.start.begin", {
-    sessionKey: metadata.sessionKey,
-    roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-  });
-  await session.start({
-    agent,
-    room: ctx.room,
-    inputOptions: {
-      audioEnabled: true,
-      textEnabled: true,
-    },
-    outputOptions: { audioEnabled: true },
-  });
-  console.log("[video-chat-agent] agent session connected");
-  emitParentDebug("agent-session.start.connected", {
-    sessionKey: metadata.sessionKey,
-    roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-    outputAudioSink:
-      session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
-  });
-  logRoomSnapshot("after-agent-session-start", ctx.room);
+    const avatar = new deps.lemonslice.AvatarSession({
+      apiKey: lemonSliceApiKey,
+      agentImageUrl: metadata.imageUrl,
+    });
+    console.log("[video-chat-agent] starting lemonslice avatar session");
+    emitParentDebug("avatar.start.begin", {
+      sessionKey: metadata.sessionKey,
+      roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+      outputAudioSink:
+        session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
+    });
+    await avatar.start(session, ctx.room);
+    console.log("[video-chat-agent] lemonslice avatar session started");
+    emitParentDebug("avatar.start.connected", {
+      sessionKey: metadata.sessionKey,
+      roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+      outputAudioSink:
+        session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
+      avatarParticipantIdentity: avatar?.avatarParticipantIdentity ?? "",
+    });
+    logRoomSnapshot("after-avatar-session-start", ctx.room);
 
-  const avatar = new deps.lemonslice.AvatarSession({
-    apiKey: lemonSliceApiKey,
-    agentImageUrl: metadata.imageUrl,
-  });
-  console.log("[video-chat-agent] starting lemonslice avatar session");
-  emitParentDebug("avatar.start.begin", {
-    sessionKey: metadata.sessionKey,
-    roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-    outputAudioSink:
-      session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
-  });
-  await avatar.start(session, ctx.room);
-  console.log("[video-chat-agent] lemonslice avatar session started");
-  emitParentDebug("avatar.start.connected", {
-    sessionKey: metadata.sessionKey,
-    roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-    outputAudioSink:
-      session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
-    avatarParticipantIdentity: avatar?.avatarParticipantIdentity ?? "",
-  });
-  logRoomSnapshot("after-avatar-session-start", ctx.room);
-
-  await new Promise((resolve) => {
-    const room = ctx.room;
-    const finish = () => {
-      console.log(
-        `[video-chat-agent] room disconnected sessionKey=${metadata.sessionKey} roomName=${typeof room?.name === "string" ? room.name : ""}`,
-      );
-      emitParentDebug("room.disconnected", {
-        sessionKey: metadata.sessionKey,
-        roomName: typeof room?.name === "string" ? room.name : "",
-      });
-      gatewayClient?.stop();
-      resolve();
-    };
-    room.on?.("disconnected", finish);
-    room.on?.("room_disconnected", finish);
-  });
+    await new Promise((resolve) => {
+      const room = ctx.room;
+      const finish = () => {
+        console.log(
+          `[video-chat-agent] room disconnected sessionKey=${metadata.sessionKey} roomName=${typeof room?.name === "string" ? room.name : ""}`,
+        );
+        emitParentDebug("room.disconnected", {
+          sessionKey: metadata.sessionKey,
+          roomName: typeof room?.name === "string" ? room.name : "",
+        });
+        gatewayClient?.stop();
+        resolve();
+      };
+      room.on?.("disconnected", finish);
+      room.on?.("room_disconnected", finish);
+    });
+  } finally {
+    gatewayClient?.stop();
+  }
 }
 
 export const videoChatAgent = { entry: runVideoChatAgentEntry };
