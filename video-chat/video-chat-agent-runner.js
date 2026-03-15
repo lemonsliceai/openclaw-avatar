@@ -318,6 +318,27 @@ class GatewayWsClient {
     }
   }
 
+  disposeSocket(socket, code = 1000, reason = "") {
+    if (!socket) {
+      return;
+    }
+    if (this.ws === socket) {
+      this.ws = null;
+    }
+    this.connectRequestId = null;
+    this.connected = false;
+    socket.removeAllListeners?.();
+    if (
+      socket.readyState === this.WebSocket.CLOSING ||
+      socket.readyState === this.WebSocket.CLOSED
+    ) {
+      return;
+    }
+    try {
+      socket.close(code, reason);
+    } catch {}
+  }
+
   openSocket() {
     if (this.closed) {
       return;
@@ -426,6 +447,7 @@ class GatewayWsClient {
     const error = new Error(parsed?.error?.message ?? "unknown gateway error");
     if (parsed.id === this.connectRequestId) {
       if (!this.hasConnectedOnce) {
+        this.disposeSocket(this.ws, 1008, "gateway connect rejected");
         this.rejectReadyOnce(error);
       } else {
         this.forceReconnect(error.message);
@@ -573,7 +595,6 @@ async function runVideoChatAgentTestMode(ctx, metadata) {
 }
 
 async function runVideoChatAgentEntry(ctx) {
-  const deps = await loadDeps();
   const metadata = parseJobMetadata(ctx.job?.metadata);
   console.log(
     `[video-chat-agent] job entry begin sessionKey=${metadata.sessionKey} roomName=${typeof ctx?.room?.name === "string" ? ctx.room.name : ""} interruptible=${metadata.interruptReplyOnNewMessage === true}`,
@@ -587,6 +608,7 @@ async function runVideoChatAgentEntry(ctx) {
     await runVideoChatAgentTestMode(ctx, metadata);
     return;
   }
+  const deps = await loadDeps();
   const elevenLabsApiKey = requireEnv("OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY");
   const lemonSliceApiKey = requireEnv("OPENCLAW_VIDEO_CHAT_LEMONSLICE_API_KEY");
   const elevenLabsVoiceId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_VOICE_ID?.trim();

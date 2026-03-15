@@ -5569,7 +5569,10 @@ async function ensureGatewaySocketConnected() {
       }
     });
 
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (evt) => {
+      const handshakeStillPending = !settled || gatewayConnectRequestId !== null;
+      const closeReason = typeof evt?.reason === "string" ? evt.reason.toLowerCase() : "";
+      const authFailure = evt?.code === 1008 || closeReason.includes("auth");
       if (!settled) {
         clearTimeout(connectTimer);
         onSettledError(new Error("Gateway websocket closed before connect completed."));
@@ -5583,7 +5586,9 @@ async function ensureGatewaySocketConnected() {
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
       renderChatLog({ scrollToBottom: false });
       setChatStatus("Chat disconnected.");
-      scheduleGatewaySocketReconnect();
+      if (!handshakeStillPending && !authFailure) {
+        scheduleGatewaySocketReconnect();
+      }
     });
 
     ws.addEventListener("error", () => {
@@ -6103,7 +6108,7 @@ async function waitForAvatarParticipant(room, options = {}) {
         lastObservedStatus = status;
         if (status.speechFailedAt) {
           setAvatarLoadingState(false);
-          throw new Error(
+          throw createAvatarJoinTimeoutError(
             describeAvatarSessionProgress(status) || "Avatar worker failed before joining the room.",
           );
         }

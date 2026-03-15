@@ -170,6 +170,9 @@ describe("GatewayWsClient", () => {
     });
 
     await expect(readyPromise).rejects.toThrow("unauthorized");
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(client.ws).toBeNull();
+    expect(socket.listenerCount("close")).toBe(0);
 
     await vi.runOnlyPendingTimersAsync();
     expect(MockWebSocket.instances).toHaveLength(1);
@@ -272,6 +275,48 @@ describe("videoChatAgent test mode", () => {
         }),
       ]),
     );
+    expect(ctx.connect).toHaveBeenCalledTimes(1);
+    expect(ctx.waitForParticipant).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips dependency loading in connect-only test mode", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "video-chat-runner-test-"));
+    const signalFile = path.join(tmpDir, "signals.ndjson");
+    process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE = "connect-only";
+    process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE = signalFile;
+    delete process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER;
+    delete process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH;
+
+    const room = new EventEmitter() as EventEmitter & {
+      name: string;
+      remoteParticipants: Map<string, unknown>;
+    };
+    room.name = "openclaw-main-testroom";
+    room.remoteParticipants = new Map();
+
+    const participant = { identity: "control-ui-test" };
+    const ctx = {
+      job: {
+        metadata: JSON.stringify({
+          sessionKey: "agent:main:main",
+          imageUrl: "https://example.com/avatar.png",
+          interruptReplyOnNewMessage: false,
+        }),
+      },
+      room,
+      connect: vi.fn(async () => {
+        queueMicrotask(() => {
+          room.emit("participant_connected", participant);
+        });
+      }),
+      waitForParticipant: vi.fn(async () => participant),
+    };
+
+    const entryPromise = videoChatAgent.entry(ctx);
+    await waitForSignalEvent(signalFile, "awaiting-room-disconnect");
+    room.emit("disconnected");
+
+    await expect(entryPromise).resolves.toBeUndefined();
     expect(ctx.connect).toHaveBeenCalledTimes(1);
     expect(ctx.waitForParticipant).toHaveBeenCalledTimes(1);
   });

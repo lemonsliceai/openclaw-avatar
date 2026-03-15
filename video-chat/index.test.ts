@@ -781,15 +781,18 @@ describe("video-chat plugin", () => {
 
   it("stops a session", async () => {
     const { methods } = setup();
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
     const respond = await invoke(methods, "videoChat.session.stop", {
-      roomName: "openclaw-main-12345678",
+      roomName,
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
     expect(call?.[1]).toEqual({
       stopped: true,
-      roomName: "openclaw-main-12345678",
+      roomName,
     });
   });
 
@@ -809,6 +812,48 @@ describe("video-chat plugin", () => {
       roomName,
     );
     expect(mockRoomServiceDeleteRoom).toHaveBeenCalledWith(roomName);
+  });
+
+  it("treats missing LiveKit rooms as already deleted during session stop", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockRoomServiceDeleteRoom.mockRejectedValueOnce(
+      Object.assign(new Error("room not found"), {
+        status: 404,
+        code: "not_found",
+      }),
+    );
+
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      stopped: true,
+      roomName,
+    });
+  });
+
+  it("bubbles unexpected LiveKit room delete failures during session stop", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockRoomServiceDeleteRoom.mockRejectedValueOnce(new Error("delete failed"));
+
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.message).toContain("delete failed");
   });
 
   it("uses the room's stored LiveKit snapshot during session stop", async () => {
@@ -851,9 +896,11 @@ describe("video-chat plugin", () => {
   it("cleans stale wrapper jobs during session stop", async () => {
     const { methods } = setup();
 
-    await invoke(methods, "videoChat.session.create", {});
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
     await invoke(methods, "videoChat.session.stop", {
-      roomName: "openclaw-main-12345678",
+      roomName,
     });
 
     expect(mockStopMatchingProcesses).toHaveBeenNthCalledWith(1, {
@@ -882,10 +929,26 @@ describe("video-chat plugin", () => {
     });
   });
 
+  it("refuses to stop rooms that are not tracked by this runtime", async () => {
+    const { methods } = setup();
+
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName: "openclaw-main-unknown",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.message).toContain("unmanaged room");
+    expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
+    expect(mockRoomServiceDeleteRoom).not.toHaveBeenCalled();
+  });
+
   it("waits for an in-flight sidecar reset before creating the next session", async () => {
     const { methods } = setup();
 
-    await invoke(methods, "videoChat.session.create", {});
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
 
     let resolveReset: () => void = () => {};
     const resetPromise = new Promise<void>((resolve) => {
@@ -894,10 +957,12 @@ describe("video-chat plugin", () => {
     mockResetProcessGroupChildren.mockImplementationOnce(() => resetPromise);
 
     const stopPromise = invoke(methods, "videoChat.session.stop", {
-      roomName: "openclaw-main-12345678",
+      roomName,
     });
 
-    await flushMicrotasks();
+    await vi.waitFor(() => {
+      expect(mockResetProcessGroupChildren).toHaveBeenCalledTimes(1);
+    });
 
     let createFinished = false;
     const createPromise = invoke(methods, "videoChat.session.create", {}).then((respond) => {
@@ -1034,6 +1099,32 @@ describe("video-chat plugin", () => {
     expect(mockAgentDispatchCreateDispatch.mock.calls[0]?.[1]).toBe(firstAgentName);
     expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[1]).not.toBe(firstAgentName);
     expect(mockAgentDispatchCreateDispatch.mock.calls[2]?.[1]).toBe(secondAgentName);
+  });
+
+  it("skips redispatch when the replacement sidecar does not start", async () => {
+    const { methods } = setup({
+      ...baseConfig,
+      gateway: {
+        auth: {
+          mode: "none",
+        },
+      },
+    });
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+
+    const respond = await invoke(methods, "videoChat.sidecar.restart", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      restarted: false,
+    });
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(1);
+    expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 
   it("stops the sidecar through the HTTP API", async () => {

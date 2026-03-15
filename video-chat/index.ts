@@ -3079,10 +3079,26 @@ async function deleteVideoChatRoom(params: {
       roomName: params.roomName,
     });
   } catch (error) {
-    logVideoChatEvent(params.logger, "warn", "livekit.room.delete.failed", {
-      roomName: params.roomName,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    const message = error instanceof Error ? error.message : String(error);
+    const status =
+      typeof (error as { status?: unknown })?.status === "number"
+        ? Number((error as { status: number }).status)
+        : typeof (error as { statusCode?: unknown })?.statusCode === "number"
+          ? Number((error as { statusCode: number }).statusCode)
+          : null;
+    const code =
+      typeof (error as { code?: unknown })?.code === "string"
+        ? (error as { code: string }).code.toLowerCase()
+        : "";
+    if (status === 404 || code === "not_found" || message.toLowerCase().includes("not found")) {
+      logVideoChatEvent(params.logger, "info", "livekit.room.delete.skipped", {
+        roomName: params.roomName,
+        reason: "not-found",
+        error: message,
+      });
+      return;
+    }
+    throw error;
   }
 }
 
@@ -3914,7 +3930,7 @@ const videoChatPlugin = {
     const ensureSidecarRunning = async (
       config: OpenClawConfig,
       gateway?: SidecarGatewayRuntime,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       if (gateway && isGatewayRuntime(gateway)) {
         lastGateway = gateway;
       }
@@ -3924,7 +3940,7 @@ const videoChatPlugin = {
         api.logger.warn(
           "Claw Cast agent sidecar disabled: gateway runtime details are unavailable",
         );
-        return;
+        return false;
       }
       const currentAgentName = resolveSidecarAgentName(runtimeGateway, attemptGeneration);
 
@@ -3968,7 +3984,7 @@ const videoChatPlugin = {
 
       for (let attempt = 1; attempt <= VIDEO_CHAT_SIDECAR_START_MAX_ATTEMPTS; attempt += 1) {
         if (!isCurrentSidecarGeneration(attemptGeneration)) {
-          return;
+          return false;
         }
         logVideoChatEvent(api.logger, "info", "sidecar.ensure.attempt", {
           attempt,
@@ -3985,7 +4001,7 @@ const videoChatPlugin = {
           api.logger.warn("[video-chat-agent] detected stale sidecar state; restarting worker");
           await staleSidecar.stop().catch(() => {});
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return;
+            return false;
           }
           if (sidecar === staleSidecar) {
             sidecar = null;
@@ -3994,17 +4010,17 @@ const videoChatPlugin = {
 
         const activeSidecar = await getOrStartSidecar();
         if (!isCurrentSidecarGeneration(attemptGeneration) || !activeSidecar) {
-          return;
+          return false;
         }
 
         try {
           await activeSidecar.waitForReady();
           if (!isCurrentSidecarGeneration(attemptGeneration) || sidecar !== activeSidecar) {
-            return;
+            return false;
           }
           await activeSidecar.waitForIdle();
           if (!isCurrentSidecarGeneration(attemptGeneration) || sidecar !== activeSidecar) {
-            return;
+            return false;
           }
           logVideoChatEvent(api.logger, "info", "sidecar.ready", {
             attempt,
@@ -4012,10 +4028,10 @@ const videoChatPlugin = {
             agentName: currentAgentName,
             gatewayPort: runtimeGateway.port,
           });
-          return;
+          return true;
         } catch (error) {
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return;
+            return false;
           }
           const message = error instanceof Error ? error.message : String(error);
           api.logger.warn(
@@ -4023,7 +4039,7 @@ const videoChatPlugin = {
           );
           await activeSidecar.stop().catch(() => {});
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return;
+            return false;
           }
           if (sidecar === activeSidecar) {
             sidecar = null;
@@ -4035,6 +4051,7 @@ const videoChatPlugin = {
           }
         }
       }
+      return false;
     };
 
     const resetSidecarJobs = async (reason = "unspecified"): Promise<void> => {
@@ -4142,7 +4159,23 @@ const videoChatPlugin = {
       await stopManagedSidecar({ reason: `restart:${params.reason ?? "unspecified"}` });
       const runtimeGateway =
         params.gateway ?? lastGateway ?? resolveGatewayRuntimeFromConfig(params.config) ?? undefined;
-      await ensureSidecarRunning(params.config, runtimeGateway);
+      const started = await ensureSidecarRunning(params.config, runtimeGateway);
+      if (!started) {
+        logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.skipped", {
+          reason: params.reason ?? "unspecified",
+          gatewayPort: runtimeGateway?.port,
+          gatewayAuthMode: runtimeGateway?.auth.mode ?? "unknown",
+          roomCount: roomsToRedispatch.length,
+        });
+        logVideoChatEvent(api.logger, "info", "sidecar.restart.completed", {
+          reason: params.reason ?? "unspecified",
+          restarted: false,
+          agentName: null,
+          gatewayPort: runtimeGateway?.port,
+          redispatchedRoomCount: 0,
+        });
+        return { restarted: false };
+      }
       let redispatchedRoomCount = 0;
       for (const room of roomsToRedispatch) {
         const nextSession = {
@@ -4252,6 +4285,14 @@ const videoChatPlugin = {
       logVideoChatEvent(api.logger, "info", "session.stop.begin", {
         roomName: params.roomName,
       });
+      if (!roomConfigByName.has(params.roomName) || !sessionObservationIdsByRoom.has(params.roomName)) {
+        const message = `Claw Cast session stop refused for unmanaged room ${params.roomName}`;
+        logVideoChatEvent(api.logger, "warn", "session.stop.skipped", {
+          roomName: params.roomName,
+          reason: "unmanaged-room",
+        });
+        throw new Error(message);
+      }
       sessionObservationIdsByRoom.delete(params.roomName);
       const roomConfig = getManagedRoomConfig(params.roomName);
       const result = await stopVideoChatSession({ roomName: params.roomName });
