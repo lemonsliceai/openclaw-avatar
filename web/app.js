@@ -106,6 +106,10 @@ const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const AVATAR_JOIN_TIMEOUT_ERROR_CODE = "AVATAR_JOIN_TIMEOUT";
+const AVATAR_JOIN_TIMEOUT_MS = 12_000;
+const AVATAR_JOIN_PROGRESS_GRACE_MS = 12_000;
+const AVATAR_JOIN_MAX_TIMEOUT_MS = 45_000;
+const AVATAR_STATUS_POLL_MS = 1_000;
 const AVATAR_AUTO_RECOVERY_MAX_ATTEMPTS = 3;
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
@@ -197,6 +201,7 @@ let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
 let gatewayConnectRequestId = null;
 let gatewayRequestCounter = 0;
+let gatewayReconnectTimer = null;
 const gatewayPendingRequests = new Map();
 const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
 const sensitiveFieldCopyButtons = Array.from(document.querySelectorAll("[data-copy-secret]"));
@@ -1355,7 +1360,7 @@ async function submitVoiceTranscript(rawTranscript) {
   setChatStatus("Sending message...");
 
   try {
-    await ensureGatewaySocketConnected();
+    const liveUpdatesReady = await primeGatewaySocketForChat();
     const payload = await requestJson("/plugins/video-chat/api/chat/send", {
       method: "POST",
       body: JSON.stringify({
@@ -1371,7 +1376,9 @@ async function submitVoiceTranscript(rawTranscript) {
       idempotencyKey,
       response,
     });
-    setChatStatus("Awaiting agent reply...");
+    setChatStatus(
+      liveUpdatesReady ? "Awaiting agent reply..." : "Message sent. Reconnecting chat updates...",
+    );
     return true;
   } catch (error) {
     appendChatLine("system", error instanceof Error ? error.message : "Voice chat send failed.", {
@@ -5325,7 +5332,41 @@ function clearGatewayPendingRequests(error) {
   }
 }
 
+function clearGatewayReconnectTimer() {
+  if (gatewayReconnectTimer === null) {
+    return;
+  }
+  clearTimeout(gatewayReconnectTimer);
+  gatewayReconnectTimer = null;
+}
+
+function scheduleGatewaySocketReconnect(delayMs = 1_000) {
+  if (
+    gatewayReconnectTimer !== null ||
+    gatewayHandshakePromise ||
+    !activeSession ||
+    !hasGatewayToken() ||
+    (gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN && gatewaySocketReady)
+  ) {
+    return;
+  }
+  gatewayReconnectTimer = setTimeout(() => {
+    gatewayReconnectTimer = null;
+    if (!activeSession || !hasGatewayToken()) {
+      return;
+    }
+    void ensureGatewaySocketConnected().catch((error) => {
+      setOutput({
+        action: "chat-websocket-reconnect-failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      scheduleGatewaySocketReconnect(Math.min(delayMs * 2, 10_000));
+    });
+  }, delayMs);
+}
+
 function closeGatewaySocket(reason) {
+  clearGatewayReconnectTimer();
   gatewaySocketReady = false;
   gatewayConnectRequestId = null;
   chatAwaitingReply = false;
@@ -5339,6 +5380,21 @@ function closeGatewaySocket(reason) {
   clearGatewayPendingRequests(new Error(reason));
   updateChatControls();
   renderChatLog({ scrollToBottom: false });
+}
+
+async function primeGatewaySocketForChat() {
+  try {
+    await ensureGatewaySocketConnected();
+    clearGatewayReconnectTimer();
+    return true;
+  } catch (error) {
+    setOutput({
+      action: "chat-websocket-unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    scheduleGatewaySocketReconnect();
+    return false;
+  }
 }
 
 function handleGatewayChatEvent(payload) {
@@ -5524,6 +5580,7 @@ async function ensureGatewaySocketConnected() {
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
       renderChatLog({ scrollToBottom: false });
       setChatStatus("Chat disconnected.");
+      scheduleGatewaySocketReconnect();
     });
 
     ws.addEventListener("error", () => {
@@ -5876,25 +5933,132 @@ function isAvatarJoinTimeoutError(error) {
   );
 }
 
+function hasAvatarBackendProgress(status) {
+  return Boolean(
+    status &&
+      typeof status === "object" &&
+      (status.jobAcceptedAt ||
+        status.agentSessionConnectedAt ||
+        status.avatarStartBeginAt ||
+        status.avatarStartConnectedAt ||
+        status.gatewayChatFinalAt ||
+        status.speechBeginAt ||
+        status.speechFinishedAt ||
+        status.speechFailedAt),
+  );
+}
+
+function describeAvatarSessionProgress(status) {
+  if (!status || typeof status !== "object") {
+    return "";
+  }
+  if (status.speechBeginAt && !status.speechFinishedAt) {
+    return "Avatar started speaking. Waiting for the room media to catch up...";
+  }
+  if (status.speechFinishedAt) {
+    return "Avatar reply finished on the worker. Waiting for room media...";
+  }
+  if (status.avatarStartConnectedAt) {
+    return "Avatar renderer connected. Waiting for the room stream...";
+  }
+  if (status.avatarStartBeginAt) {
+    return "Starting the avatar renderer...";
+  }
+  if (status.agentSessionConnectedAt) {
+    return "Agent connected to the room. Starting avatar audio...";
+  }
+  if (status.jobAcceptedAt) {
+    return "Avatar worker accepted the room job...";
+  }
+  return "";
+}
+
+async function fetchAvatarSessionStatus(roomName) {
+  if (typeof roomName !== "string" || !roomName.trim()) {
+    return null;
+  }
+  try {
+    const payload = await requestJson(
+      `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName.trim())}`,
+    );
+    return payload?.status && typeof payload.status === "object" ? payload.status : null;
+  } catch (error) {
+    debugLog("avatar-status:fetch-failed", {
+      roomName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 async function waitForAvatarParticipant(room, options = {}) {
-  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 12_000;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : AVATAR_JOIN_TIMEOUT_MS;
+  const progressGraceMs = Number.isFinite(options.progressGraceMs)
+    ? options.progressGraceMs
+    : AVATAR_JOIN_PROGRESS_GRACE_MS;
+  const maxTimeoutMs = Number.isFinite(options.maxTimeoutMs)
+    ? options.maxTimeoutMs
+    : AVATAR_JOIN_MAX_TIMEOUT_MS;
+  const statusPollMs = Number.isFinite(options.statusPollMs) ? options.statusPollMs : AVATAR_STATUS_POLL_MS;
   const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 200;
+  const roomName =
+    (typeof options.roomName === "string" && options.roomName.trim()) ||
+    activeSession?.roomName ||
+    "";
+  const waitingMessage =
+    typeof options.loadingMessage === "string" && options.loadingMessage.trim()
+      ? options.loadingMessage.trim()
+      : AVATAR_LOADING_STATUS;
   const startedAt = Date.now();
-  while (Date.now() - startedAt <= timeoutMs) {
+  const maxDeadlineAt = startedAt + maxTimeoutMs;
+  let deadlineAt = Math.min(maxDeadlineAt, startedAt + timeoutMs);
+  let lastStatusPollAt = 0;
+  let lastObservedStatus = null;
+  let activeLoadingMessage = waitingMessage;
+  setAvatarLoadingState(true, activeLoadingMessage);
+  while (Date.now() <= deadlineAt) {
     if (activeRoom !== room) {
+      setAvatarLoadingState(false);
       throw new Error("Room changed before avatar joined.");
     }
     if (!activeSession) {
+      setAvatarLoadingState(false);
       throw new Error("Session ended before avatar joined.");
     }
     if (hasAvatarParticipantInRoom(room) || hasAvatarVideo()) {
+      setAvatarLoadingState(false);
       return;
+    }
+    const now = Date.now();
+    if (roomName && now - lastStatusPollAt >= statusPollMs) {
+      lastStatusPollAt = now;
+      const status = await fetchAvatarSessionStatus(roomName);
+      if (status) {
+        lastObservedStatus = status;
+        const nextLoadingMessage = describeAvatarSessionProgress(status);
+        if (nextLoadingMessage && nextLoadingMessage !== activeLoadingMessage) {
+          activeLoadingMessage = nextLoadingMessage;
+          setAvatarLoadingState(true, activeLoadingMessage);
+        }
+        if (hasAvatarBackendProgress(status) && Number.isFinite(status.updatedAt)) {
+          deadlineAt = Math.max(
+            deadlineAt,
+            Math.min(maxDeadlineAt, Number(status.updatedAt) + progressGraceMs),
+          );
+        }
+      }
     }
     await new Promise((resolve) => {
       setTimeout(resolve, pollMs);
     });
   }
-  throw createAvatarJoinTimeoutError("Timed out waiting for avatar to join the room.");
+  setAvatarLoadingState(false);
+  const lastProgressMessage = describeAvatarSessionProgress(lastObservedStatus);
+  throw createAvatarJoinTimeoutError(
+    lastProgressMessage
+      ? `Timed out waiting for avatar to join the room. Last backend progress: ${lastProgressMessage}`
+      : "Timed out waiting for avatar to join the room.",
+  );
 }
 
 async function restartVideoChatSidecar() {
@@ -5937,6 +6101,8 @@ async function connectToRoomAndEnsureAvatar(options = {}) {
   try {
     await waitForAvatarParticipant(room, {
       timeoutMs: options.avatarJoinTimeoutMs,
+      roomName: activeSession?.roomName ?? "",
+      loadingMessage: options.loadingMessage,
     });
   } catch (error) {
     if (
@@ -6940,7 +7106,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   setChatStatus("Sending message...");
 
   try {
-    await ensureGatewaySocketConnected();
+    const liveUpdatesReady = await primeGatewaySocketForChat();
     const payload = await requestJson("/plugins/video-chat/api/chat/send", {
       method: "POST",
       body: JSON.stringify({
@@ -6952,7 +7118,9 @@ async function submitChatMessage(rawMessage, options = {}) {
     });
     const response = payload?.response ?? {};
     setOutput({ action: "chat-sent", sessionKey, response });
-    setChatStatus("Awaiting agent reply...");
+    setChatStatus(
+      liveUpdatesReady ? "Awaiting agent reply..." : "Message sent. Reconnecting chat updates...",
+    );
     return true;
   } catch (error) {
     setChatComposerInputValue(sourceInput, message);

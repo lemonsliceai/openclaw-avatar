@@ -12,6 +12,13 @@ const {
   mockResetProcessGroupChildren,
   mockStopChildProcess,
   mockStopMatchingProcesses,
+  mockRoomServiceCreateRoom,
+  mockRoomServiceDeleteRoom,
+  mockRoomServiceListRooms,
+  mockRoomServiceListParticipants,
+  mockAgentDispatchCreateDispatch,
+  mockAgentDispatchGetDispatch,
+  mockAgentDispatchDeleteDispatch,
 } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockStat: vi.fn(),
@@ -20,6 +27,20 @@ const {
   mockResetProcessGroupChildren: vi.fn().mockResolvedValue(undefined),
   mockStopChildProcess: vi.fn().mockResolvedValue(undefined),
   mockStopMatchingProcesses: vi.fn().mockResolvedValue([]),
+  mockRoomServiceCreateRoom: vi.fn().mockResolvedValue({
+    sid: "RM_123",
+    name: "openclaw-main-12345678",
+  }),
+  mockRoomServiceDeleteRoom: vi.fn().mockResolvedValue(undefined),
+  mockRoomServiceListRooms: vi.fn().mockResolvedValue([]),
+  mockRoomServiceListParticipants: vi.fn().mockResolvedValue([]),
+  mockAgentDispatchCreateDispatch: vi.fn().mockResolvedValue({
+    id: "dispatch-123",
+    room: "openclaw-main-12345678",
+    agentName: "openclaw-video-chat",
+  }),
+  mockAgentDispatchGetDispatch: vi.fn().mockResolvedValue(undefined),
+  mockAgentDispatchDeleteDispatch: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -51,6 +72,20 @@ vi.mock("./sidecar-process-control.js", () => ({
   resetProcessGroupChildren: mockResetProcessGroupChildren,
   stopChildProcess: mockStopChildProcess,
   stopMatchingProcesses: mockStopMatchingProcesses,
+}));
+
+vi.mock("livekit-server-sdk", () => ({
+  RoomServiceClient: class MockRoomServiceClient {
+    createRoom = mockRoomServiceCreateRoom;
+    deleteRoom = mockRoomServiceDeleteRoom;
+    listRooms = mockRoomServiceListRooms;
+    listParticipants = mockRoomServiceListParticipants;
+  },
+  AgentDispatchClient: class MockAgentDispatchClient {
+    createDispatch = mockAgentDispatchCreateDispatch;
+    getDispatch = mockAgentDispatchGetDispatch;
+    deleteDispatch = mockAgentDispatchDeleteDispatch;
+  },
 }));
 
 type RespondCall = [boolean, unknown?, { code: string; message: string }?];
@@ -85,6 +120,10 @@ const baseConfig = {
 const DEFAULT_GATEWAY_PORT = 1;
 const SIDE_CAR_INSTANCE_ARG = `--openclaw-video-chat-instance=gateway-port-${DEFAULT_GATEWAY_PORT}`;
 const SERVICE_GATEWAY_INSTANCE_ARG = "--openclaw-video-chat-instance=gateway-port-4321";
+
+function expectEphemeralAgentName(value: unknown) {
+  expect(value).toEqual(expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/));
+}
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
   const [, payload] = token.split(".");
@@ -251,6 +290,8 @@ async function invoke(
     | "videoChat.setup.save"
     | "videoChat.session.create"
     | "videoChat.session.stop"
+    | "videoChat.sidecar.restart"
+    | "videoChat.sidecar.stop"
     | "videoChat.chat.history"
     | "videoChat.chat.send"
     | "videoChat.audio.transcribe"
@@ -275,6 +316,22 @@ describe("video-chat plugin", () => {
     delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
     mockSpawn.mockImplementation(() => createSpawnedChild(4999));
     mockStopMatchingProcesses.mockResolvedValue([]);
+    mockRoomServiceCreateRoom.mockImplementation(async ({ name }: { name: string }) => ({
+      sid: `RM_${name}`,
+      name,
+    }));
+    mockRoomServiceDeleteRoom.mockResolvedValue(undefined);
+    mockRoomServiceListRooms.mockResolvedValue([]);
+    mockRoomServiceListParticipants.mockResolvedValue([]);
+    mockAgentDispatchCreateDispatch.mockImplementation(
+      async (roomName: string, agentName: string) => ({
+        id: `dispatch-for-${roomName}`,
+        room: roomName,
+        agentName,
+      }),
+    );
+    mockAgentDispatchGetDispatch.mockResolvedValue(undefined);
+    mockAgentDispatchDeleteDispatch.mockResolvedValue(undefined);
     mockFetch.mockResolvedValue(
       new Response(JSON.stringify({ text: "hello from microphone" }), {
         status: 200,
@@ -662,19 +719,24 @@ describe("video-chat plugin", () => {
       | undefined;
     expect(payload?.roomName).toContain("openclaw-agent-main-main-");
     expect(payload?.participantToken?.split(".")).toHaveLength(3);
-    expect(payload?.agentName).toBe("openclaw-video-chat");
+    expectEphemeralAgentName(payload?.agentName);
     expect(payload?.interruptReplyOnNewMessage).toBe(true);
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
-      roomConfig: {
-        agents: [
-          {
-            agentName: "openclaw-video-chat",
-            metadata:
-              '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
-          },
-        ],
+      video: {
+        roomJoin: true,
       },
     });
+    expect(mockRoomServiceCreateRoom).toHaveBeenCalledWith({
+      name: expect.stringContaining("openclaw-agent-main-main-"),
+    });
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
+      expect.stringContaining("openclaw-agent-main-main-"),
+      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      {
+        metadata:
+          '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
+      },
+    );
   });
 
   it("returns canonical chat session key for default main session", async () => {
@@ -693,15 +755,18 @@ describe("video-chat plugin", () => {
     expect(payload?.sessionKey).toBe("main");
     expect(payload?.chatSessionKey).toBe("agent:main:main");
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
-      roomConfig: {
-        agents: [
-          {
-            metadata:
-              '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":false}',
-          },
-        ],
+      video: {
+        roomJoin: true,
       },
     });
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
+      expect.stringContaining("openclaw-main-"),
+      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      {
+        metadata:
+          '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":false}',
+      },
+    );
   });
 
   it("stops a session", async () => {
@@ -716,6 +781,24 @@ describe("video-chat plugin", () => {
       stopped: true,
       roomName: "openclaw-main-12345678",
     });
+  });
+
+  it("deletes the explicit LiveKit dispatch during session stop", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+
+    await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledWith(
+      `dispatch-for-${roomName}`,
+      roomName,
+    );
+    expect(mockRoomServiceDeleteRoom).toHaveBeenCalledWith(roomName);
   });
 
   it("cleans stale wrapper jobs during session stop", async () => {
@@ -845,6 +928,36 @@ describe("video-chat plugin", () => {
     await service?.stop?.();
   });
 
+  it("uses a new sidecar-specific agent name after restart", async () => {
+    const { methods } = setup();
+
+    const firstCreateRespond = await invoke(methods, "videoChat.session.create", {});
+    const firstCreatePayload = firstCreateRespond.mock.calls[0]?.[1] as
+      | {
+          agentName?: string;
+          roomName?: string;
+        }
+      | undefined;
+    const firstAgentName = firstCreatePayload?.agentName ?? "";
+    expectEphemeralAgentName(firstAgentName);
+
+    await invoke(methods, "videoChat.sidecar.restart", {});
+
+    const secondCreateRespond = await invoke(methods, "videoChat.session.create", {});
+    const secondCreatePayload = secondCreateRespond.mock.calls[0]?.[1] as
+      | {
+          agentName?: string;
+          roomName?: string;
+        }
+      | undefined;
+    const secondAgentName = secondCreatePayload?.agentName ?? "";
+    expectEphemeralAgentName(secondAgentName);
+    expect(secondAgentName).not.toBe(firstAgentName);
+
+    expect(mockAgentDispatchCreateDispatch.mock.calls[0]?.[1]).toBe(firstAgentName);
+    expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[1]).toBe(secondAgentName);
+  });
+
   it("stops the sidecar through the HTTP API", async () => {
     const { httpRoutes, methods } = setup();
 
@@ -862,6 +975,61 @@ describe("video-chat plugin", () => {
       stopped: true,
     });
     expect(mockStopChildProcess).toHaveBeenCalled();
+  });
+
+  it("reports worker runtime progress through the HTTP session status route", async () => {
+    const child = createSpawnedChild(4110);
+    mockSpawn.mockImplementationOnce(() => child);
+    const { httpRoutes, methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+
+    child.stdout.emit(
+      "data",
+      `[video-chat-agent] request func accepted job jobId=AJ_test roomName=${roomName} agentName=openclaw-video-chat-1-1-12345678\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[video-chat-agent/job pid=999] agent-session.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="SyncedAudioOutput"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[video-chat-agent/job pid=999] avatar.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="DataStreamAudioOutput" avatarParticipantIdentity="lemonslice-avatar-agent"\n`,
+    );
+
+    await flushMicrotasks();
+
+    const statusResponse = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName)}`,
+    });
+
+    expect(statusResponse.handled).toBe(true);
+    expect(JSON.parse(statusResponse.res.body)).toMatchObject({
+      success: true,
+      status: {
+        roomName,
+        jobId: "AJ_test",
+        agentSessionOutputAudioSink: "SyncedAudioOutput",
+        avatarOutputAudioSink: "DataStreamAudioOutput",
+        avatarParticipantIdentity: "lemonslice-avatar-agent",
+      },
+    });
+
+    await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    const clearedStatusResponse = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName)}`,
+    });
+
+    expect(clearedStatusResponse.handled).toBe(true);
+    expect(JSON.parse(clearedStatusResponse.res.body)).toEqual({
+      success: true,
+      status: null,
+    });
   });
 
   it("loads chat history through the runtime subagent API", async () => {
