@@ -1326,11 +1326,13 @@ async function handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idem
 async function submitVoiceTranscript(rawTranscript) {
   const transcript = typeof rawTranscript === "string" ? rawTranscript.trim() : "";
   if (!transcript) {
+    setAvatarMutedForPendingChatReply(false);
     return false;
   }
 
   const sessionKey = resolveChatSessionKey();
   if (!sessionKey) {
+    setAvatarMutedForPendingChatReply(false);
     return false;
   }
 
@@ -1339,6 +1341,7 @@ async function submitVoiceTranscript(rawTranscript) {
       reason: "avatar-echo",
       transcriptLength: transcript.length,
     });
+    setAvatarMutedForPendingChatReply(false);
     return false;
   }
 
@@ -1350,6 +1353,7 @@ async function submitVoiceTranscript(rawTranscript) {
     transcript.toLowerCase() === priorTranscriptEntry.transcript &&
     Date.now() - priorTranscriptEntry.at < VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS;
   if (duplicateTranscript) {
+    setAvatarMutedForPendingChatReply(false);
     return false;
   }
   lastVoiceTranscriptByConnection.set(dedupeKey, {
@@ -1389,6 +1393,7 @@ async function submitVoiceTranscript(rawTranscript) {
     });
     setOutput({ action: "voice-chat-send-failed", error: String(error) });
     setChatStatus("Voice chat send failed.");
+    setAvatarMutedForPendingChatReply(false);
     return false;
   }
 }
@@ -1543,6 +1548,7 @@ function queueServerSpeechSegmentTranscription(segmentBlob, reason) {
     .then(async () => {
       const data = await readBlobAsBase64(segmentBlob);
       if (!data) {
+        setAvatarMutedForPendingChatReply(false);
         return false;
       }
       const payload = await requestJson("/plugins/video-chat/api/transcribe", {
@@ -1554,16 +1560,20 @@ function queueServerSpeechSegmentTranscription(segmentBlob, reason) {
       });
       const transcript = typeof payload?.transcript === "string" ? payload.transcript.trim() : "";
       if (!transcript) {
+        setAvatarMutedForPendingChatReply(false);
         return false;
       }
-      await submitVoiceTranscript(transcript);
+      const submitted = await submitVoiceTranscript(transcript);
+      if (!submitted) {
+        setAvatarMutedForPendingChatReply(false);
+      }
       setOutput({
         action: "server-speech-transcribed",
         reason,
         mimeType,
         bytes: segmentBytes,
       });
-      return true;
+      return submitted;
     })
     .catch((error) => {
       reportServerSpeechTranscriptionFailure("server-speech-transcription-failed", error, {
@@ -1571,6 +1581,7 @@ function queueServerSpeechSegmentTranscription(segmentBlob, reason) {
         mimeType,
         bytes: segmentBytes,
       });
+      setAvatarMutedForPendingChatReply(false);
       syncVoiceTranscription();
       return false;
     });
@@ -1623,6 +1634,7 @@ function startServerSpeechRecorderSegment(now) {
   if (!mediaStreamTrack || serverSpeechRecorder) {
     return;
   }
+  setAvatarMutedForPendingChatReply(true);
   const mimeType = pickServerSpeechRecorderMimeType();
   const stream = new MediaStream([mediaStreamTrack]);
   const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
@@ -1804,8 +1816,19 @@ function ensureBrowserSpeechRecognition() {
     }
     if (finalized.length > 0) {
       void submitVoiceTranscript(finalized.join(" ")).catch((error) => {
+        setAvatarMutedForPendingChatReply(false);
         setOutput({ action: "voice-chat-transcript-submit-failed", error: String(error) });
       });
+    }
+  });
+
+  recognition.addEventListener("speechstart", () => {
+    setAvatarMutedForPendingChatReply(true);
+  });
+
+  recognition.addEventListener("speechend", () => {
+    if (!chatAwaitingReply) {
+      setAvatarMutedForPendingChatReply(false);
     }
   });
 
@@ -1813,11 +1836,15 @@ function ensureBrowserSpeechRecognition() {
     browserSpeechRecognitionActive = false;
     const code = typeof event?.error === "string" ? event.error : "unknown";
     if (code === "aborted" || code === "no-speech") {
+      if (!chatAwaitingReply) {
+        setAvatarMutedForPendingChatReply(false);
+      }
       return;
     }
     if (code === "not-allowed" || code === "service-not-allowed") {
       browserSpeechRecognitionShouldRun = false;
       setChatStatus("Browser speech recognition permission was denied.");
+      setAvatarMutedForPendingChatReply(false);
       setServerSpeechTranscriptionFallback(code);
       syncVoiceTranscription();
       return;
@@ -1827,12 +1854,18 @@ function ensureBrowserSpeechRecognition() {
       error: code,
       message: typeof event?.message === "string" ? event.message : "",
     });
+    if (!chatAwaitingReply) {
+      setAvatarMutedForPendingChatReply(false);
+    }
     setServerSpeechTranscriptionFallback(code);
     syncVoiceTranscription();
   });
 
   recognition.addEventListener("end", () => {
     browserSpeechRecognitionActive = false;
+    if (!chatAwaitingReply) {
+      setAvatarMutedForPendingChatReply(false);
+    }
     if (!browserSpeechRecognitionShouldRun) {
       return;
     }
