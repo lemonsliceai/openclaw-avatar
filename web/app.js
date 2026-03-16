@@ -5820,14 +5820,19 @@ function finalizeStreamingAssistantMessage(textOrMessage, options = {}) {
   const runId = typeof options.runId === "string" ? options.runId.trim() : "";
   const existing = findLatestStreamingAssistantMessage(runId);
   if (existing) {
+    const hasRawMessage = options.rawMessage && typeof options.rawMessage === "object";
+    const resolvedTimestamp = resolveChatTimestamp(options.timestamp);
     if (content.text || content.images.length > 0) {
       if (content.text) {
         existing.text = content.text;
       }
       existing.images = content.images;
-      existing.timestamp = resolveChatTimestamp(options.timestamp) ?? existing.timestamp ?? Date.now();
+      existing.timestamp = resolvedTimestamp ?? existing.timestamp ?? Date.now();
       existing.rawMessage =
-        options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null;
+        hasRawMessage ? options.rawMessage : null;
+    } else if (hasRawMessage) {
+      existing.rawMessage = options.rawMessage;
+      existing.timestamp = resolvedTimestamp ?? existing.timestamp ?? Date.now();
     }
     existing.streaming = false;
     if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {

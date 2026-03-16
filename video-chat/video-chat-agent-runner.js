@@ -686,9 +686,21 @@ async function runVideoChatAgentEntry(ctx) {
   });
 
   const spokenRuns = new Set();
+  const runProcessingQueues = new Map();
   let gatewayClient = null;
   let activeGatewaySpeech = null;
   const interruptReplyOnNewMessage = metadata.interruptReplyOnNewMessage === true;
+
+  const emitGatewaySpeechFlush = (reply) => {
+    reply.ttsStream.flush();
+    reply.flushedTextLength = reply.streamedText.length;
+    emitParentDebug("speech.flush", {
+      sessionKey: metadata.sessionKey,
+      roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+      runId: reply.runId,
+      flushedTextLength: reply.flushedTextLength,
+    });
+  };
 
   const startGatewaySpeech = async (runId) => {
     const normalizedRunId = typeof runId === "string" ? runId.trim() : "";
@@ -826,14 +838,7 @@ async function runVideoChatAgentEntry(ctx) {
       reply.streamedText = normalizedText;
       const unflushedTextLength = reply.streamedText.length - reply.flushedTextLength;
       if (shouldFlushGatewaySpeechDelta(normalizedText, unflushedTextLength, close)) {
-        reply.ttsStream.flush();
-        reply.flushedTextLength = reply.streamedText.length;
-        emitParentDebug("speech.flush", {
-          sessionKey: metadata.sessionKey,
-          roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-          runId: reply.runId,
-          flushedTextLength: reply.flushedTextLength,
-        });
+        emitGatewaySpeechFlush(reply);
       }
       emitParentDebug("speech.delta", {
         sessionKey: metadata.sessionKey,
@@ -849,14 +854,7 @@ async function runVideoChatAgentEntry(ctx) {
       reply.streamedText = normalizedText;
       const unflushedTextLength = reply.streamedText.length - reply.flushedTextLength;
       if (shouldFlushGatewaySpeechDelta(deltaText, unflushedTextLength, close)) {
-        reply.ttsStream.flush();
-        reply.flushedTextLength = reply.streamedText.length;
-        emitParentDebug("speech.flush", {
-          sessionKey: metadata.sessionKey,
-          roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-          runId: reply.runId,
-          flushedTextLength: reply.flushedTextLength,
-        });
+        emitGatewaySpeechFlush(reply);
       }
       emitParentDebug("speech.delta", {
         sessionKey: metadata.sessionKey,
@@ -865,6 +863,9 @@ async function runVideoChatAgentEntry(ctx) {
         textLength: normalizedText.length,
         deltaLength: deltaText.length,
       });
+    }
+    if (close && reply.flushedTextLength < reply.streamedText.length) {
+      emitGatewaySpeechFlush(reply);
     }
     if (close && !reply.closed) {
       reply.closed = true;
@@ -894,6 +895,61 @@ async function runVideoChatAgentEntry(ctx) {
       await session.interrupt({ force: true }).await;
     } catch {}
     activeGatewaySpeech = null;
+  };
+
+  const processGatewayEvent = async (event, normalizedRunKey) => {
+    try {
+      const payload = event?.payload;
+      const payloadSessionKey =
+        typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
+      const payloadState = typeof payload?.state === "string" ? payload.state.trim() : "";
+      const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
+      if (payloadState) {
+        console.log(
+          `[video-chat-agent] received gateway chat event state=${payloadState}${runId ? ` run=${runId}` : ""}`,
+        );
+        emitParentDebug("gateway-chat-event.received", {
+          sessionKey: metadata.sessionKey,
+          roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+          runId,
+          state: payloadState,
+        });
+      }
+      if (!payload || payloadSessionKey !== metadata.sessionKey) {
+        return;
+      }
+      const text = extractTextFromMessage(payload.message);
+      if (payloadState === "delta") {
+        if (!text || spokenRuns.has(normalizedRunKey)) {
+          return;
+        }
+        await pushGatewaySpeechUpdate(runId, text);
+        return;
+      }
+      if (payloadState === "final") {
+        if (spokenRuns.has(normalizedRunKey) && activeGatewaySpeech?.runKey !== normalizedRunKey) {
+          return;
+        }
+        await pushGatewaySpeechUpdate(runId, text, { close: true });
+        return;
+      }
+      if (payloadState === "aborted" || payloadState === "error") {
+        await stopGatewaySpeech(runId);
+      }
+    } catch (error) {
+      console.error(
+        `[video-chat-agent] failed to process gateway reply event: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+      );
+      emitParentDebug("speech.failed", {
+        sessionKey: metadata.sessionKey,
+        roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+        runId: typeof event?.payload?.runId === "string" ? event.payload.runId.trim() : "",
+        error: error instanceof Error ? error.message : String(error),
+        outputAudioSink:
+          session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
+      });
+      logRoomSnapshot("session-say-failed", ctx.room);
+    }
   };
 
   ctx.room?.on?.("participant_connected", (participant) => {
@@ -1013,60 +1069,19 @@ async function runVideoChatAgentEntry(ctx) {
   gatewayClient = await connectGatewayBridge({
     WebSocket: deps.WebSocket,
     sessionKey: metadata.sessionKey,
-    onChatEvent: async (event) => {
-      try {
-        const payload = event?.payload;
-        const payloadSessionKey =
-          typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
-        const payloadState = typeof payload?.state === "string" ? payload.state.trim() : "";
-        const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
-        const normalizedRunKey = normalizeGatewayRunKey(runId);
-        if (payloadState) {
-          console.log(
-            `[video-chat-agent] received gateway chat event state=${payloadState}${runId ? ` run=${runId}` : ""}`,
-          );
-          emitParentDebug("gateway-chat-event.received", {
-            sessionKey: metadata.sessionKey,
-            roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-            runId,
-            state: payloadState,
-          });
-        }
-        if (!payload || payloadSessionKey !== metadata.sessionKey) {
-          return;
-        }
-        const text = extractTextFromMessage(payload.message);
-        if (payloadState === "delta") {
-          if (!text || spokenRuns.has(normalizedRunKey)) {
-            return;
+    onChatEvent: (event) => {
+      const runId = typeof event?.payload?.runId === "string" ? event.payload.runId.trim() : "";
+      const normalizedRunKey = normalizeGatewayRunKey(runId);
+      const previous = runProcessingQueues.get(normalizedRunKey) || Promise.resolve();
+      const next = previous
+        .then(() => processGatewayEvent(event, normalizedRunKey))
+        .catch(() => {})
+        .finally(() => {
+          if (runProcessingQueues.get(normalizedRunKey) === next) {
+            runProcessingQueues.delete(normalizedRunKey);
           }
-          await pushGatewaySpeechUpdate(runId, text);
-          return;
-        }
-        if (payloadState === "final") {
-          if (spokenRuns.has(normalizedRunKey) && activeGatewaySpeech?.runKey !== normalizedRunKey) {
-            return;
-          }
-          await pushGatewaySpeechUpdate(runId, text, { close: true });
-          return;
-        }
-        if (payloadState === "aborted" || payloadState === "error") {
-          await stopGatewaySpeech(runId);
-        }
-      } catch (error) {
-        console.error(
-          `[video-chat-agent] failed to process gateway reply event: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
-        );
-        emitParentDebug("speech.failed", {
-          sessionKey: metadata.sessionKey,
-          roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-          runId: typeof event?.payload?.runId === "string" ? event.payload.runId : "",
-          error: error instanceof Error ? error.message : String(error),
-          outputAudioSink:
-            session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
         });
-        logRoomSnapshot("session-say-failed", ctx.room);
-      }
+      runProcessingQueues.set(normalizedRunKey, next);
     },
   });
   try {
