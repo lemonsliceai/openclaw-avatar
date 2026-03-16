@@ -4398,6 +4398,36 @@ function applyAvatarSpeakerMuteState() {
   toggleSpeakerButton.setAttribute("title", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
 }
 
+function resumeAvatarMediaPlayback(reason = "manual") {
+  syncAvatarDocumentPictureInPictureMedia();
+
+  const mediaElements = new Set();
+  if (avatarMediaEl) {
+    for (const element of avatarMediaEl.querySelectorAll("audio, video")) {
+      mediaElements.add(element);
+    }
+  }
+  if (isMediaElement(avatarDocumentPictureInPictureElements?.videoEl)) {
+    mediaElements.add(avatarDocumentPictureInPictureElements.videoEl);
+  }
+
+  for (const element of mediaElements) {
+    if (!isMediaElement(element) || typeof element.play !== "function") {
+      continue;
+    }
+    if (element.paused === false) {
+      continue;
+    }
+    void element.play().catch((error) => {
+      debugLog("avatar:media-resume-failed", {
+        reason,
+        tagName: element.tagName?.toLowerCase?.() || "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+}
+
 async function applyPreferredMicMuteState() {
   if (!localAudioTrack) {
     return;
@@ -6556,7 +6586,8 @@ async function connectToRoom(options = {}) {
   setAvatarLoadingState(Boolean(loadingMessage), loadingMessage);
   updateRoomStatusState();
   const room = new LIVEKIT.Room({
-    adaptiveStream: true,
+    // Keep the avatar video subscribed while the browser is hidden or minimized.
+    adaptiveStream: false,
     dynacast: true,
   });
 
@@ -7407,6 +7438,20 @@ if (reloadButton) {
     refreshSetupStatus().catch(() => {});
   });
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    resumeAvatarMediaPlayback("visibilitychange");
+  }
+});
+
+window.addEventListener("pageshow", () => {
+  resumeAvatarMediaPlayback("pageshow");
+});
+
+window.addEventListener("focus", () => {
+  resumeAvatarMediaPlayback("focus");
+});
 
 if (configCancelButton) {
   configCancelButton.addEventListener("click", () => {
