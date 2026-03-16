@@ -126,6 +126,8 @@ type SidecarCredentials = {
 };
 
 type VideoChatAgentSidecar = {
+  agentName: string;
+  configFingerprint: string | null;
   isRunning: () => boolean;
   waitForReady: () => Promise<void>;
   stop: () => Promise<void>;
@@ -2996,6 +2998,46 @@ function resolveVideoChatLiveKitCredentials(config: OpenClawConfig): {
   };
 }
 
+function resolveVideoChatConfigFingerprint(config: OpenClawConfig): string | null {
+  const credentials = resolveVideoChatLiveKitCredentials(config);
+  if (!credentials) {
+    return null;
+  }
+  return JSON.stringify(credentials);
+}
+
+function isSameConfigFingerprint(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  return (left ?? null) === (right ?? null);
+}
+
+function isNotFoundVideoChatDispatchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const status =
+    typeof (error as { status?: unknown })?.status === "number"
+      ? Number((error as { status: number }).status)
+      : typeof (error as { statusCode?: unknown })?.statusCode === "number"
+        ? Number((error as { statusCode: number }).statusCode)
+        : null;
+  const rawCode = (error as { code?: unknown })?.code;
+  const code =
+    typeof rawCode === "string"
+      ? rawCode.toLowerCase()
+      : typeof rawCode === "number"
+        ? String(rawCode)
+        : "";
+  const normalizedMessage = message.toLowerCase();
+  return (
+    status === 404 ||
+    code === "404" ||
+    code === "not_found" ||
+    normalizedMessage.includes("not found") ||
+    normalizedMessage.includes("404")
+  );
+}
+
 function shouldRunVideoChatRuntimeObservation(): boolean {
   if (process.env.OPENCLAW_VIDEO_CHAT_DISABLE_SESSION_OBSERVER === "1") {
     return false;
@@ -3321,10 +3363,20 @@ async function deleteVideoChatAgentDispatch(params: {
       dispatchId: params.dispatchId,
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isNotFoundVideoChatDispatchError(error)) {
+      logVideoChatEvent(params.logger, "info", "agent-dispatch.delete.skipped", {
+        roomName: params.roomName,
+        dispatchId: params.dispatchId,
+        reason: "already-deleted",
+        error: message,
+      });
+      return;
+    }
     logVideoChatEvent(params.logger, "warn", "agent-dispatch.delete.failed", {
       roomName: params.roomName,
       dispatchId: params.dispatchId,
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     });
     throw error;
   }
@@ -3417,6 +3469,7 @@ async function startVideoChatAgentSidecar(params: {
     );
     return null;
   }
+  const configFingerprint = resolveVideoChatConfigFingerprint(params.config);
 
   const entryScript = process.argv[1];
   const bridgeScriptPath = resolveSidecarBridgeScriptPath();
@@ -3621,6 +3674,8 @@ async function startVideoChatAgentSidecar(params: {
   spawnChild();
 
   return {
+    agentName: params.agentName,
+    configFingerprint,
     isRunning: () => hasRunningChild(),
     waitForReady: async () => {
       await readyPromise;
@@ -3772,12 +3827,16 @@ const videoChatPlugin = {
     const assignManagedRoomDispatch = async (params: {
       session: VideoChatSessionResult;
       config: OpenClawConfig;
+      commit?: boolean;
     }): Promise<VideoChatAgentDispatchResult> => {
       const dispatch = await createVideoChatAgentDispatch({
         config: params.config,
         session: params.session,
         logger: api.logger,
       });
+      if (params.commit === false) {
+        return dispatch;
+      }
       sessionByRoom.set(params.session.roomName, { ...params.session });
       agentDispatchIdsByRoom.set(params.session.roomName, dispatch.id);
       startManagedRoomObservation({
@@ -3786,6 +3845,20 @@ const videoChatPlugin = {
         dispatchId: dispatch.id,
       });
       return dispatch;
+    };
+
+    const commitManagedRoomDispatch = (params: {
+      session: VideoChatSessionResult;
+      config: OpenClawConfig;
+      dispatch: VideoChatAgentDispatchResult;
+    }): void => {
+      sessionByRoom.set(params.session.roomName, { ...params.session });
+      agentDispatchIdsByRoom.set(params.session.roomName, params.dispatch.id);
+      startManagedRoomObservation({
+        session: params.session,
+        config: params.config,
+        dispatchId: params.dispatch.id,
+      });
     };
 
     const collectRoomsForRedispatch = (): Array<{
@@ -3931,7 +4004,7 @@ const videoChatPlugin = {
     const ensureSidecarRunning = async (
       config: OpenClawConfig,
       gateway?: SidecarGatewayRuntime,
-    ): Promise<boolean> => {
+    ): Promise<string | null> => {
       if (gateway && isGatewayRuntime(gateway)) {
         lastGateway = gateway;
       }
@@ -3941,13 +4014,42 @@ const videoChatPlugin = {
         api.logger.warn(
           "Claw Cast agent sidecar disabled: gateway runtime details are unavailable",
         );
-        return false;
+        return null;
       }
       const currentAgentName = resolveSidecarAgentName(runtimeGateway, attemptGeneration);
+      const requestedFingerprint = resolveVideoChatConfigFingerprint(config);
+
+      const stopSidecarForFingerprintMismatch = async (
+        activeSidecar: VideoChatAgentSidecar,
+        source: "cached" | "starting" | "started",
+      ): Promise<void> => {
+        logVideoChatEvent(api.logger, "warn", "sidecar.recycle.config-mismatch", {
+          generation: attemptGeneration,
+          source,
+          agentName: activeSidecar.agentName,
+          activeFingerprint: activeSidecar.configFingerprint,
+          requestedFingerprint,
+        });
+        await activeSidecar.stop().catch(() => {});
+        if (sidecar === activeSidecar) {
+          sidecar = null;
+        }
+      };
 
       const getOrStartSidecar = async (): Promise<VideoChatAgentSidecar | null> => {
         if (!isCurrentSidecarGeneration(attemptGeneration)) {
           return null;
+        }
+        if (sidecar) {
+          if (!isSameConfigFingerprint(sidecar.configFingerprint, requestedFingerprint)) {
+            const staleSidecar = sidecar;
+            await stopSidecarForFingerprintMismatch(staleSidecar, "cached");
+            if (!isCurrentSidecarGeneration(attemptGeneration)) {
+              return null;
+            }
+          } else {
+            return sidecar;
+          }
         }
         if (sidecar) {
           return sidecar;
@@ -3955,6 +4057,13 @@ const videoChatPlugin = {
         if (sidecarStartupPromise) {
           const startingSidecar = await sidecarStartupPromise;
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
+            return null;
+          }
+          if (
+            startingSidecar &&
+            !isSameConfigFingerprint(startingSidecar.configFingerprint, requestedFingerprint)
+          ) {
+            await stopSidecarForFingerprintMismatch(startingSidecar, "starting");
             return null;
           }
           sidecar = sidecar ?? startingSidecar;
@@ -3974,6 +4083,13 @@ const videoChatPlugin = {
             await startedSidecar?.stop().catch(() => {});
             return null;
           }
+          if (
+            startedSidecar &&
+            !isSameConfigFingerprint(startedSidecar.configFingerprint, requestedFingerprint)
+          ) {
+            await stopSidecarForFingerprintMismatch(startedSidecar, "started");
+            return null;
+          }
           sidecar = startedSidecar;
           return sidecar;
         } finally {
@@ -3985,7 +4101,7 @@ const videoChatPlugin = {
 
       for (let attempt = 1; attempt <= VIDEO_CHAT_SIDECAR_START_MAX_ATTEMPTS; attempt += 1) {
         if (!isCurrentSidecarGeneration(attemptGeneration)) {
-          return false;
+          return null;
         }
         logVideoChatEvent(api.logger, "info", "sidecar.ensure.attempt", {
           attempt,
@@ -3993,6 +4109,7 @@ const videoChatPlugin = {
           agentName: currentAgentName,
           gatewayPort: runtimeGateway.port,
           gatewayAuthMode: runtimeGateway.auth.mode,
+          requestedFingerprint,
           hasExistingSidecar: Boolean(sidecar),
           startupInFlight: Boolean(sidecarStartupPromise),
         });
@@ -4002,7 +4119,7 @@ const videoChatPlugin = {
           api.logger.warn("[video-chat-agent] detected stale sidecar state; restarting worker");
           await staleSidecar.stop().catch(() => {});
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return false;
+            return null;
           }
           if (sidecar === staleSidecar) {
             sidecar = null;
@@ -4011,28 +4128,29 @@ const videoChatPlugin = {
 
         const activeSidecar = await getOrStartSidecar();
         if (!isCurrentSidecarGeneration(attemptGeneration) || !activeSidecar) {
-          return false;
+          continue;
         }
 
         try {
           await activeSidecar.waitForReady();
           if (!isCurrentSidecarGeneration(attemptGeneration) || sidecar !== activeSidecar) {
-            return false;
+            return null;
           }
           await activeSidecar.waitForIdle();
           if (!isCurrentSidecarGeneration(attemptGeneration) || sidecar !== activeSidecar) {
-            return false;
+            return null;
           }
           logVideoChatEvent(api.logger, "info", "sidecar.ready", {
             attempt,
             generation: attemptGeneration,
-            agentName: currentAgentName,
+            agentName: activeSidecar.agentName,
             gatewayPort: runtimeGateway.port,
+            configFingerprint: activeSidecar.configFingerprint,
           });
-          return true;
+          return activeSidecar.agentName;
         } catch (error) {
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return false;
+            return null;
           }
           const message = error instanceof Error ? error.message : String(error);
           api.logger.warn(
@@ -4040,7 +4158,7 @@ const videoChatPlugin = {
           );
           await activeSidecar.stop().catch(() => {});
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return false;
+            return null;
           }
           if (sidecar === activeSidecar) {
             sidecar = null;
@@ -4052,7 +4170,7 @@ const videoChatPlugin = {
           }
         }
       }
-      return false;
+      return null;
     };
 
     const resetSidecarJobs = async (reason = "unspecified"): Promise<void> => {
@@ -4160,8 +4278,8 @@ const videoChatPlugin = {
       await stopManagedSidecar({ reason: `restart:${params.reason ?? "unspecified"}` });
       const runtimeGateway =
         params.gateway ?? lastGateway ?? resolveGatewayRuntimeFromConfig(params.config) ?? undefined;
-      const started = await ensureSidecarRunning(params.config, runtimeGateway);
-      if (!started) {
+      const readyAgentName = await ensureSidecarRunning(params.config, runtimeGateway);
+      if (!readyAgentName) {
         logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.skipped", {
           reason: params.reason ?? "unspecified",
           gatewayPort: runtimeGateway?.port,
@@ -4177,29 +4295,75 @@ const videoChatPlugin = {
         });
         return { restarted: false };
       }
+      const activeSidecar = sidecar;
+      const activeFingerprint = activeSidecar?.configFingerprint ?? null;
+      const requestedFingerprint = resolveVideoChatConfigFingerprint(params.config);
       let redispatchedRoomCount = 0;
       for (const room of roomsToRedispatch) {
+        const roomFingerprint = resolveVideoChatConfigFingerprint(room.config);
+        if (
+          !isSameConfigFingerprint(roomFingerprint, activeFingerprint) ||
+          !isSameConfigFingerprint(roomFingerprint, requestedFingerprint)
+        ) {
+          logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.skipped", {
+            roomName: room.roomName,
+            priorDispatchId: room.dispatchId,
+            reason: "config-fingerprint-mismatch",
+            roomFingerprint,
+            requestedFingerprint,
+            activeFingerprint,
+            agentName: readyAgentName,
+          });
+          continue;
+        }
         const nextSession = {
           ...room.session,
-          agentName: sidecarAgentName ?? VIDEO_CHAT_AGENT_NAME,
+          agentName: readyAgentName,
         };
         try {
+          const oldDispatchId = room.dispatchId;
           const nextDispatch = await assignManagedRoomDispatch({
             session: nextSession,
             config: room.config,
+            commit: false,
+          });
+          try {
+            if (oldDispatchId && oldDispatchId !== nextDispatch.id) {
+              await deleteVideoChatAgentDispatch({
+                config: room.config,
+                roomName: room.roomName,
+                dispatchId: oldDispatchId,
+                logger: api.logger,
+              });
+            }
+          } catch (error) {
+            if (nextDispatch.id !== oldDispatchId) {
+              await deleteVideoChatAgentDispatch({
+                config: room.config,
+                roomName: room.roomName,
+                dispatchId: nextDispatch.id,
+                logger: api.logger,
+              }).catch((cleanupError) => {
+                logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.rollback.failed", {
+                  roomName: room.roomName,
+                  dispatchId: nextDispatch.id,
+                  priorDispatchId: oldDispatchId,
+                  error:
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+                });
+              });
+            }
+            throw error;
+          }
+          commitManagedRoomDispatch({
+            session: nextSession,
+            config: room.config,
+            dispatch: nextDispatch,
           });
           redispatchedRoomCount += 1;
-          if (room.dispatchId && room.dispatchId !== nextDispatch.id) {
-            await deleteVideoChatAgentDispatch({
-              config: room.config,
-              roomName: room.roomName,
-              dispatchId: room.dispatchId,
-              logger: api.logger,
-            });
-          }
           logVideoChatEvent(api.logger, "info", "sidecar.restart.redispatch.succeeded", {
             roomName: room.roomName,
-            priorDispatchId: room.dispatchId,
+            priorDispatchId: oldDispatchId,
             dispatchId: nextDispatch.id,
             agentName: nextSession.agentName,
           });
@@ -4214,7 +4378,7 @@ const videoChatPlugin = {
       logVideoChatEvent(api.logger, "info", "sidecar.restart.completed", {
         reason: params.reason ?? "unspecified",
         restarted: Boolean(sidecar),
-        agentName: sidecarAgentName,
+        agentName: readyAgentName,
         gatewayPort: runtimeGateway?.port,
         redispatchedRoomCount,
       });
@@ -4232,13 +4396,13 @@ const videoChatPlugin = {
       });
       let session: VideoChatSessionResult | null = null;
       try {
-        const started = await ensureSidecarRunning(params.config);
-        if (!started) {
+        const readyAgentName = await ensureSidecarRunning(params.config);
+        if (!readyAgentName) {
           throw new Error("Claw Cast agent sidecar did not start.");
         }
         session = await createVideoChatSession({
           ...params,
-          agentName: sidecarAgentName ?? VIDEO_CHAT_AGENT_NAME,
+          agentName: readyAgentName,
         });
         const roomConfigSnapshot = cloneConfigSnapshot(params.config);
         rememberManagedRoom(session, roomConfigSnapshot);

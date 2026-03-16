@@ -936,6 +936,32 @@ describe("video-chat plugin", () => {
     expect(mockRoomServiceDeleteRoom).toHaveBeenCalledTimes(1);
   });
 
+  it("treats missing LiveKit dispatches as already deleted during session stop", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockAgentDispatchDeleteDispatch.mockRejectedValueOnce(
+      Object.assign(new Error("dispatch not found"), {
+        status: 404,
+        code: "not_found",
+      }),
+    );
+
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      stopped: true,
+      roomName,
+    });
+    expect(mockRoomServiceDeleteRoom).toHaveBeenCalledWith(roomName);
+  });
+
   it("uses the room's stored LiveKit snapshot during session stop", async () => {
     const { methods, runtime } = setup();
 
@@ -1150,6 +1176,36 @@ describe("video-chat plugin", () => {
     expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledWith("dispatch-1", roomName);
   });
 
+  it("rolls back the replacement dispatch if deleting the old dispatch fails during restart", async () => {
+    const { methods } = setup();
+    let dispatchSequence = 0;
+    mockAgentDispatchCreateDispatch.mockImplementation(async (roomName: string, agentName: string) => ({
+      id: `dispatch-${++dispatchSequence}`,
+      room: roomName,
+      agentName,
+    }));
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+
+    mockAgentDispatchDeleteDispatch
+      .mockRejectedValueOnce(new Error("dispatch delete failed"))
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+
+    const restartRespond = await invoke(methods, "videoChat.sidecar.restart", {});
+    expect((restartRespond.mock.calls[0] as RespondCall | undefined)?.[0]).toBe(true);
+
+    await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    expect(mockAgentDispatchDeleteDispatch.mock.calls[0]).toEqual(["dispatch-1", roomName]);
+    expect(mockAgentDispatchDeleteDispatch.mock.calls[1]).toEqual(["dispatch-2", roomName]);
+    expect(mockAgentDispatchDeleteDispatch.mock.calls[2]).toEqual(["dispatch-1", roomName]);
+  });
+
   it("uses a new sidecar-specific agent name after restart", async () => {
     const { methods } = setup();
 
@@ -1181,6 +1237,31 @@ describe("video-chat plugin", () => {
     expect(mockAgentDispatchCreateDispatch.mock.calls[2]?.[1]).toBe(secondAgentName);
   });
 
+  it("recycles the sidecar when the LiveKit credential fingerprint changes", async () => {
+    const { methods, runtime } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+    await flushMicrotasks();
+
+    vi.mocked(runtime.config.loadConfig).mockReturnValue({
+      ...baseConfig,
+      videoChat: {
+        ...baseConfig.videoChat,
+        livekit: {
+          url: "wss://rotated.livekit.cloud",
+          apiKey: "rotated-key",
+          apiSecret: "rotated-secret",
+        },
+      },
+    } as never);
+
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    expect((respond.mock.calls[0] as RespondCall | undefined)?.[0]).toBe(true);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockStopChildProcess).toHaveBeenCalled();
+  });
+
   it("skips redispatch when the replacement sidecar does not start", async () => {
     const { methods, runtime } = setup();
 
@@ -1205,6 +1286,35 @@ describe("video-chat plugin", () => {
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(1);
     expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
     expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips redispatch when the room snapshot fingerprint no longer matches the active sidecar", async () => {
+    const { methods, runtime } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    vi.mocked(runtime.config.loadConfig).mockReturnValue({
+      ...baseConfig,
+      videoChat: {
+        ...baseConfig.videoChat,
+        livekit: {
+          url: "wss://rotated.livekit.cloud",
+          apiKey: "rotated-key",
+          apiSecret: "rotated-secret",
+        },
+      },
+    } as never);
+
+    const respond = await invoke(methods, "videoChat.sidecar.restart", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      restarted: true,
+    });
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(1);
+    expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
   });
 
   it("stops the sidecar through the HTTP API", async () => {

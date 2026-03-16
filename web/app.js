@@ -203,6 +203,7 @@ let gatewayHandshakeError = null;
 let gatewayConnectRequestId = null;
 let gatewayRequestCounter = 0;
 let gatewayReconnectTimer = null;
+let gatewayReconnectBackoffActive = false;
 const gatewayPendingRequests = new Map();
 const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
 const sensitiveFieldCopyButtons = Array.from(document.querySelectorAll("[data-copy-secret]"));
@@ -5337,6 +5338,7 @@ function clearGatewayPendingRequests(error) {
 }
 
 function clearGatewayReconnectTimer() {
+  gatewayReconnectBackoffActive = false;
   if (gatewayReconnectTimer === null) {
     return;
   }
@@ -5379,13 +5381,16 @@ function scheduleGatewaySocketReconnect(delayMs = 1_000) {
   ) {
     return;
   }
+  gatewayReconnectBackoffActive = true;
   gatewayReconnectTimer = setTimeout(() => {
     gatewayReconnectTimer = null;
     if (!activeSession || !hasGatewayToken()) {
+      gatewayReconnectBackoffActive = false;
       return;
     }
     void ensureGatewaySocketConnected().catch((error) => {
       if (isGatewaySocketAuthError(error)) {
+        gatewayReconnectBackoffActive = false;
         reportGatewaySocketAuthFailure(error);
         return;
       }
@@ -5394,6 +5399,10 @@ function scheduleGatewaySocketReconnect(delayMs = 1_000) {
         error: error instanceof Error ? error.message : String(error),
       });
       scheduleGatewaySocketReconnect(Math.min(delayMs * 2, 10_000));
+    }).then(() => {
+      if (gatewaySocketReady) {
+        gatewayReconnectBackoffActive = false;
+      }
     });
   }, delayMs);
 }
@@ -5636,7 +5645,7 @@ async function ensureGatewaySocketConnected() {
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
       renderChatLog({ scrollToBottom: false });
       setChatStatus("Chat disconnected.");
-      if (!handshakeStillPending && !authFailure) {
+      if (!handshakeStillPending && !authFailure && !gatewayReconnectBackoffActive) {
         scheduleGatewaySocketReconnect();
       }
     });
@@ -6170,10 +6179,11 @@ async function waitForAvatarParticipant(room, options = {}) {
           activeLoadingMessage = nextLoadingMessage;
           setAvatarLoadingState(true, activeLoadingMessage);
         }
-        if (hasAvatarBackendProgress(status) && Number.isFinite(status.updatedAt)) {
+        const statusUpdatedAt = resolveChatTimestamp(status.updatedAt);
+        if (hasAvatarBackendProgress(status) && Number.isFinite(statusUpdatedAt)) {
           deadlineAt = Math.max(
             deadlineAt,
-            Math.min(maxDeadlineAt, Number(status.updatedAt) + progressGraceMs),
+            Math.min(maxDeadlineAt, statusUpdatedAt + progressGraceMs),
           );
         }
       }
