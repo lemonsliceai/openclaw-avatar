@@ -224,6 +224,10 @@ type ParsedVideoChatSendParams = {
   idempotencyKey?: string;
 };
 
+function normalizeInterruptReplyOnNewMessage(interruptReplyOnNewMessage?: boolean): boolean {
+  return interruptReplyOnNewMessage ?? true;
+}
+
 type VideoChatSubagentRunParams = {
   sessionKey: string;
   message: string;
@@ -894,7 +898,7 @@ function buildVideoChatDispatchMetadata(params: {
   return JSON.stringify({
     sessionKey: params.sessionKey,
     imageUrl: params.imageUrl,
-    interruptReplyOnNewMessage: params.interruptReplyOnNewMessage ?? true,
+    interruptReplyOnNewMessage: normalizeInterruptReplyOnNewMessage(params.interruptReplyOnNewMessage),
   });
 }
 
@@ -2339,7 +2343,9 @@ function registerVideoChatHttpRoutes(
               (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
               cfg.session?.mainKey ||
               "main";
-            const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage ?? true;
+            const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+              params.interruptReplyOnNewMessage,
+            );
             logVideoChatEvent(api.logger, "info", "http.session.create.requested", {
               sessionKey,
               interruptReplyOnNewMessage,
@@ -2942,7 +2948,9 @@ async function createVideoChatSession(params: {
     requestedSessionKey: params.sessionKey,
     config: effectiveConfig,
   });
-  const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage ?? true;
+  const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+    params.interruptReplyOnNewMessage,
+  );
   const participantIdentity = `control-ui-${randomUUID().slice(0, 12)}`;
   const participantToken = createLiveKitAccessToken({
     apiKey,
@@ -4470,7 +4478,9 @@ const videoChatPlugin = {
       sessionKey: string;
       interruptReplyOnNewMessage?: boolean;
     }): Promise<VideoChatSessionResult> => {
-      const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage ?? true;
+      const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+        params.interruptReplyOnNewMessage,
+      );
       logVideoChatEvent(api.logger, "info", "session.create.begin", {
         sessionKey: params.sessionKey,
         interruptReplyOnNewMessage,
@@ -4735,7 +4745,9 @@ const videoChatPlugin = {
             (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
             cfg.session?.mainKey ||
             "main";
-          const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage ?? true;
+          const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+            params.interruptReplyOnNewMessage,
+          );
 
           const payload = await createManagedSession({
             config: cfg,

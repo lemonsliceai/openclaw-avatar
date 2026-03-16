@@ -1375,6 +1375,7 @@ async function submitVoiceTranscript(rawTranscript) {
   });
 
   const idempotencyKey = `${VOICE_CHAT_RUN_ID_PREFIX}browser-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  renderedVoiceUserRuns.add(idempotencyKey);
   setChatPaneOpen(true);
   appendChatLine("user", transcript, {
     awaitingReply: true,
@@ -1979,6 +1980,40 @@ function cleanupServerSpeechTranscriptionResources(options = {}) {
   serverSpeechRecorderStartPromise = null;
 }
 
+function shouldAbortServerSpeechRecorderStartup() {
+  return (
+    serverSpeechRealtimeStopRequested ||
+    !shouldRunVoiceTranscription() ||
+    shouldPreferBrowserSpeechRecognition()
+  );
+}
+
+function cleanupServerSpeechRecorderStartupResources(resources = {}) {
+  cleanupServerSpeechTranscriptionResources({
+    socket: resources.socket,
+    audioContext: resources.audioContext,
+    sourceNode: resources.sourceNode,
+    processorNode: resources.processorNode,
+    silenceNode: resources.silenceNode,
+    suppressReconnect: true,
+    stopRequested: true,
+  });
+  const stream = resources.stream;
+  if (stream && typeof stream.getTracks === "function") {
+    for (const track of stream.getTracks()) {
+      try {
+        track.stop();
+      } catch {}
+    }
+  }
+  resources.stream = null;
+  resources.socket = null;
+  resources.audioContext = null;
+  resources.sourceNode = null;
+  resources.processorNode = null;
+  resources.silenceNode = null;
+}
+
 async function startServerSpeechTranscription() {
   if (serverSpeechRealtimeSocket || serverSpeechRecorderStartPromise || !serverSpeechTranscriptionSupported()) {
     return;
@@ -1988,12 +2023,13 @@ async function startServerSpeechTranscription() {
   if (!mediaStreamTrack) {
     return;
   }
+  let audioContext = null;
+  let sourceNode = null;
+  let processorNode = null;
+  let silenceNode = null;
+  let socket = null;
+  let stream = null;
   serverSpeechRecorderStartPromise = (async () => {
-    let audioContext = null;
-    let sourceNode = null;
-    let processorNode = null;
-    let silenceNode = null;
-    let socket = null;
     const AudioContextCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
     if (typeof AudioContextCtor !== "function") {
       throw new Error("AudioContext is unavailable for server speech transcription.");
@@ -2001,8 +2037,19 @@ async function startServerSpeechTranscription() {
     clearServerSpeechReconnectTimer();
     serverSpeechRealtimeStopRequested = false;
     const tokenPayload = await getServerSpeechRealtimeToken();
+    if (shouldAbortServerSpeechRecorderStartup()) {
+      cleanupServerSpeechRecorderStartupResources({
+        stream,
+        socket,
+        audioContext,
+        sourceNode,
+        processorNode,
+        silenceNode,
+      });
+      return;
+    }
     const token = tokenPayload.token;
-    const stream = new MediaStream([mediaStreamTrack]);
+    stream = new MediaStream([mediaStreamTrack]);
     audioContext = new AudioContextCtor();
     sourceNode = audioContext.createMediaStreamSource(stream);
     processorNode = audioContext.createScriptProcessor(
@@ -2017,6 +2064,17 @@ async function startServerSpeechTranscription() {
     try {
       await audioContext.resume();
     } catch {}
+    if (shouldAbortServerSpeechRecorderStartup()) {
+      cleanupServerSpeechRecorderStartupResources({
+        stream,
+        socket,
+        audioContext,
+        sourceNode,
+        processorNode,
+        silenceNode,
+      });
+      return;
+    }
     const socketUrl = buildServerSpeechRealtimeSocketUrl(token, tokenPayload?.modelId);
     socket = new WebSocket(socketUrl);
 
@@ -2086,6 +2144,17 @@ async function startServerSpeechTranscription() {
       scheduleServerSpeechReconnect("socket-closed");
     });
 
+    if (shouldAbortServerSpeechRecorderStartup()) {
+      cleanupServerSpeechRecorderStartupResources({
+        stream,
+        socket,
+        audioContext,
+        sourceNode,
+        processorNode,
+        silenceNode,
+      });
+      return;
+    }
     serverSpeechRecorderAudioContext = audioContext;
     serverSpeechRecorderSourceNode = sourceNode;
     serverSpeechRecorderProcessorNode = processorNode;
@@ -2096,14 +2165,13 @@ async function startServerSpeechTranscription() {
   })()
     .catch((error) => {
       const intentionalStop = serverSpeechRealtimeStopRequested;
-      cleanupServerSpeechTranscriptionResources({
+      cleanupServerSpeechRecorderStartupResources({
+        stream,
         socket,
         audioContext,
         sourceNode,
         processorNode,
         silenceNode,
-        suppressReconnect: true,
-        stopRequested: true,
       });
       if (intentionalStop) {
         return;
@@ -4750,10 +4818,7 @@ function clearAvatarInterruptAckTimer() {
 function clearAvatarInterruptPending(options = {}) {
   clearAvatarInterruptAckTimer();
   avatarInterruptPending = false;
-  if (
-    options.forceUnmute !== true &&
-    (chatAwaitingReply || voiceTranscriptionPending)
-  ) {
+  if (chatAwaitingReply || voiceTranscriptionPending) {
     return;
   }
   setAvatarMutedForPendingChatReply(false);
