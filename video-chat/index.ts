@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
@@ -650,65 +649,6 @@ function respondGatewayError(
 ): void {
   const errorShape: GatewayErrorShape = details ? { code, message, details } : { code, message };
   respond(false, undefined, errorShape);
-}
-
-function mimeTypeForAudioPath(audioPath: string): string {
-  if (audioPath.endsWith(".mp3")) {
-    return "audio/mpeg";
-  }
-  if (audioPath.endsWith(".opus")) {
-    return "audio/ogg; codecs=opus";
-  }
-  if (audioPath.endsWith(".wav")) {
-    return "audio/wav";
-  }
-  return "application/octet-stream";
-}
-
-function pcm16LeToWavBuffer(params: { pcm: Buffer; sampleRate: number }): Buffer {
-  const channels = 1;
-  const bitsPerSample = 16;
-  const blockAlign = (channels * bitsPerSample) / 8;
-  const byteRate = params.sampleRate * blockAlign;
-  const dataSize = params.pcm.length;
-  const wav = Buffer.alloc(44 + dataSize);
-  wav.write("RIFF", 0, "ascii");
-  wav.writeUInt32LE(36 + dataSize, 4);
-  wav.write("WAVE", 8, "ascii");
-  wav.write("fmt ", 12, "ascii");
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(channels, 22);
-  wav.writeUInt32LE(params.sampleRate, 24);
-  wav.writeUInt32LE(byteRate, 28);
-  wav.writeUInt16LE(blockAlign, 32);
-  wav.writeUInt16LE(bitsPerSample, 34);
-  wav.write("data", 36, "ascii");
-  wav.writeUInt32LE(dataSize, 40);
-  params.pcm.copy(wav, 44);
-  return wav;
-}
-
-function toAudioBuffer(value: unknown): Buffer | null {
-  if (Buffer.isBuffer(value)) {
-    return value;
-  }
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value);
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-    try {
-      const decoded = Buffer.from(trimmed, "base64");
-      return decoded.length > 0 ? decoded : null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
 }
 
 function normalizeMimeType(value: unknown): string | undefined {
@@ -1379,106 +1319,6 @@ async function createRealtimeVideoChatTranscriptionToken(params: {
     token,
     modelId: ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID,
   };
-}
-
-async function generateVideoChatSpeech(params: {
-  runtime: OpenClawPluginApi["runtime"];
-  cfg: OpenClawConfig;
-  text: string;
-}): Promise<{
-  mimeType: string;
-  data: string;
-  provider: string | null | undefined;
-  outputFormat: string | null | undefined;
-}> {
-  const text = params.text.trim();
-  if (!text) {
-    throw new Error("text is required");
-  }
-
-  const cfg = resolveEffectiveVideoChatConfig(params.cfg);
-  const ttsRuntime = params.runtime.tts as Record<string, unknown>;
-  const textToSpeech = ttsRuntime?.textToSpeech;
-  if (typeof textToSpeech === "function") {
-    const result = await (
-      textToSpeech as (input: {
-        text: string;
-        cfg: OpenClawConfig;
-      }) => Promise<{
-        success: boolean;
-        audioPath?: string;
-        audioBuffer?: unknown;
-        error?: string;
-        provider?: string | null;
-        outputFormat?: string | null;
-      }>
-    )({
-      text,
-      cfg,
-    });
-    if (!result.success) {
-      throw new Error(result.error ?? "Claw Cast TTS generation failed");
-    }
-    if (typeof result.audioPath === "string" && result.audioPath.trim()) {
-      const audio = readFileSync(result.audioPath);
-      return {
-        mimeType: mimeTypeForAudioPath(result.audioPath),
-        data: audio.toString("base64"),
-        provider: result.provider,
-        outputFormat: result.outputFormat,
-      };
-    }
-    const buffer = toAudioBuffer(result.audioBuffer);
-    if (buffer) {
-      return {
-        mimeType: "audio/mpeg",
-        data: buffer.toString("base64"),
-        provider: result.provider,
-        outputFormat: result.outputFormat,
-      };
-    }
-    throw new Error("Claw Cast TTS generation failed: runtime returned no audio payload");
-  }
-
-  const textToSpeechTelephony = ttsRuntime?.textToSpeechTelephony;
-  if (typeof textToSpeechTelephony === "function") {
-    const result = await (
-      textToSpeechTelephony as (input: {
-        text: string;
-        cfg: OpenClawConfig;
-      }) => Promise<{
-        success: boolean;
-        audioBuffer?: unknown;
-        error?: string;
-        provider?: string | null;
-        outputFormat?: string | null;
-        sampleRate?: number;
-      }>
-    )({
-      text,
-      cfg,
-    });
-    if (!result.success) {
-      throw new Error(result.error ?? "Claw Cast TTS generation failed");
-    }
-    const pcmBuffer = toAudioBuffer(result.audioBuffer);
-    if (!pcmBuffer) {
-      throw new Error("Claw Cast TTS generation failed: telephony output missing audio buffer");
-    }
-    const sampleRate =
-      typeof result.sampleRate === "number" && Number.isFinite(result.sampleRate)
-        ? Math.max(8_000, Math.floor(result.sampleRate))
-        : 24_000;
-    const wav = pcm16LeToWavBuffer({ pcm: pcmBuffer, sampleRate });
-    return {
-      mimeType: "audio/wav",
-      data: wav.toString("base64"),
-      provider: result.provider,
-      outputFormat: result.outputFormat ?? `pcm_${sampleRate}`,
-    };
-  }
-
-  throw new Error("Claw Cast TTS generation failed: runtime TTS API is unavailable");
 }
 
 function readCliOption(options: unknown, key: string): string | undefined {
@@ -2690,27 +2530,6 @@ function registerVideoChatHttpRoutes(
             mimeType: params.mimeType ?? "application/octet-stream",
             base64Chars: base64Length,
             transcriptChars: result.transcript.length,
-          });
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              ...result,
-            }),
-          );
-          return true;
-        }
-
-        if (normalizedPath === "/plugins/video-chat/api/tts" && method === "POST") {
-          const params = await readRequestJson(req);
-          if (typeof params.text !== "string") {
-            throw new Error("invalid videoChat.tts.generate params");
-          }
-          const cfg = api.runtime.config.loadConfig();
-          const result = await generateVideoChatSpeech({
-            runtime: api.runtime,
-            cfg,
-            text: params.text,
           });
           sendHttpResponse(
             res,
@@ -5083,42 +4902,6 @@ const videoChatPlugin = {
           respondGatewayError(
             respond,
             message === INVALID_CHAT_SEND_PARAMS_ERROR ? "INVALID_REQUEST" : "UNAVAILABLE",
-            message,
-          );
-        }
-      },
-    );
-
-    api.registerGatewayMethod(
-      "videoChat.tts.generate",
-      async ({ params, respond }: GatewayRequestHandlerOptions) => {
-        try {
-          if (!assertMethodParams(params, "videoChat.tts.generate", respond)) {
-            return;
-          }
-          if (typeof params.text !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid videoChat.tts.generate params",
-            );
-            return;
-          }
-
-          const text = params.text.trim();
-          const cfg = api.runtime.config.loadConfig();
-          const result = await generateVideoChatSpeech({
-            runtime: api.runtime,
-            cfg,
-            text,
-          });
-          respond(true, result);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Claw Cast TTS generation failed";
-          respondGatewayError(
-            respond,
-            message === "text is required" ? "INVALID_REQUEST" : "UNAVAILABLE",
             message,
           );
         }

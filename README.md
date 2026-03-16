@@ -135,7 +135,7 @@ openclaw gateway run --force
 
 <a id="join-avatar-session"></a>
 ## Join avatar session
-Start a session, join the room, and use the chat, STT, and TTS controls from the web interface.
+Start a session, join the room, and use the chat and STT controls from the web interface.
 ```text
 http://127.0.0.1:18789/plugins/video-chat/
 ```
@@ -185,7 +185,6 @@ openclaw plugins update video-chat
   - `videoChat.session.create`
   - `videoChat.session.stop`
   - `videoChat.audio.transcribe`
-  - `videoChat.tts.generate`
 - HTTP routes:
   - `/plugins/video-chat`
   - `/plugins/video-chat/config`

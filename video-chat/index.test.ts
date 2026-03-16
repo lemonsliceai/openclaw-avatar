@@ -47,14 +47,6 @@ const {
   mockAgentDispatchDeleteDispatch: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  return {
-    ...actual,
-    readFileSync: vi.fn(() => Buffer.from("audio-bytes")),
-  };
-});
-
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
@@ -149,12 +141,6 @@ function setup(config: unknown = baseConfig) {
   const cliCommands: unknown[] = [];
 
   vi.mocked(runtime.config.loadConfig).mockReturnValue(config as never);
-  vi.mocked(runtime.tts.textToSpeech).mockResolvedValue({
-    success: true,
-    audioPath: "/tmp/video-chat.mp3",
-    provider: "elevenlabs",
-    outputFormat: "mp3_44100_128",
-  });
   vi.mocked(runtime.stt.transcribeAudioFile).mockResolvedValue({
     text: "hello from microphone",
   });
@@ -304,8 +290,7 @@ async function invoke(
     | "videoChat.sidecar.stop"
     | "videoChat.chat.history"
     | "videoChat.chat.send"
-    | "videoChat.audio.transcribe"
-    | "videoChat.tts.generate",
+    | "videoChat.audio.transcribe",
   params: Record<string, unknown>,
 ) {
   const handler = methods.get(method) as
@@ -376,7 +361,6 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.session.create")).toBe(true);
     expect(methods.has("videoChat.session.stop")).toBe(true);
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
-    expect(methods.has("videoChat.tts.generate")).toBe(true);
     expect(services).toHaveLength(1);
     expect(httpRoutes).toHaveLength(9);
     expect(httpRoutes).toEqual(
@@ -1945,43 +1929,6 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
     expect(call?.[2]?.message).toContain("videoChat.lemonSlice.imageUrl");
-  });
-
-  it("returns generated reply audio for browser publishing", async () => {
-    const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.tts.generate", {
-      text: "Hello from OpenClaw",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { mimeType?: string } | undefined)?.mimeType).toBe("audio/mpeg");
-    expect((call?.[1] as { data?: string } | undefined)?.data).toBe(
-      Buffer.from("audio-bytes").toString("base64"),
-    );
-  });
-
-  it("falls back to telephony runtime TTS and returns WAV audio", async () => {
-    const { methods, runtime } = setup();
-    (runtime.tts as { textToSpeech?: unknown }).textToSpeech = undefined;
-    vi.mocked(runtime.tts.textToSpeechTelephony).mockResolvedValue({
-      success: true,
-      audioBuffer: Buffer.from("pcm-audio"),
-      provider: "elevenlabs",
-      outputFormat: "pcm_22050",
-      sampleRate: 22050,
-    });
-
-    const respond = await invoke(methods, "videoChat.tts.generate", {
-      text: "Hello from OpenClaw",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { mimeType?: string } | undefined)?.mimeType).toBe("audio/wav");
-    const encoded = (call?.[1] as { data?: string } | undefined)?.data ?? "";
-    const wavBuffer = Buffer.from(encoded, "base64");
-    expect(wavBuffer.subarray(0, 4).toString("ascii")).toBe("RIFF");
   });
 
   it("transcribes uploaded browser audio", async () => {

@@ -6,9 +6,6 @@ const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
 const sessionForm = document.getElementById("session-form");
 const startInPictureInPictureCheckbox = document.getElementById("start-in-pip");
-const ttsForm = document.getElementById("tts-form");
-const ttsTextInput = document.getElementById("tts-text");
-const ttsGenerateButton = document.getElementById("tts-generate");
 const reloadButton = document.getElementById("reload-status");
 const configCancelButton = document.getElementById("config-cancel");
 const setupSaveButton = document.querySelector('button[form="setup-form"][type="submit"]');
@@ -7565,39 +7562,6 @@ if (togglePictureInPictureButton) {
   togglePictureInPictureButton.addEventListener("click", () => {
     void handlePictureInPictureToggle();
   });
-}
-
-if (ttsForm) {
-  const requestTts = async (text) => {
-  try {
-    const payload = await requestJson("/plugins/video-chat/api/tts", {
-      method: "POST",
-      body: JSON.stringify({ text }),
-    });
-    setOutput({ action: "tts-generated", provider: payload.provider, mimeType: payload.mimeType });
-    if (typeof payload.data === "string" && payload.data.length > 0) {
-      const audio = new Audio(`data:${payload.mimeType || "audio/mpeg"};base64,${payload.data}`);
-      await audio.play().catch(() => {});
-    }
-  } catch (error) {
-    setOutput({ action: "tts-failed", error: String(error) });
-  }
-  };
-
-  if (ttsForm instanceof HTMLFormElement) {
-    ttsForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const formData = new FormData(ttsForm);
-      await requestTts(String(formData.get("text") || ""));
-    });
-  }
-
-  if (ttsGenerateButton) {
-    ttsGenerateButton.addEventListener("click", async () => {
-      const text = typeof ttsTextInput?.value === "string" ? ttsTextInput.value : "";
-      await requestTts(text);
-    });
-  }
 }
 
 async function submitChatMessage(rawMessage, options = {}) {

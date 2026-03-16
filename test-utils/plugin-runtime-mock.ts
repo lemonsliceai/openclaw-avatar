@@ -13,10 +13,6 @@ export function createPluginRuntimeMock() {
       getSession: vi.fn().mockResolvedValue({ messages: [] }),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     },
-    tts: {
-      textToSpeech: vi.fn(),
-      textToSpeechTelephony: vi.fn(),
-    },
     stt: {
       transcribeAudioFile: vi.fn(),
     },
