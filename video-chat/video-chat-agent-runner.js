@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
 const AVATAR_CONTROL_EVENT_TOPIC = "video-chat.avatar-control";
+const AVATAR_CONTROL_ACK_EVENT_TOPIC = "video-chat.avatar-control-ack";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -725,6 +726,21 @@ async function runVideoChatAgentEntry(ctx) {
     });
     try {
       await session.interrupt({ force: true }).await;
+      await ctx.room?.localParticipant?.publishData?.(
+        new TextEncoder().encode(
+          JSON.stringify({
+            type: "avatar-control",
+            action: "interrupt-speech-complete",
+            sessionKey: metadata.sessionKey,
+            source: typeof parsed.source === "string" ? parsed.source : "",
+            at: Date.now(),
+          }),
+        ),
+        {
+          reliable: true,
+          topic: AVATAR_CONTROL_ACK_EVENT_TOPIC,
+        },
+      );
       emitParentDebug("speech.interrupt.completed", {
         sessionKey: metadata.sessionKey,
         roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",

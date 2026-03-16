@@ -117,6 +117,7 @@ const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
 const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
 const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
 const AVATAR_CONTROL_EVENT_TOPIC = "video-chat.avatar-control";
+const AVATAR_CONTROL_ACK_EVENT_TOPIC = "video-chat.avatar-control-ack";
 const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
 const VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH = 12;
 const AVATAR_ECHO_RECENT_REPLY_RETENTION_MS = 30_000;
@@ -183,6 +184,7 @@ let avatarLoadMessage = "";
 let preferredMicMuted = false;
 let avatarSpeakerMuted = false;
 let avatarMutedForPendingChatReply = false;
+let avatarInterruptPending = false;
 let avatarAutoStartInPictureInPicture = true;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
@@ -1366,6 +1368,8 @@ async function submitVoiceTranscript(rawTranscript) {
   setChatStatus("Sending message...");
 
   try {
+    avatarInterruptPending = true;
+    setAvatarMutedForPendingChatReply(true);
     await publishAvatarControlMessage("interrupt-speech", {
       source: "voice-transcript",
     });
@@ -5416,6 +5420,27 @@ async function publishAvatarControlMessage(action, details = {}) {
   }
 }
 
+function handleAvatarInterruptAcknowledged(payload) {
+  if (!payload || payload.action !== "interrupt-speech-complete") {
+    return;
+  }
+  avatarInterruptPending = false;
+  setOutput({
+    action: "avatar-control-acknowledged",
+    controlAction: payload.action,
+  });
+  setAvatarMutedForPendingChatReply(false);
+}
+
+function handleAvatarControlMessage(payload) {
+  const expectedSessionKey = resolveChatSessionKey();
+  const payloadSessionKey = typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
+  if (expectedSessionKey && payloadSessionKey && payloadSessionKey !== expectedSessionKey) {
+    return;
+  }
+  handleAvatarInterruptAcknowledged(payload);
+}
+
 function appendVoiceUserTranscript(payload) {
   const expectedSessionKey = resolveChatSessionKey();
   const payloadSessionKey = typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
@@ -5443,6 +5468,16 @@ function appendVoiceUserTranscript(payload) {
 
 function handleLiveKitDataMessage(payload, topic) {
   const normalizedTopic = typeof topic === "string" ? topic.trim() : "";
+  if (normalizedTopic === AVATAR_CONTROL_ACK_EVENT_TOPIC) {
+    const decoded = decodeLiveKitDataPayload(payload);
+    if (!decoded) {
+      return;
+    }
+    try {
+      handleAvatarControlMessage(JSON.parse(decoded));
+    } catch {}
+    return;
+  }
   if (normalizedTopic && normalizedTopic !== VOICE_TRANSCRIPT_EVENT_TOPIC) {
     return;
   }
@@ -5590,6 +5625,7 @@ function closeGatewaySocket(reason) {
   clearGatewayReconnectTimer();
   gatewaySocketReady = false;
   gatewayConnectRequestId = null;
+  avatarInterruptPending = false;
   chatAwaitingReply = false;
   if (gatewaySocket) {
     try {
@@ -5637,7 +5673,9 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "final") {
-    setAvatarMutedForPendingChatReply(false);
+    if (!avatarInterruptPending) {
+      setAvatarMutedForPendingChatReply(false);
+    }
     const content = extractChatMessageContent(payload.message);
     if (content.text) {
       rememberRecentAvatarReply(content.text, resolveMessageTimestamp(payload.message));
@@ -5663,6 +5701,7 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "error") {
+    avatarInterruptPending = false;
     setAvatarMutedForPendingChatReply(false);
     appendChatLine("system", payload.errorMessage || "Chat request failed.", {
       awaitingReply: false,
@@ -5671,6 +5710,7 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "aborted") {
+    avatarInterruptPending = false;
     setAvatarMutedForPendingChatReply(false);
     appendChatLine("system", "Chat run aborted.", {
       awaitingReply: false,
@@ -7433,6 +7473,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   const rpcAttachments = hasAttachments ? buildChatSendAttachments(attachments) : [];
   setAvatarMutedForPendingChatReply(true);
+  avatarInterruptPending = true;
   setChatPaneOpen(true);
   appendChatLine(
     "user",
