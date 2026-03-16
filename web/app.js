@@ -5595,15 +5595,7 @@ function buildWelcomeState() {
   avatar.appendChild(
     createSvgFromMarkup(`
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 2v4"></path>
-        <path d="M12 18v4"></path>
-        <path d="m4.93 4.93 2.83 2.83"></path>
-        <path d="m16.24 16.24 2.83 2.83"></path>
-        <path d="M2 12h4"></path>
-        <path d="M18 12h4"></path>
-        <path d="m4.93 19.07 2.83-2.83"></path>
-        <path d="m16.24 7.76 2.83-2.83"></path>
-        <circle cx="12" cy="12" r="3.5"></circle>
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
       </svg>
     `),
   );
@@ -5616,7 +5608,7 @@ function buildWelcomeState() {
   const badges = document.createElement("div");
   badges.className = "agent-chat__badges";
   const badge = document.createElement("span");
-  badge.className = "agent-chat__badge";
+  badge.className = `agent-chat__badge ${activeSession ? "agent-chat__badge--active" : "agent-chat__badge--inactive"}`;
   badge.textContent = activeSession ? "Active session connected" : "Waiting for a session";
   badges.appendChild(badge);
   emptyState.appendChild(badges);
