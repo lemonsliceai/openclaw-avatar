@@ -4401,16 +4401,21 @@ function applyAvatarSpeakerMuteState() {
 function resumeAvatarMediaPlayback(reason = "manual") {
   syncAvatarDocumentPictureInPictureMedia();
 
-  const mediaElements = [];
+  const mediaElements = new Set();
   if (avatarMediaEl) {
-    mediaElements.push(...avatarMediaEl.querySelectorAll("audio, video"));
+    for (const element of avatarMediaEl.querySelectorAll("audio, video")) {
+      mediaElements.add(element);
+    }
   }
   if (isMediaElement(avatarDocumentPictureInPictureElements?.videoEl)) {
-    mediaElements.push(avatarDocumentPictureInPictureElements.videoEl);
+    mediaElements.add(avatarDocumentPictureInPictureElements.videoEl);
   }
 
   for (const element of mediaElements) {
     if (!isMediaElement(element) || typeof element.play !== "function") {
+      continue;
+    }
+    if (element.paused === false) {
       continue;
     }
     void element.play().catch((error) => {
