@@ -131,8 +131,14 @@ const INCOMPATIBLE_OPENCLAW_VERSION_MESSAGE = "incompatible openclaw version";
 const ELEVENLABS_REALTIME_TRANSCRIPTION_WS_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
 const ELEVENLABS_REALTIME_TRANSCRIPTION_SAMPLE_RATE = 16_000;
 const ELEVENLABS_REALTIME_TRANSCRIPTION_BUFFER_SIZE = 4_096;
-const SERVER_SPEECH_SILENCE_MS = 900;
+const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS = 8;
+const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.9;
+const SERVER_SPEECH_SILENCE_MS = 300;
+const SERVER_SPEECH_MIN_DURATION_MS = 120;
+const SERVER_SPEECH_VAD_THRESHOLD = 0.45;
 const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
+const SERVER_SPEECH_RECONNECT_DELAY_MS = 250;
+const SERVER_SPEECH_TOKEN_PREFETCH_MAX_AGE_MS = 20_000;
 const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
 const CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CHAT_JSON_RENDER_LIMIT = 20_000;
@@ -171,6 +177,8 @@ let serverSpeechRealtimeSocket = null;
 let serverSpeechRealtimeSocketReady = false;
 let serverSpeechRealtimeStopRequested = false;
 let serverSpeechRealtimeReconnectTimer = null;
+let serverSpeechRealtimeTokenCache = null;
+let serverSpeechRealtimeTokenPrefetchPromise = null;
 let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
@@ -1422,38 +1430,16 @@ function shouldRunVoiceTranscription() {
 }
 
 function shouldPreferBrowserSpeechRecognition() {
-  return Boolean(
-    shouldRunVoiceTranscription() &&
-      browserSpeechRecognitionSupported() &&
-      (!preferServerSpeechTranscription ||
-        !serverSpeechTranscriptionSupported() ||
-        serverSpeechTranscriptionUnavailable),
-  );
+  return false;
 }
 
 function setServerSpeechTranscriptionFallback(reason) {
-  if (
-    preferServerSpeechTranscription ||
-    !serverSpeechTranscriptionSupported() ||
-    serverSpeechTranscriptionUnavailable
-  ) {
-    return;
-  }
-  preferServerSpeechTranscription = true;
-  setOutput({
-    action: "voice-chat-server-transcription-fallback",
-    reason,
-  });
+  void reason;
 }
 
 function setBrowserSpeechRecognitionFallback(reason) {
-  if (!preferServerSpeechTranscription || !browserSpeechRecognitionSupported()) {
-    return;
-  }
-  serverSpeechTranscriptionUnavailable = true;
-  preferServerSpeechTranscription = false;
   setOutput({
-    action: "voice-chat-browser-transcription-fallback",
+    action: "voice-chat-browser-transcription-disabled",
     reason,
   });
 }
@@ -1464,7 +1450,6 @@ function reportServerSpeechTranscriptionFailure(action, error, details = {}) {
     error: error instanceof Error ? error.message : String(error),
     ...details,
   });
-  setBrowserSpeechRecognitionFallback("start-failed");
 }
 
 function clearBrowserSpeechRecognitionRestartTimer() {
@@ -1493,6 +1478,78 @@ function clearServerSpeechReconnectTimer() {
   }
   clearTimeout(serverSpeechRealtimeReconnectTimer);
   serverSpeechRealtimeReconnectTimer = null;
+}
+
+function clearServerSpeechRealtimeTokenCache() {
+  serverSpeechRealtimeTokenCache = null;
+}
+
+function isFreshServerSpeechRealtimeToken(tokenPayload) {
+  return Boolean(
+    tokenPayload &&
+      typeof tokenPayload.token === "string" &&
+      tokenPayload.token.trim() &&
+      Number.isFinite(tokenPayload.fetchedAt) &&
+      Date.now() - tokenPayload.fetchedAt <= SERVER_SPEECH_TOKEN_PREFETCH_MAX_AGE_MS,
+  );
+}
+
+function takePrefetchedServerSpeechRealtimeToken() {
+  if (!isFreshServerSpeechRealtimeToken(serverSpeechRealtimeTokenCache)) {
+    clearServerSpeechRealtimeTokenCache();
+    return null;
+  }
+  const tokenPayload = serverSpeechRealtimeTokenCache;
+  serverSpeechRealtimeTokenCache = null;
+  return tokenPayload;
+}
+
+async function mintServerSpeechRealtimeToken() {
+  const tokenPayload = await requestJson("/plugins/video-chat/api/transcribe/token", {
+    method: "POST",
+  });
+  const token = typeof tokenPayload?.token === "string" ? tokenPayload.token.trim() : "";
+  if (!token) {
+    throw new Error("Claw Cast realtime transcription token request returned no token.");
+  }
+  return {
+    token,
+    modelId: tokenPayload?.modelId,
+    fetchedAt: Date.now(),
+  };
+}
+
+async function prefetchServerSpeechRealtimeToken() {
+  if (isFreshServerSpeechRealtimeToken(serverSpeechRealtimeTokenCache)) {
+    return serverSpeechRealtimeTokenCache;
+  }
+  if (serverSpeechRealtimeTokenPrefetchPromise) {
+    return serverSpeechRealtimeTokenPrefetchPromise;
+  }
+  serverSpeechRealtimeTokenPrefetchPromise = mintServerSpeechRealtimeToken()
+    .then((tokenPayload) => {
+      serverSpeechRealtimeTokenCache = tokenPayload;
+      return tokenPayload;
+    })
+    .finally(() => {
+      serverSpeechRealtimeTokenPrefetchPromise = null;
+    });
+  return serverSpeechRealtimeTokenPrefetchPromise;
+}
+
+async function getServerSpeechRealtimeToken() {
+  const prefetched = takePrefetchedServerSpeechRealtimeToken();
+  if (prefetched) {
+    return prefetched;
+  }
+  if (serverSpeechRealtimeTokenPrefetchPromise) {
+    await serverSpeechRealtimeTokenPrefetchPromise;
+    const awaitedPrefetch = takePrefetchedServerSpeechRealtimeToken();
+    if (awaitedPrefetch) {
+      return awaitedPrefetch;
+    }
+  }
+  return mintServerSpeechRealtimeToken();
 }
 
 function base64EncodeBytes(bytes) {
@@ -1571,6 +1628,8 @@ function buildServerSpeechRealtimeSocketUrl(token, modelId) {
   socketUrl.searchParams.set("audio_format", "pcm_16000");
   socketUrl.searchParams.set("include_timestamps", "true");
   socketUrl.searchParams.set("commit_strategy", "vad");
+  socketUrl.searchParams.set("vad_threshold", String(SERVER_SPEECH_VAD_THRESHOLD));
+  socketUrl.searchParams.set("min_speech_duration_ms", String(SERVER_SPEECH_MIN_DURATION_MS));
   socketUrl.searchParams.set("vad_silence_threshold_secs", String(SERVER_SPEECH_SILENCE_MS / 1000));
   socketUrl.searchParams.set("min_silence_duration_ms", String(SERVER_SPEECH_SILENCE_MS));
   return socketUrl.toString();
@@ -1599,6 +1658,77 @@ function extractServerSpeechTranscript(payload) {
     return payload.transcript.trim();
   }
   return "";
+}
+
+function stripRealtimeTranscriptionCaptionCues(value) {
+  const timestampCuePattern =
+    /(?:^|\s)(?:\d{1,6}\s+)?\d{2}:\d{2}:\d{2}[,.:]\d{1,3}\s*(?:-->|--)\s*\d{2}:\d{2}:\d{2}[,.:]\d{1,3}(?=$|\s)/g;
+  return String(value || "")
+    .replace(timestampCuePattern, " ")
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^\d+$/.test(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractRealtimeSpeechWordLogprobs(payload) {
+  const rawWords = payload?.words;
+  if (!Array.isArray(rawWords)) {
+    return [];
+  }
+  return rawWords.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const type = typeof entry.type === "string" ? entry.type : "";
+    if (type && type !== "word") {
+      return [];
+    }
+    const text = typeof entry.text === "string" ? entry.text : "";
+    const logprob = typeof entry.logprob === "number" ? entry.logprob : Number.NaN;
+    if (!text.trim() || !Number.isFinite(logprob)) {
+      return [];
+    }
+    return [logprob];
+  });
+}
+
+function parseServerSpeechRealtimeTranscript(payload) {
+  const rawTranscript = extractServerSpeechTranscript(payload);
+  if (!rawTranscript) {
+    return {
+      transcript: "",
+      filteredReason: "empty",
+    };
+  }
+  const transcript = stripRealtimeTranscriptionCaptionCues(rawTranscript);
+  if (!transcript) {
+    return {
+      transcript: "",
+      filteredReason: "caption-cue",
+    };
+  }
+  const wordLogprobs = extractRealtimeSpeechWordLogprobs(payload);
+  const avgWordLogprob =
+    wordLogprobs.length > 0
+      ? wordLogprobs.reduce((total, value) => total + value, 0) / wordLogprobs.length
+      : null;
+  if (
+    avgWordLogprob !== null &&
+    wordLogprobs.length >= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS &&
+    avgWordLogprob <= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD
+  ) {
+    return {
+      transcript: "",
+      filteredReason: "low-confidence",
+    };
+  }
+  return {
+    transcript,
+    filteredReason: null,
+  };
 }
 
 function isCommittedRealtimeTranscript(payload) {
@@ -1648,7 +1778,7 @@ function scheduleServerSpeechReconnect(reason) {
       reason,
     });
     void startServerSpeechTranscription();
-  }, 750);
+  }, SERVER_SPEECH_RECONNECT_DELAY_MS);
 }
 
 async function handleServerSpeechRealtimeMessage(event) {
@@ -1678,7 +1808,8 @@ async function handleServerSpeechRealtimeMessage(event) {
     );
   }
   if (isPartialRealtimeTranscript(payload)) {
-    const transcript = extractServerSpeechTranscript(payload);
+    const transcriptResult = parseServerSpeechRealtimeTranscript(payload);
+    const transcript = transcriptResult.transcript;
     if (transcript) {
       setAvatarMutedForPendingChatReply(true);
     }
@@ -1687,8 +1818,14 @@ async function handleServerSpeechRealtimeMessage(event) {
   if (!isCommittedRealtimeTranscript(payload)) {
     return;
   }
-  const transcript = extractServerSpeechTranscript(payload);
+  const transcriptResult = parseServerSpeechRealtimeTranscript(payload);
+  const transcript = transcriptResult.transcript;
   if (!transcript) {
+    if (transcriptResult.filteredReason) {
+      debugLog("voice-chat:transcript-suppressed", {
+        reason: transcriptResult.filteredReason,
+      });
+    }
     setAvatarMutedForPendingChatReply(false);
     return;
   }
@@ -1711,6 +1848,7 @@ function stopServerSpeechTranscription(options = {}) {
   clearServerSpeechReconnectTimer();
   serverSpeechRealtimeStopRequested = true;
   serverSpeechRealtimeSocketReady = false;
+  clearServerSpeechRealtimeTokenCache();
   const socket = serverSpeechRealtimeSocket;
   serverSpeechRealtimeSocket = null;
   if (socket && socket.readyState !== WebSocket.CLOSED) {
@@ -1760,13 +1898,8 @@ async function startServerSpeechTranscription() {
     }
     clearServerSpeechReconnectTimer();
     serverSpeechRealtimeStopRequested = false;
-    const tokenPayload = await requestJson("/plugins/video-chat/api/transcribe/token", {
-      method: "POST",
-    });
-    const token = typeof tokenPayload?.token === "string" ? tokenPayload.token.trim() : "";
-    if (!token) {
-      throw new Error("Claw Cast realtime transcription token request returned no token.");
-    }
+    const tokenPayload = await getServerSpeechRealtimeToken();
+    const token = tokenPayload.token;
     const stream = new MediaStream([mediaStreamTrack]);
     const audioContext = new AudioContextCtor();
     const sourceNode = audioContext.createMediaStreamSource(stream);
@@ -1851,6 +1984,7 @@ async function startServerSpeechTranscription() {
     serverSpeechRecorderSilenceNode = silenceNode;
     serverSpeechRealtimeSocket = socket;
     serverSpeechRecorderLastSpeechAt = 0;
+    void prefetchServerSpeechRealtimeToken().catch(() => {});
   })()
     .catch((error) => {
       reportServerSpeechTranscriptionFailure("server-speech-recorder-start-failed", error);
@@ -1958,7 +2092,7 @@ function ensureBrowserSpeechRecognition() {
 
 function syncVoiceTranscription() {
   const shouldRun = shouldRunVoiceTranscription();
-  browserSpeechRecognitionShouldRun = shouldRun && shouldPreferBrowserSpeechRecognition();
+  browserSpeechRecognitionShouldRun = false;
 
   if (!shouldRun) {
     stopBrowserSpeechRecognition();
@@ -1966,31 +2100,15 @@ function syncVoiceTranscription() {
     return;
   }
 
-  if (shouldPreferBrowserSpeechRecognition()) {
+  stopBrowserSpeechRecognition();
+  if (!serverSpeechTranscriptionSupported()) {
     stopServerSpeechTranscription();
-    const recognition = ensureBrowserSpeechRecognition();
-    if (!recognition || browserSpeechRecognitionActive) {
-      return;
-    }
-    try {
-      recognition.lang =
-        document.documentElement.lang ||
-        (typeof navigator?.language === "string" ? navigator.language : "") ||
-        "en-US";
-      recognition.start();
-      browserSpeechRecognitionActive = true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.toLowerCase().includes("already started")) {
-        setOutput({ action: "browser-speech-recognition-start-failed", error: message });
-        setServerSpeechTranscriptionFallback("start-failed");
-        void startServerSpeechTranscription();
-      }
-    }
+    setOutput({
+      action: "server-speech-transcription-unavailable",
+      reason: "realtime-stt-required",
+    });
     return;
   }
-
-  stopBrowserSpeechRecognition();
   void startServerSpeechTranscription();
 }
 
@@ -6780,6 +6898,7 @@ async function connectToRoom(options = {}) {
   bindRoomEvents(room);
 
   try {
+    void prefetchServerSpeechRealtimeToken().catch(() => {});
     debugLog("livekit:connect-begin", {
       livekitUrl: activeSession.livekitUrl,
       participantIdentity: activeSession.participantIdentity ?? "",
