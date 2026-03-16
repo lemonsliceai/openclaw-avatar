@@ -47,14 +47,6 @@ const {
   mockAgentDispatchDeleteDispatch: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  return {
-    ...actual,
-    readFileSync: vi.fn(() => Buffer.from("audio-bytes")),
-  };
-});
-
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
@@ -141,6 +133,14 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(normalized, "base64").toString("utf8")) as Record<string, unknown>;
 }
 
+function parseDispatchMetadata(callIndex: number): Record<string, unknown> {
+  const options = mockAgentDispatchCreateDispatch.mock.calls[callIndex]?.[2] as
+    | { metadata?: string }
+    | undefined;
+  expect(typeof options?.metadata).toBe("string");
+  return JSON.parse(options?.metadata ?? "{}") as Record<string, unknown>;
+}
+
 function setup(config: unknown = baseConfig) {
   const runtime = createPluginRuntimeMock();
   const methods = new Map<string, unknown>();
@@ -149,12 +149,6 @@ function setup(config: unknown = baseConfig) {
   const cliCommands: unknown[] = [];
 
   vi.mocked(runtime.config.loadConfig).mockReturnValue(config as never);
-  vi.mocked(runtime.tts.textToSpeech).mockResolvedValue({
-    success: true,
-    audioPath: "/tmp/video-chat.mp3",
-    provider: "elevenlabs",
-    outputFormat: "mp3_44100_128",
-  });
   vi.mocked(runtime.stt.transcribeAudioFile).mockResolvedValue({
     text: "hello from microphone",
   });
@@ -304,8 +298,7 @@ async function invoke(
     | "videoChat.sidecar.stop"
     | "videoChat.chat.history"
     | "videoChat.chat.send"
-    | "videoChat.audio.transcribe"
-    | "videoChat.tts.generate",
+    | "videoChat.audio.transcribe",
   params: Record<string, unknown>,
 ) {
   const handler = methods.get(method) as
@@ -376,7 +369,6 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.session.create")).toBe(true);
     expect(methods.has("videoChat.session.stop")).toBe(true);
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
-    expect(methods.has("videoChat.tts.generate")).toBe(true);
     expect(services).toHaveLength(1);
     expect(httpRoutes).toHaveLength(9);
     expect(httpRoutes).toEqual(
@@ -742,10 +734,16 @@ describe("video-chat plugin", () => {
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
       expect.stringContaining("openclaw-agent-main-main-"),
       expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
-      {
-        metadata:
-          '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
-      },
+      expect.objectContaining({
+        metadata: expect.any(String),
+      }),
+    );
+    expect(parseDispatchMetadata(0)).toEqual(
+      expect.objectContaining({
+        sessionKey: "agent:main/main",
+        imageUrl: "https://example.com/avatar.png",
+        interruptReplyOnNewMessage: true,
+      }),
     );
   });
 
@@ -772,10 +770,47 @@ describe("video-chat plugin", () => {
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
       expect.stringContaining("openclaw-main-"),
       expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
-      {
-        metadata:
-          '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":false}',
-      },
+      expect.objectContaining({
+        metadata: expect.any(String),
+      }),
+    );
+    expect(parseDispatchMetadata(0)).toEqual(
+      expect.objectContaining({
+        sessionKey: "agent:main:main",
+        imageUrl: "https://example.com/avatar.png",
+        interruptReplyOnNewMessage: true,
+      }),
+    );
+  });
+
+  it("respects a disabled reply interruption request", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.session.create", {
+      sessionKey: "agent:main/main",
+      interruptReplyOnNewMessage: false,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const payload = call?.[1] as
+      | {
+          interruptReplyOnNewMessage?: boolean;
+        }
+      | undefined;
+    expect(payload?.interruptReplyOnNewMessage).toBe(false);
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
+      expect.stringContaining("openclaw-agent-main-main-"),
+      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      expect.objectContaining({
+        metadata: expect.any(String),
+      }),
+    );
+    expect(parseDispatchMetadata(0)).toEqual(
+      expect.objectContaining({
+        sessionKey: "agent:main/main",
+        imageUrl: "https://example.com/avatar.png",
+        interruptReplyOnNewMessage: false,
+      }),
     );
   });
 
@@ -1922,43 +1957,6 @@ describe("video-chat plugin", () => {
     expect(call?.[2]?.message).toContain("videoChat.lemonSlice.imageUrl");
   });
 
-  it("returns generated reply audio for browser publishing", async () => {
-    const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.tts.generate", {
-      text: "Hello from OpenClaw",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { mimeType?: string } | undefined)?.mimeType).toBe("audio/mpeg");
-    expect((call?.[1] as { data?: string } | undefined)?.data).toBe(
-      Buffer.from("audio-bytes").toString("base64"),
-    );
-  });
-
-  it("falls back to telephony runtime TTS and returns WAV audio", async () => {
-    const { methods, runtime } = setup();
-    (runtime.tts as { textToSpeech?: unknown }).textToSpeech = undefined;
-    vi.mocked(runtime.tts.textToSpeechTelephony).mockResolvedValue({
-      success: true,
-      audioBuffer: Buffer.from("pcm-audio"),
-      provider: "elevenlabs",
-      outputFormat: "pcm_22050",
-      sampleRate: 22050,
-    });
-
-    const respond = await invoke(methods, "videoChat.tts.generate", {
-      text: "Hello from OpenClaw",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { mimeType?: string } | undefined)?.mimeType).toBe("audio/wav");
-    const encoded = (call?.[1] as { data?: string } | undefined)?.data ?? "";
-    const wavBuffer = Buffer.from(encoded, "base64");
-    expect(wavBuffer.subarray(0, 4).toString("ascii")).toBe("RIFF");
-  });
-
   it("transcribes uploaded browser audio", async () => {
     const { methods, runtime } = setup();
     vi.mocked(runtime.stt.transcribeAudioFile).mockRejectedValue(
@@ -1987,7 +1985,145 @@ describe("video-chat plugin", () => {
     const requestBody = mockFetch.mock.calls[0]?.[1]?.body;
     expect(requestBody).toBeInstanceOf(FormData);
     expect((requestBody as FormData).get("model_id")).toBe("scribe_v1");
+    expect((requestBody as FormData).get("tag_audio_events")).toBe("false");
     expect((requestBody as FormData).get("file")).toBeTruthy();
+  });
+
+  it("strips subtitle timing cues from ElevenLabs transcripts", async () => {
+    const { methods } = setup();
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          text: "00012 00:01:07,348 -- 00:01:10,23\nhello from microphone",
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      ),
+    );
+
+    const respond = await invoke(methods, "videoChat.audio.transcribe", {
+      mimeType: "audio/webm;codecs=opus",
+      data: Buffer.from("audio-bytes").toString("base64"),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
+      "hello from microphone",
+    );
+  });
+
+  it("drops low-confidence hallucinated ElevenLabs transcripts", async () => {
+    const { methods } = setup();
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          text:
+            "So I'm gonna go ahead and get this recording started now so you can hear me talking about the Black Panther Party here at home with us tonight",
+          words: [
+            { type: "word", text: "So", logprob: -1.24 },
+            { type: "word", text: "I'm", logprob: -1.18 },
+            { type: "word", text: "gonna", logprob: -1.31 },
+            { type: "word", text: "go", logprob: -1.09 },
+            { type: "word", text: "ahead", logprob: -1.27 },
+            { type: "word", text: "and", logprob: -1.12 },
+            { type: "word", text: "get", logprob: -1.21 },
+            { type: "word", text: "this", logprob: -1.16 },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      ),
+    );
+
+    const respond = await invoke(methods, "videoChat.audio.transcribe", {
+      mimeType: "audio/webm;codecs=opus",
+      data: Buffer.from("audio-bytes").toString("base64"),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe("");
+  });
+
+  it("mints a realtime transcription token for the browser websocket", async () => {
+    const { httpRoutes } = setup();
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: "rtm_token_123" }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/transcribe/token",
+      method: "POST",
+    });
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(res.header("content-type")).toBe("application/json; charset=utf-8");
+    expect(res.header("cache-control")).toBe("no-store");
+    expect(JSON.parse(res.body)).toEqual({
+      success: true,
+      token: "rtm_token_123",
+      modelId: "scribe_v2_realtime",
+    });
+    expect(mockFetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          "xi-api-key": "eleven-key",
+        },
+      }),
+    );
+  });
+
+  it("fails realtime transcription token requests with a timeout error", async () => {
+    vi.useFakeTimers();
+    try {
+      const { httpRoutes } = setup();
+      mockFetch.mockImplementationOnce(
+        async (_url: string, options?: { signal?: AbortSignal }) =>
+          await new Promise<Response>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+            });
+          }),
+      );
+
+      const pendingResponse = invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+        url: "/plugins/video-chat/api/transcribe/token",
+        method: "POST",
+      });
+
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      const { handled, res } = await pendingResponse;
+      expect(handled).toBe(true);
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({
+        success: false,
+        error: {
+          code: "UNAVAILABLE",
+          message: "Claw Cast realtime transcription token request timed out after 4000ms",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retries transient ElevenLabs transcription failures", async () => {

@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
@@ -45,6 +44,12 @@ const README_HTML_PLACEHOLDER_REGEX = /__README_HTML__/g;
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
 const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
+const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL =
+  "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe";
+const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID = "scribe_v2_realtime";
+const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS = 4_000;
+const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS = 8;
+const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.9;
 const INVALID_CHAT_HISTORY_PARAMS_ERROR = "invalid videoChat.chat.history params";
 const INVALID_CHAT_SEND_PARAMS_ERROR = "invalid videoChat.chat.send params";
 
@@ -218,6 +223,10 @@ type ParsedVideoChatSendParams = {
   attachments?: VideoChatChatAttachmentInput[];
   idempotencyKey?: string;
 };
+
+function normalizeInterruptReplyOnNewMessage(interruptReplyOnNewMessage?: boolean): boolean {
+  return interruptReplyOnNewMessage ?? true;
+}
 
 type VideoChatSubagentRunParams = {
   sessionKey: string;
@@ -647,65 +656,6 @@ function respondGatewayError(
   respond(false, undefined, errorShape);
 }
 
-function mimeTypeForAudioPath(audioPath: string): string {
-  if (audioPath.endsWith(".mp3")) {
-    return "audio/mpeg";
-  }
-  if (audioPath.endsWith(".opus")) {
-    return "audio/ogg; codecs=opus";
-  }
-  if (audioPath.endsWith(".wav")) {
-    return "audio/wav";
-  }
-  return "application/octet-stream";
-}
-
-function pcm16LeToWavBuffer(params: { pcm: Buffer; sampleRate: number }): Buffer {
-  const channels = 1;
-  const bitsPerSample = 16;
-  const blockAlign = (channels * bitsPerSample) / 8;
-  const byteRate = params.sampleRate * blockAlign;
-  const dataSize = params.pcm.length;
-  const wav = Buffer.alloc(44 + dataSize);
-  wav.write("RIFF", 0, "ascii");
-  wav.writeUInt32LE(36 + dataSize, 4);
-  wav.write("WAVE", 8, "ascii");
-  wav.write("fmt ", 12, "ascii");
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(channels, 22);
-  wav.writeUInt32LE(params.sampleRate, 24);
-  wav.writeUInt32LE(byteRate, 28);
-  wav.writeUInt16LE(blockAlign, 32);
-  wav.writeUInt16LE(bitsPerSample, 34);
-  wav.write("data", 36, "ascii");
-  wav.writeUInt32LE(dataSize, 40);
-  params.pcm.copy(wav, 44);
-  return wav;
-}
-
-function toAudioBuffer(value: unknown): Buffer | null {
-  if (Buffer.isBuffer(value)) {
-    return value;
-  }
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value);
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-    try {
-      const decoded = Buffer.from(trimmed, "base64");
-      return decoded.length > 0 ? decoded : null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
 function normalizeMimeType(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -849,6 +799,97 @@ function toBase64UrlJson(value: object): string {
   return toBase64Url(Buffer.from(JSON.stringify(value)));
 }
 
+function stripTranscriptionCaptionCues(value: string): string {
+  const timestampCuePattern =
+    /(?:^|\s)(?:\d{1,6}\s+)?\d{2}:\d{2}:\d{2}[,.:]\d{1,3}\s*(?:-->|--)\s*\d{2}:\d{2}:\d{2}[,.:]\d{1,3}(?=$|\s)/g;
+  return value
+    .replace(timestampCuePattern, " ")
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^\d+$/.test(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractElevenLabsSpeechWordLogprobs(payload: Record<string, unknown>): number[] {
+  const rawWords = payload.words;
+  if (!Array.isArray(rawWords)) {
+    return [];
+  }
+  return rawWords.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const type = typeof (entry as { type?: unknown }).type === "string" ? (entry as { type: string }).type : "";
+    if (type && type !== "word") {
+      return [];
+    }
+    const text = typeof (entry as { text?: unknown }).text === "string" ? (entry as { text: string }).text : "";
+    const logprob =
+      typeof (entry as { logprob?: unknown }).logprob === "number"
+        ? (entry as { logprob: number }).logprob
+        : Number.NaN;
+    if (!text.trim() || !Number.isFinite(logprob)) {
+      return [];
+    }
+    return [logprob];
+  });
+}
+
+function parseElevenLabsTranscript(payload: Record<string, unknown>): {
+  transcript: string;
+  filteredReason: string | null;
+  speechWordCount: number;
+  avgWordLogprob: number | null;
+} {
+  const rawTranscript = typeof payload.text === "string" ? payload.text.trim() : "";
+  if (!rawTranscript) {
+    return {
+      transcript: "",
+      filteredReason: "empty",
+      speechWordCount: 0,
+      avgWordLogprob: null,
+    };
+  }
+
+  const transcript = stripTranscriptionCaptionCues(rawTranscript);
+  const wordLogprobs = extractElevenLabsSpeechWordLogprobs(payload);
+  const avgWordLogprob =
+    wordLogprobs.length > 0
+      ? wordLogprobs.reduce((total, value) => total + value, 0) / wordLogprobs.length
+      : null;
+
+  if (!transcript) {
+    return {
+      transcript: "",
+      filteredReason: "caption-cue",
+      speechWordCount: wordLogprobs.length,
+      avgWordLogprob,
+    };
+  }
+
+  if (
+    avgWordLogprob !== null &&
+    wordLogprobs.length >= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS &&
+    avgWordLogprob <= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD
+  ) {
+    return {
+      transcript: "",
+      filteredReason: "low-confidence",
+      speechWordCount: wordLogprobs.length,
+      avgWordLogprob,
+    };
+  }
+
+  return {
+    transcript,
+    filteredReason: null,
+    speechWordCount: wordLogprobs.length,
+    avgWordLogprob,
+  };
+}
+
 function buildVideoChatDispatchMetadata(params: {
   sessionKey: string;
   imageUrl: string;
@@ -857,7 +898,7 @@ function buildVideoChatDispatchMetadata(params: {
   return JSON.stringify({
     sessionKey: params.sessionKey,
     imageUrl: params.imageUrl,
-    interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+    interruptReplyOnNewMessage: normalizeInterruptReplyOnNewMessage(params.interruptReplyOnNewMessage),
   });
 }
 
@@ -1154,6 +1195,7 @@ async function transcribeVideoChatAudio(params: {
   for (let attempt = 1; attempt <= ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS; attempt += 1) {
     const form = new FormData();
     form.append("model_id", ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID);
+    form.append("tag_audio_events", "false");
     form.append(
       "file",
       new Blob([new Uint8Array(audioBuffer)], { type: mimeType ?? "application/octet-stream" }),
@@ -1192,17 +1234,27 @@ async function transcribeVideoChatAudio(params: {
         }
       }
 
-      const transcript = typeof payload?.text === "string" ? payload.text.trim() : "";
-      if (!transcript) {
-        throw new Error("Claw Cast transcription returned no text");
+      const transcriptResult = payload ? parseElevenLabsTranscript(payload) : null;
+      if (!transcriptResult || !transcriptResult.transcript) {
+        logVideoChatEvent(params.logger, "info", "transcription.ignored", {
+          bytes: audioBuffer.length,
+          mimeType: mimeType ?? "application/octet-stream",
+          attempt,
+          reason: transcriptResult?.filteredReason ?? "invalid-payload",
+          speechWordCount: transcriptResult?.speechWordCount ?? 0,
+          avgWordLogprob: transcriptResult?.avgWordLogprob ?? null,
+        });
+        return { transcript: "" };
       }
       logVideoChatEvent(params.logger, "info", "transcription.succeeded", {
         bytes: audioBuffer.length,
         mimeType: mimeType ?? "application/octet-stream",
-        transcriptChars: transcript.length,
+        transcriptChars: transcriptResult.transcript.length,
+        speechWordCount: transcriptResult.speechWordCount,
+        avgWordLogprob: transcriptResult.avgWordLogprob,
         attempt,
       });
-      return { transcript };
+      return { transcript: transcriptResult.transcript };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const networkError =
@@ -1224,104 +1276,72 @@ async function transcribeVideoChatAudio(params: {
   throw new Error("Claw Cast transcription failed after retries");
 }
 
-async function generateVideoChatSpeech(params: {
-  runtime: OpenClawPluginApi["runtime"];
+async function createRealtimeVideoChatTranscriptionToken(params: {
+  logger: OpenClawPluginApi["logger"];
   cfg: OpenClawConfig;
-  text: string;
-}): Promise<{
-  mimeType: string;
-  data: string;
-  provider: string | null | undefined;
-  outputFormat: string | null | undefined;
-}> {
-  const text = params.text.trim();
-  if (!text) {
-    throw new Error("text is required");
+}): Promise<{ token: string; modelId: string }> {
+  const effectiveConfig = resolveEffectiveVideoChatConfig(params.cfg);
+  const elevenLabsApiKey = normalizeResolvedSecretInputString({
+    value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
+    path: "messages.tts.elevenlabs.apiKey",
+  });
+  if (!elevenLabsApiKey) {
+    throw new Error("Claw Cast realtime transcription is unavailable: missing ElevenLabs API key");
   }
 
-  const cfg = resolveEffectiveVideoChatConfig(params.cfg);
-  const ttsRuntime = params.runtime.tts as Record<string, unknown>;
-  const textToSpeech = ttsRuntime?.textToSpeech;
-  if (typeof textToSpeech === "function") {
-    const result = await (
-      textToSpeech as (input: {
-        text: string;
-        cfg: OpenClawConfig;
-      }) => Promise<{
-        success: boolean;
-        audioPath?: string;
-        audioBuffer?: unknown;
-        error?: string;
-        provider?: string | null;
-        outputFormat?: string | null;
-      }>
-    )({
-      text,
-      cfg,
+  logVideoChatEvent(params.logger, "info", "transcription.realtime-token.requested");
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL, {
+      method: "POST",
+      headers: {
+        "xi-api-key": elevenLabsApiKey,
+      },
+      signal: controller.signal,
     });
-    if (!result.success) {
-      throw new Error(result.error ?? "Claw Cast TTS generation failed");
+  } catch (error) {
+    if (
+      controller.signal.aborted ||
+      (error instanceof Error && error.name === "AbortError")
+    ) {
+      throw new Error(
+        `Claw Cast realtime transcription token request timed out after ${ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS}ms`,
+      );
     }
-    if (typeof result.audioPath === "string" && result.audioPath.trim()) {
-      const audio = readFileSync(result.audioPath);
-      return {
-        mimeType: mimeTypeForAudioPath(result.audioPath),
-        data: audio.toString("base64"),
-        provider: result.provider,
-        outputFormat: result.outputFormat,
-      };
-    }
-    const buffer = toAudioBuffer(result.audioBuffer);
-    if (buffer) {
-      return {
-        mimeType: "audio/mpeg",
-        data: buffer.toString("base64"),
-        provider: result.provider,
-        outputFormat: result.outputFormat,
-      };
-    }
-    throw new Error("Claw Cast TTS generation failed: runtime returned no audio payload");
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  const rawBody = await response.text();
+  if (!response.ok) {
+    throw new Error(parseElevenLabsErrorMessage(rawBody, response.status));
   }
 
-  const textToSpeechTelephony = ttsRuntime?.textToSpeechTelephony;
-  if (typeof textToSpeechTelephony === "function") {
-    const result = await (
-      textToSpeechTelephony as (input: {
-        text: string;
-        cfg: OpenClawConfig;
-      }) => Promise<{
-        success: boolean;
-        audioBuffer?: unknown;
-        error?: string;
-        provider?: string | null;
-        outputFormat?: string | null;
-        sampleRate?: number;
-      }>
-    )({
-      text,
-      cfg,
-    });
-    if (!result.success) {
-      throw new Error(result.error ?? "Claw Cast TTS generation failed");
+  let payload: Record<string, unknown> | null = null;
+  if (rawBody.trim()) {
+    try {
+      payload = JSON.parse(rawBody) as Record<string, unknown>;
+    } catch {
+      payload = null;
     }
-    const pcmBuffer = toAudioBuffer(result.audioBuffer);
-    if (!pcmBuffer) {
-      throw new Error("Claw Cast TTS generation failed: telephony output missing audio buffer");
-    }
-    const sampleRate =
-      typeof result.sampleRate === "number" && Number.isFinite(result.sampleRate)
-        ? Math.max(8_000, Math.floor(result.sampleRate))
-        : 24_000;
-    const wav = pcm16LeToWavBuffer({ pcm: pcmBuffer, sampleRate });
-    return {
-      mimeType: "audio/wav",
-      data: wav.toString("base64"),
-      provider: result.provider,
-      outputFormat: result.outputFormat ?? `pcm_${sampleRate}`,
-    };
   }
 
-  throw new Error("Claw Cast TTS generation failed: runtime TTS API is unavailable");
+  const token = typeof payload?.token === "string" ? payload.token.trim() : "";
+  if (!token) {
+    throw new Error("Claw Cast realtime transcription token request returned no token");
+  }
+
+  logVideoChatEvent(params.logger, "info", "transcription.realtime-token.succeeded", {
+    modelId: ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID,
+  });
+  return {
+    token,
+    modelId: ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID,
+  };
 }
 
 function readCliOption(options: unknown, key: string): string | undefined {
@@ -2323,14 +2343,17 @@ function registerVideoChatHttpRoutes(
               (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
               cfg.session?.mainKey ||
               "main";
+            const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+              params.interruptReplyOnNewMessage,
+            );
             logVideoChatEvent(api.logger, "info", "http.session.create.requested", {
               sessionKey,
-              interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+              interruptReplyOnNewMessage,
             });
             const session = await handlers.createSession({
               config: cfg,
               sessionKey,
-              interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+              interruptReplyOnNewMessage,
             });
             logVideoChatEvent(api.logger, "info", "http.session.create.completed", {
               sessionKey: session.sessionKey,
@@ -2492,6 +2515,23 @@ function registerVideoChatHttpRoutes(
           return true;
         }
 
+        if (normalizedPath === "/plugins/video-chat/api/transcribe/token" && method === "POST") {
+          const cfg = api.runtime.config.loadConfig();
+          const result = await createRealtimeVideoChatTranscriptionToken({
+            logger: api.logger,
+            cfg,
+          });
+          setNoStoreHeaders(res);
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              ...result,
+            }),
+          );
+          return true;
+        }
+
         if (normalizedPath === "/plugins/video-chat/api/transcribe" && method === "POST") {
           const params = await readRequestJson(req);
           if (typeof params.data !== "string") {
@@ -2517,27 +2557,6 @@ function registerVideoChatHttpRoutes(
             mimeType: params.mimeType ?? "application/octet-stream",
             base64Chars: base64Length,
             transcriptChars: result.transcript.length,
-          });
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              ...result,
-            }),
-          );
-          return true;
-        }
-
-        if (normalizedPath === "/plugins/video-chat/api/tts" && method === "POST") {
-          const params = await readRequestJson(req);
-          if (typeof params.text !== "string") {
-            throw new Error("invalid videoChat.tts.generate params");
-          }
-          const cfg = api.runtime.config.loadConfig();
-          const result = await generateVideoChatSpeech({
-            runtime: api.runtime,
-            cfg,
-            text: params.text,
           });
           sendHttpResponse(
             res,
@@ -2929,7 +2948,9 @@ async function createVideoChatSession(params: {
     requestedSessionKey: params.sessionKey,
     config: effectiveConfig,
   });
-  const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage === true;
+  const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+    params.interruptReplyOnNewMessage,
+  );
   const participantIdentity = `control-ui-${randomUUID().slice(0, 12)}`;
   const participantToken = createLiveKitAccessToken({
     apiKey,
@@ -3970,6 +3991,12 @@ const videoChatPlugin = {
               updateSessionRuntimeStatus(roomName, {
                 gatewayChatFinalAt: Date.now(),
               });
+              logVideoChatEvent(api.logger, "info", "gateway.chat.final.received", {
+                roomName,
+                sessionKey: normalizeOptionalString(fields.sessionKey),
+                runId: normalizeOptionalString(fields.runId),
+                state: normalizeOptionalString(fields.state),
+              });
             }
             return;
           case "speech.begin":
@@ -3979,11 +4006,32 @@ const videoChatPlugin = {
                 normalizeOptionalString(fields.outputAudioSink) ??
                 sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
             });
+            logVideoChatEvent(api.logger, "info", "speech.playback.begin", {
+              roomName,
+              sessionKey: normalizeOptionalString(fields.sessionKey),
+              runId: normalizeOptionalString(fields.runId),
+              textLength: typeof fields.textLength === "number" ? fields.textLength : undefined,
+              interruptible:
+                typeof fields.interruptible === "boolean" ? fields.interruptible : undefined,
+              outputAudioSink:
+                normalizeOptionalString(fields.outputAudioSink) ??
+                sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
+            });
             return;
           case "speech.finished":
             updateSessionRuntimeStatus(roomName, {
               speechFinishedAt: Date.now(),
               avatarOutputAudioSink:
+                normalizeOptionalString(fields.outputAudioSink) ??
+                sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
+            });
+            logVideoChatEvent(api.logger, "info", "speech.playback.finished", {
+              roomName,
+              sessionKey: normalizeOptionalString(fields.sessionKey),
+              runId: normalizeOptionalString(fields.runId),
+              interrupted:
+                typeof fields.interrupted === "boolean" ? fields.interrupted : undefined,
+              outputAudioSink:
                 normalizeOptionalString(fields.outputAudioSink) ??
                 sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
             });
@@ -4430,9 +4478,12 @@ const videoChatPlugin = {
       sessionKey: string;
       interruptReplyOnNewMessage?: boolean;
     }): Promise<VideoChatSessionResult> => {
+      const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+        params.interruptReplyOnNewMessage,
+      );
       logVideoChatEvent(api.logger, "info", "session.create.begin", {
         sessionKey: params.sessionKey,
-        interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+        interruptReplyOnNewMessage,
       });
       let session: VideoChatSessionResult | null = null;
       try {
@@ -4480,7 +4531,7 @@ const videoChatPlugin = {
         }
         logVideoChatEvent(api.logger, "error", "session.create.failed", {
           sessionKey: params.sessionKey,
-          interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+          interruptReplyOnNewMessage,
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
@@ -4694,11 +4745,14 @@ const videoChatPlugin = {
             (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
             cfg.session?.mainKey ||
             "main";
+          const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+            params.interruptReplyOnNewMessage,
+          );
 
           const payload = await createManagedSession({
             config: cfg,
             sessionKey,
-            interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+            interruptReplyOnNewMessage,
           });
           respond(true, payload);
         } catch (error) {
@@ -4878,42 +4932,6 @@ const videoChatPlugin = {
           respondGatewayError(
             respond,
             message === INVALID_CHAT_SEND_PARAMS_ERROR ? "INVALID_REQUEST" : "UNAVAILABLE",
-            message,
-          );
-        }
-      },
-    );
-
-    api.registerGatewayMethod(
-      "videoChat.tts.generate",
-      async ({ params, respond }: GatewayRequestHandlerOptions) => {
-        try {
-          if (!assertMethodParams(params, "videoChat.tts.generate", respond)) {
-            return;
-          }
-          if (typeof params.text !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid videoChat.tts.generate params",
-            );
-            return;
-          }
-
-          const text = params.text.trim();
-          const cfg = api.runtime.config.loadConfig();
-          const result = await generateVideoChatSpeech({
-            runtime: api.runtime,
-            cfg,
-            text,
-          });
-          respond(true, result);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Claw Cast TTS generation failed";
-          respondGatewayError(
-            respond,
-            message === "text is required" ? "INVALID_REQUEST" : "UNAVAILABLE",
             message,
           );
         }

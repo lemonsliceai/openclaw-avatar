@@ -55,24 +55,6 @@ declare module "openclaw/plugin-sdk" {
         loadConfig: () => OpenClawConfig;
         writeConfigFile?: (config: OpenClawConfig) => Promise<void>;
       };
-      tts: {
-        textToSpeech?: (input: { text: string; cfg: OpenClawConfig }) => Promise<{
-          success: boolean;
-          audioPath?: string;
-          audioBuffer?: unknown;
-          error?: string;
-          provider?: string | null;
-          outputFormat?: string | null;
-        }>;
-        textToSpeechTelephony?: (input: { text: string; cfg: OpenClawConfig }) => Promise<{
-          success: boolean;
-          audioBuffer?: unknown;
-          error?: string;
-          provider?: string | null;
-          outputFormat?: string | null;
-          sampleRate?: number;
-        }>;
-      };
       stt: {
         transcribeAudioFile: (input: {
           filePath: string;
