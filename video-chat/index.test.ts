@@ -774,7 +774,32 @@ describe("video-chat plugin", () => {
       expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
       {
         metadata:
-          '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":false}',
+          '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
+      },
+    );
+  });
+
+  it("always enables reply interruption even when the request passes false", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.session.create", {
+      sessionKey: "agent:main/main",
+      interruptReplyOnNewMessage: false,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const payload = call?.[1] as
+      | {
+          interruptReplyOnNewMessage?: boolean;
+        }
+      | undefined;
+    expect(payload?.interruptReplyOnNewMessage).toBe(true);
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
+      expect.stringContaining("openclaw-agent-main-main-"),
+      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      {
+        metadata:
+          '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
       },
     );
   });

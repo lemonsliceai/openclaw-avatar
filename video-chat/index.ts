@@ -857,7 +857,7 @@ function buildVideoChatDispatchMetadata(params: {
   return JSON.stringify({
     sessionKey: params.sessionKey,
     imageUrl: params.imageUrl,
-    interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+    interruptReplyOnNewMessage: true,
   });
 }
 
@@ -2929,7 +2929,7 @@ async function createVideoChatSession(params: {
     requestedSessionKey: params.sessionKey,
     config: effectiveConfig,
   });
-  const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage === true;
+  const interruptReplyOnNewMessage = true;
   const participantIdentity = `control-ui-${randomUUID().slice(0, 12)}`;
   const participantToken = createLiveKitAccessToken({
     apiKey,
@@ -3970,6 +3970,12 @@ const videoChatPlugin = {
               updateSessionRuntimeStatus(roomName, {
                 gatewayChatFinalAt: Date.now(),
               });
+              logVideoChatEvent(api.logger, "info", "gateway.chat.final.received", {
+                roomName,
+                sessionKey: normalizeOptionalString(fields.sessionKey),
+                runId: normalizeOptionalString(fields.runId),
+                state: normalizeOptionalString(fields.state),
+              });
             }
             return;
           case "speech.begin":
@@ -3979,11 +3985,37 @@ const videoChatPlugin = {
                 normalizeOptionalString(fields.outputAudioSink) ??
                 sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
             });
+            logVideoChatEvent(api.logger, "info", "speech.playback.begin", {
+              roomName,
+              sessionKey: normalizeOptionalString(fields.sessionKey),
+              runId: normalizeOptionalString(fields.runId),
+              textLength:
+                typeof fields.textLength === "string" && /^\d+$/.test(fields.textLength)
+                  ? Number.parseInt(fields.textLength, 10)
+                  : undefined,
+              interruptible:
+                typeof fields.interruptible === "string"
+                  ? fields.interruptible === "true"
+                  : undefined,
+              outputAudioSink:
+                normalizeOptionalString(fields.outputAudioSink) ??
+                sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
+            });
             return;
           case "speech.finished":
             updateSessionRuntimeStatus(roomName, {
               speechFinishedAt: Date.now(),
               avatarOutputAudioSink:
+                normalizeOptionalString(fields.outputAudioSink) ??
+                sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
+            });
+            logVideoChatEvent(api.logger, "info", "speech.playback.finished", {
+              roomName,
+              sessionKey: normalizeOptionalString(fields.sessionKey),
+              runId: normalizeOptionalString(fields.runId),
+              interrupted:
+                typeof fields.interrupted === "string" ? fields.interrupted === "true" : undefined,
+              outputAudioSink:
                 normalizeOptionalString(fields.outputAudioSink) ??
                 sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
             });

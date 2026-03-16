@@ -6,7 +6,6 @@ const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
 const sessionForm = document.getElementById("session-form");
 const startInPictureInPictureCheckbox = document.getElementById("start-in-pip");
-const interruptAgentSpeechCheckbox = document.getElementById("interrupt-agent-speech");
 const ttsForm = document.getElementById("tts-form");
 const ttsTextInput = document.getElementById("tts-text");
 const ttsGenerateButton = document.getElementById("tts-generate");
@@ -74,7 +73,6 @@ const CHAT_PANE_WIDTH_STORAGE_KEY = "videoChat.chatPaneWidth";
 const MIC_MUTED_STORAGE_KEY = "videoChat.microphoneMuted";
 const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
 const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "videoChat.avatarAutoStartInPictureInPicture";
-const AVATAR_INTERRUPT_REPLY_ON_NEW_MESSAGE_STORAGE_KEY = "videoChat.avatarInterruptReplyOnNewMessage";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -187,8 +185,8 @@ let avatarLoadPending = false;
 let avatarLoadMessage = "";
 let preferredMicMuted = false;
 let avatarSpeakerMuted = false;
+let avatarMutedForPendingChatReply = false;
 let avatarAutoStartInPictureInPicture = true;
-let avatarInterruptReplyOnNewMessage = true;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
 let avatarDocumentPictureInPictureElements = null;
@@ -340,6 +338,7 @@ function setAvatarSpeechActive(nextValue) {
 function clearAvatarSpeechActivity() {
   avatarSpeechActive = false;
   avatarSpeechLastDetectedAt = 0;
+  setAvatarMutedForPendingChatReply(false);
 }
 
 function isAvatarSpeechRecent(now = Date.now()) {
@@ -1178,22 +1177,15 @@ function loadMediaPreferences() {
   preferredMicMuted = getStoredBooleanPreference(MIC_MUTED_STORAGE_KEY);
   avatarSpeakerMuted = getStoredBooleanPreference(AVATAR_SPEAKER_MUTED_STORAGE_KEY);
   avatarAutoStartInPictureInPicture = getStoredBooleanPreference(AVATAR_AUTO_START_IN_PIP_STORAGE_KEY, true);
-  avatarInterruptReplyOnNewMessage = getStoredBooleanPreference(
-    AVATAR_INTERRUPT_REPLY_ON_NEW_MESSAGE_STORAGE_KEY,
-    true,
-  );
   if (startInPictureInPictureCheckbox) {
     startInPictureInPictureCheckbox.checked = avatarAutoStartInPictureInPicture;
-  }
-  if (interruptAgentSpeechCheckbox) {
-    interruptAgentSpeechCheckbox.checked = avatarInterruptReplyOnNewMessage;
   }
 }
 
 function buildSessionCreatePayload(sessionKey) {
   return {
     sessionKey,
-    interruptReplyOnNewMessage: avatarInterruptReplyOnNewMessage,
+    interruptReplyOnNewMessage: true,
   };
 }
 
@@ -4386,7 +4378,9 @@ function applyAvatarSpeakerMuteState() {
   if (avatarMediaEl) {
     const mediaElements = avatarMediaEl.querySelectorAll("audio, video");
     for (const element of mediaElements) {
-      element.muted = avatarSpeakerMuted;
+      const shouldMute = avatarSpeakerMuted || avatarMutedForPendingChatReply;
+      element.muted = shouldMute;
+      element.volume = shouldMute ? 0 : 1;
     }
   }
   syncAvatarDocumentPictureInPicture();
@@ -4396,6 +4390,15 @@ function applyAvatarSpeakerMuteState() {
   toggleSpeakerButton.classList.toggle("is-muted", avatarSpeakerMuted);
   toggleSpeakerButton.setAttribute("aria-label", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
   toggleSpeakerButton.setAttribute("title", avatarSpeakerMuted ? "Unmute speaker" : "Mute speaker");
+}
+
+function setAvatarMutedForPendingChatReply(nextValue) {
+  const normalized = Boolean(nextValue);
+  if (avatarMutedForPendingChatReply === normalized) {
+    return;
+  }
+  avatarMutedForPendingChatReply = normalized;
+  applyAvatarSpeakerMuteState();
 }
 
 function resumeAvatarMediaPlayback(reason = "manual") {
@@ -5494,6 +5497,7 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "final") {
+    setAvatarMutedForPendingChatReply(false);
     const content = extractChatMessageContent(payload.message);
     if (content.text) {
       rememberRecentAvatarReply(content.text, resolveMessageTimestamp(payload.message));
@@ -5519,6 +5523,7 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "error") {
+    setAvatarMutedForPendingChatReply(false);
     appendChatLine("system", payload.errorMessage || "Chat request failed.", {
       awaitingReply: false,
     });
@@ -5526,6 +5531,7 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "aborted") {
+    setAvatarMutedForPendingChatReply(false);
     appendChatLine("system", "Chat run aborted.", {
       awaitingReply: false,
     });
@@ -7129,16 +7135,6 @@ if (startInPictureInPictureCheckbox) {
   });
 }
 
-if (interruptAgentSpeechCheckbox) {
-  interruptAgentSpeechCheckbox.addEventListener("change", () => {
-    avatarInterruptReplyOnNewMessage = interruptAgentSpeechCheckbox.checked;
-    persistBooleanPreference(
-      AVATAR_INTERRUPT_REPLY_ON_NEW_MESSAGE_STORAGE_KEY,
-      avatarInterruptReplyOnNewMessage,
-    );
-  });
-}
-
 async function toggleMicrophone() {
   if (!localAudioTrack) {
     return;
@@ -7296,6 +7292,7 @@ async function submitChatMessage(rawMessage, options = {}) {
 
   const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   const rpcAttachments = hasAttachments ? buildChatSendAttachments(attachments) : [];
+  setAvatarMutedForPendingChatReply(true);
   setChatPaneOpen(true);
   appendChatLine(
     "user",
@@ -7335,6 +7332,7 @@ async function submitChatMessage(rawMessage, options = {}) {
     await handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey);
     return true;
   } catch (error) {
+    setAvatarMutedForPendingChatReply(false);
     setChatComposerInputValue(sourceInput, message);
     composerDraft.attachments.push(...attachments);
     renderChatComposerAttachments();
