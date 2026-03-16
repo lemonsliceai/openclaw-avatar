@@ -1138,6 +1138,22 @@
                   placeholder="https://example.com/avatar.png"
                   required
                 />
+                <details class="session-key-help">
+                  <summary>
+                    <span class="session-key-help__icon" aria-hidden="true">i</span>
+                    <span class="session-key-help__label">How to pick an image URL</span>
+                    <span class="session-key-help__chevron" aria-hidden="true">
+                      <svg viewBox="0 0 20 20" focusable="false">
+                        <path d="M5 7.5 10 12.5 15 7.5"></path>
+                      </svg>
+                    </span>
+                  </summary>
+                  <div class="session-key-help__content">
+                    <p><strong>Use a public image link:</strong> this should be a direct URL to an image file that is publicly accessible on the internet.</p>
+                    <p>If the image is private, local to your computer, or requires a login to view, the avatar may not load correctly.</p>
+                    <p><strong>Example:</strong> <code>https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtNkoagYf5CBjh3ZkFEumULAJYeQriWT8tg79y</code></p>
+                  </div>
+                </details>
               </label>
               <label class="field full">
                 <span>Avatar timeout (seconds)</span>
