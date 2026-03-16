@@ -809,7 +809,7 @@ async function runVideoChatAgentEntry(ctx) {
       });
       logRoomSnapshot("session-say-failed", ctx.room);
     }).finally(() => {
-      if (activeGatewaySpeech?.runKey === runKey) {
+      if (activeGatewaySpeech === reply) {
         activeGatewaySpeech = null;
       }
     });

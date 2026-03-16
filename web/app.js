@@ -260,6 +260,8 @@ const chatComposerDrafts = {
   },
 };
 let chatAwaitingReply = false;
+let chatRenderQueued = false;
+let chatRenderScrollToBottom = false;
 let chatComposerAttachmentIdCounter = 0;
 const debugLogEntries = [];
 const assistantMetadataBackfillTimers = new Map();
@@ -5678,6 +5680,27 @@ function renderChatLog(options = {}) {
   }
 }
 
+function scheduleChatRender(options = {}) {
+  if (options.scrollToBottom !== false) {
+    chatRenderScrollToBottom = true;
+  }
+  if (chatRenderQueued) {
+    return;
+  }
+  chatRenderQueued = true;
+  const flushRender = () => {
+    chatRenderQueued = false;
+    const scrollToBottom = chatRenderScrollToBottom;
+    chatRenderScrollToBottom = false;
+    renderChatLog({ scrollToBottom });
+  };
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(flushRender);
+    return;
+  }
+  flushRender();
+}
+
 function replaceChatLog(entries) {
   chatMessages.length = 0;
   for (const entry of entries) {
@@ -5796,7 +5819,7 @@ function upsertStreamingAssistantMessage(textOrMessage, options = {}) {
     existing.timestamp = resolveChatTimestamp(options.timestamp) ?? existing.timestamp ?? Date.now();
     existing.rawMessage =
       options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null;
-    renderChatLog();
+    scheduleChatRender({ scrollToBottom: options.scrollToBottom });
     return;
   }
   appendChatLine("assistant", content, {
