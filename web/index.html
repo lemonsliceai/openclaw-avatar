@@ -348,9 +348,24 @@
       }
 
       .session-key-help__chevron {
-        color: var(--muted);
-        font-size: 11px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        color: var(--text-strong);
         transition: transform var(--duration-normal) var(--ease-out);
+        flex-shrink: 0;
+      }
+
+      .session-key-help__chevron svg {
+        width: 20px;
+        height: 20px;
+        stroke: currentColor;
+        stroke-width: 2.75;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
       .session-key-help[open] .session-key-help__chevron {
@@ -1098,7 +1113,11 @@
                   <summary>
                     <span class="session-key-help__icon" aria-hidden="true">i</span>
                     <span class="session-key-help__label">How to pick a key</span>
-                    <span class="session-key-help__chevron" aria-hidden="true">▾</span>
+                    <span class="session-key-help__chevron" aria-hidden="true">
+                      <svg viewBox="0 0 20 20" focusable="false">
+                        <path d="M5 7.5 10 12.5 15 7.5"></path>
+                      </svg>
+                    </span>
                   </summary>
                   <div class="session-key-help__content">
                     <p><strong>Quick guide:</strong> leave this blank or enter <code>main</code> to use the default OpenClaw session (<code>session.mainKey</code>, which falls back to <code>main</code>).</p>
