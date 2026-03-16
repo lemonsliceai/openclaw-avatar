@@ -135,7 +135,11 @@ const SERVER_SPEECH_MIN_DURATION_MS = 120;
 const SERVER_SPEECH_VAD_THRESHOLD = 0.45;
 const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
 const SERVER_SPEECH_RECONNECT_DELAY_MS = 250;
+const SERVER_SPEECH_START_RETRY_BASE_DELAY_MS = 500;
+const SERVER_SPEECH_START_RETRY_MAX_DELAY_MS = 4_000;
+const SERVER_SPEECH_START_RETRY_MAX_ATTEMPTS = 5;
 const SERVER_SPEECH_TOKEN_PREFETCH_MAX_AGE_MS = 20_000;
+const AVATAR_INTERRUPT_ACK_TIMEOUT_MS = 3_000;
 const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
 const CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CHAT_JSON_RENDER_LIMIT = 20_000;
@@ -174,6 +178,8 @@ let serverSpeechRealtimeSocket = null;
 let serverSpeechRealtimeSocketReady = false;
 let serverSpeechRealtimeStopRequested = false;
 let serverSpeechRealtimeReconnectTimer = null;
+let serverSpeechStartRetryTimer = null;
+let serverSpeechStartRetryCount = 0;
 let serverSpeechRealtimeTokenCache = null;
 let serverSpeechRealtimeTokenPrefetchPromise = null;
 let roomConnectGeneration = 0;
@@ -190,6 +196,7 @@ let preferredMicMuted = false;
 let avatarSpeakerMuted = false;
 let avatarMutedForPendingChatReply = false;
 let avatarInterruptPending = false;
+let avatarInterruptAckTimer = null;
 let voiceTranscriptionPending = false;
 let avatarAutoStartInPictureInPicture = true;
 let avatarDocumentPictureInPictureWindow = null;
@@ -1377,11 +1384,8 @@ async function submitVoiceTranscript(rawTranscript) {
   setChatStatus("Sending message...");
 
   try {
-    avatarInterruptPending = true;
     setAvatarMutedForPendingChatReply(true);
-    await publishAvatarControlMessage("interrupt-speech", {
-      source: "voice-transcript",
-    });
+    await requestAvatarInterrupt("voice-transcript");
     const liveUpdatesReady = await primeGatewaySocketForChat();
     const payload = await requestJson("/plugins/video-chat/api/chat/send", {
       method: "POST",
@@ -1401,6 +1405,9 @@ async function submitVoiceTranscript(rawTranscript) {
     await handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey);
     return true;
   } catch (error) {
+    clearAvatarInterruptPending({
+      forceUnmute: true,
+    });
     appendChatLine("system", error instanceof Error ? error.message : "Voice chat send failed.", {
       awaitingReply: false,
     });
@@ -1480,6 +1487,49 @@ function clearServerSpeechReconnectTimer() {
   }
   clearTimeout(serverSpeechRealtimeReconnectTimer);
   serverSpeechRealtimeReconnectTimer = null;
+}
+
+function clearServerSpeechStartRetryTimer(options = {}) {
+  if (serverSpeechStartRetryTimer !== null) {
+    clearTimeout(serverSpeechStartRetryTimer);
+    serverSpeechStartRetryTimer = null;
+  }
+  if (options.resetCount === true) {
+    serverSpeechStartRetryCount = 0;
+  }
+}
+
+function scheduleServerSpeechStartRetry(reason) {
+  if (serverSpeechRealtimeStopRequested || serverSpeechStartRetryTimer !== null) {
+    return;
+  }
+  if (serverSpeechStartRetryCount >= SERVER_SPEECH_START_RETRY_MAX_ATTEMPTS) {
+    setOutput({
+      action: "server-speech-retry-exhausted",
+      reason,
+      retryCount: serverSpeechStartRetryCount,
+    });
+    return;
+  }
+  serverSpeechStartRetryCount += 1;
+  const retryCount = serverSpeechStartRetryCount;
+  const delayMs = Math.min(
+    SERVER_SPEECH_START_RETRY_BASE_DELAY_MS * 2 ** (retryCount - 1),
+    SERVER_SPEECH_START_RETRY_MAX_DELAY_MS,
+  );
+  serverSpeechStartRetryTimer = setTimeout(() => {
+    serverSpeechStartRetryTimer = null;
+    if (!shouldRunVoiceTranscription() || shouldPreferBrowserSpeechRecognition()) {
+      return;
+    }
+    setOutput({
+      action: "server-speech-retry",
+      reason,
+      retryCount,
+      delayMs,
+    });
+    void startServerSpeechTranscription();
+  }, delayMs);
 }
 
 function clearServerSpeechRealtimeTokenCache() {
@@ -1789,6 +1839,9 @@ async function handleServerSpeechRealtimeMessage(event) {
     return;
   }
   if (isRealtimeSessionStarted(payload)) {
+    clearServerSpeechStartRetryTimer({
+      resetCount: true,
+    });
     serverSpeechRealtimeSocketReady = true;
     serverSpeechTranscriptionUnavailable = false;
     setOutput({
@@ -1848,6 +1901,9 @@ async function handleServerSpeechRealtimeMessage(event) {
 
 function stopServerSpeechTranscription(options = {}) {
   clearServerSpeechReconnectTimer();
+  clearServerSpeechStartRetryTimer({
+    resetCount: true,
+  });
   serverSpeechRealtimeStopRequested = true;
   serverSpeechRealtimeSocketReady = false;
   clearServerSpeechRealtimeTokenCache();
@@ -1890,6 +1946,7 @@ async function startServerSpeechTranscription() {
   if (serverSpeechRealtimeSocket || serverSpeechRecorderStartPromise || !serverSpeechTranscriptionSupported()) {
     return;
   }
+  clearServerSpeechStartRetryTimer();
   const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
   if (!mediaStreamTrack) {
     return;
@@ -1991,7 +2048,7 @@ async function startServerSpeechTranscription() {
   })()
     .catch((error) => {
       reportServerSpeechTranscriptionFailure("server-speech-recorder-start-failed", error);
-      syncVoiceTranscription();
+      scheduleServerSpeechStartRetry("server-speech-recorder-start-failed");
     })
     .finally(() => {
       serverSpeechRecorderStartPromise = null;
@@ -4620,6 +4677,64 @@ function setAvatarMutedForPendingChatReply(nextValue) {
   applyAvatarSpeakerMuteState();
 }
 
+function clearAvatarInterruptAckTimer() {
+  if (avatarInterruptAckTimer === null) {
+    return;
+  }
+  clearTimeout(avatarInterruptAckTimer);
+  avatarInterruptAckTimer = null;
+}
+
+function clearAvatarInterruptPending(options = {}) {
+  clearAvatarInterruptAckTimer();
+  avatarInterruptPending = false;
+  if (
+    options.forceUnmute !== true &&
+    (chatAwaitingReply || voiceTranscriptionPending)
+  ) {
+    return;
+  }
+  setAvatarMutedForPendingChatReply(false);
+}
+
+function scheduleAvatarInterruptAckTimeout(source) {
+  clearAvatarInterruptAckTimer();
+  avatarInterruptAckTimer = setTimeout(() => {
+    avatarInterruptAckTimer = null;
+    if (!avatarInterruptPending) {
+      return;
+    }
+    setOutput({
+      action: "avatar-control-ack-timeout",
+      controlAction: "interrupt-speech",
+      source,
+    });
+    clearAvatarInterruptPending({
+      forceUnmute: true,
+    });
+  }, AVATAR_INTERRUPT_ACK_TIMEOUT_MS);
+}
+
+async function requestAvatarInterrupt(source) {
+  if (!resolveChatSessionKey()) {
+    clearAvatarInterruptPending({
+      forceUnmute: true,
+    });
+    return false;
+  }
+  avatarInterruptPending = true;
+  scheduleAvatarInterruptAckTimeout(source);
+  const sent = await publishAvatarControlMessage("interrupt-speech", {
+    source,
+  }).catch(() => false);
+  if (!sent) {
+    clearAvatarInterruptPending({
+      forceUnmute: true,
+    });
+  }
+  return sent;
+}
+
 function clearVoiceTranscriptionPending(options = {}) {
   const keepMuted = options.keepMuted === true;
   voiceTranscriptionPending = false;
@@ -4640,19 +4755,10 @@ function requestAvatarInterruptForVoiceTranscription(source = "voice-transcripti
     return;
   }
   if (!resolveChatSessionKey()) {
+    clearVoiceTranscriptionPending();
     return;
   }
-  avatarInterruptPending = true;
-  void publishAvatarControlMessage("interrupt-speech", {
-    source,
-  }).then((sent) => {
-    if (!sent && avatarInterruptPending) {
-      avatarInterruptPending = false;
-      if (!chatAwaitingReply && !voiceTranscriptionPending) {
-        setAvatarMutedForPendingChatReply(false);
-      }
-    }
-  });
+  void requestAvatarInterrupt(source);
 }
 
 function resumeAvatarMediaPlayback(reason = "manual") {
@@ -5568,14 +5674,11 @@ function handleAvatarInterruptAcknowledged(payload) {
   if (!payload || payload.action !== "interrupt-speech-complete") {
     return;
   }
-  avatarInterruptPending = false;
+  clearAvatarInterruptPending();
   setOutput({
     action: "avatar-control-acknowledged",
     controlAction: payload.action,
   });
-  if (!chatAwaitingReply && !voiceTranscriptionPending) {
-    setAvatarMutedForPendingChatReply(false);
-  }
 }
 
 function handleAvatarControlMessage(payload) {
@@ -5771,8 +5874,10 @@ function closeGatewaySocket(reason) {
   clearGatewayReconnectTimer();
   gatewaySocketReady = false;
   gatewayConnectRequestId = null;
-  avatarInterruptPending = false;
   chatAwaitingReply = false;
+  clearAvatarInterruptPending({
+    forceUnmute: true,
+  });
   if (gatewaySocket) {
     try {
       gatewaySocket.close();
@@ -5819,9 +5924,6 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "final") {
-    if (!avatarInterruptPending) {
-      setAvatarMutedForPendingChatReply(false);
-    }
     const content = extractChatMessageContent(payload.message);
     if (content.text) {
       rememberRecentAvatarReply(content.text, resolveMessageTimestamp(payload.message));
@@ -5843,12 +5945,16 @@ function handleGatewayChatEvent(payload) {
         timestamp: resolveMessageTimestamp(payload.message),
       });
     }
+    clearAvatarInterruptPending({
+      forceUnmute: true,
+    });
     setChatStatus("Reply received.");
     return;
   }
   if (state === "error") {
-    avatarInterruptPending = false;
-    setAvatarMutedForPendingChatReply(false);
+    clearAvatarInterruptPending({
+      forceUnmute: true,
+    });
     appendChatLine("system", payload.errorMessage || "Chat request failed.", {
       awaitingReply: false,
     });
@@ -5856,8 +5962,9 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "aborted") {
-    avatarInterruptPending = false;
-    setAvatarMutedForPendingChatReply(false);
+    clearAvatarInterruptPending({
+      forceUnmute: true,
+    });
     appendChatLine("system", "Chat run aborted.", {
       awaitingReply: false,
     });
@@ -7587,7 +7694,6 @@ async function submitChatMessage(rawMessage, options = {}) {
   const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   const rpcAttachments = hasAttachments ? buildChatSendAttachments(attachments) : [];
   setAvatarMutedForPendingChatReply(true);
-  avatarInterruptPending = true;
   setChatPaneOpen(true);
   appendChatLine(
     "user",
@@ -7612,9 +7718,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   setChatStatus("Sending message...");
 
   try {
-    await publishAvatarControlMessage("interrupt-speech", {
-      source: "chat-send",
-    });
+    await requestAvatarInterrupt("chat-send");
     const liveUpdatesReady = await primeGatewaySocketForChat();
     const payload = await requestJson("/plugins/video-chat/api/chat/send", {
       method: "POST",
@@ -7630,7 +7734,9 @@ async function submitChatMessage(rawMessage, options = {}) {
     await handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey);
     return true;
   } catch (error) {
-    setAvatarMutedForPendingChatReply(false);
+    clearAvatarInterruptPending({
+      forceUnmute: true,
+    });
     setChatComposerInputValue(sourceInput, message);
     composerDraft.attachments.push(...attachments);
     renderChatComposerAttachments();

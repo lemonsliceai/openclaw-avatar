@@ -47,6 +47,7 @@ const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
 const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL =
   "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe";
 const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID = "scribe_v2_realtime";
+const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS = 4_000;
 const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS = 8;
 const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.9;
 const INVALID_CHAT_HISTORY_PARAMS_ERROR = "invalid videoChat.chat.history params";
@@ -893,7 +894,7 @@ function buildVideoChatDispatchMetadata(params: {
   return JSON.stringify({
     sessionKey: params.sessionKey,
     imageUrl: params.imageUrl,
-    interruptReplyOnNewMessage: true,
+    interruptReplyOnNewMessage: params.interruptReplyOnNewMessage ?? true,
   });
 }
 
@@ -1238,8 +1239,6 @@ async function transcribeVideoChatAudio(params: {
           reason: transcriptResult?.filteredReason ?? "invalid-payload",
           speechWordCount: transcriptResult?.speechWordCount ?? 0,
           avgWordLogprob: transcriptResult?.avgWordLogprob ?? null,
-          transcriptPreview:
-            payload && typeof payload.text === "string" ? truncateForLog(payload.text, 120) : "",
         });
         return { transcript: "" };
       }
@@ -1287,12 +1286,32 @@ async function createRealtimeVideoChatTranscriptionToken(params: {
   }
 
   logVideoChatEvent(params.logger, "info", "transcription.realtime-token.requested");
-  const response = await fetch(ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "xi-api-key": elevenLabsApiKey,
-    },
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL, {
+      method: "POST",
+      headers: {
+        "xi-api-key": elevenLabsApiKey,
+      },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (
+      controller.signal.aborted ||
+      (error instanceof Error && error.name === "AbortError")
+    ) {
+      throw new Error(
+        `Claw Cast realtime transcription token request timed out after ${ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS}ms`,
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
   const rawBody = await response.text();
   if (!response.ok) {
     throw new Error(parseElevenLabsErrorMessage(rawBody, response.status));
@@ -2320,14 +2339,15 @@ function registerVideoChatHttpRoutes(
               (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
               cfg.session?.mainKey ||
               "main";
+            const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage ?? true;
             logVideoChatEvent(api.logger, "info", "http.session.create.requested", {
               sessionKey,
-              interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+              interruptReplyOnNewMessage,
             });
             const session = await handlers.createSession({
               config: cfg,
               sessionKey,
-              interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+              interruptReplyOnNewMessage: params.interruptReplyOnNewMessage,
             });
             logVideoChatEvent(api.logger, "info", "http.session.create.completed", {
               sessionKey: session.sessionKey,
@@ -2495,6 +2515,7 @@ function registerVideoChatHttpRoutes(
             logger: api.logger,
             cfg,
           });
+          setNoStoreHeaders(res);
           sendHttpResponse(
             res,
             asJsonResponse({
@@ -2921,7 +2942,7 @@ async function createVideoChatSession(params: {
     requestedSessionKey: params.sessionKey,
     config: effectiveConfig,
   });
-  const interruptReplyOnNewMessage = true;
+  const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage ?? true;
   const participantIdentity = `control-ui-${randomUUID().slice(0, 12)}`;
   const participantToken = createLiveKitAccessToken({
     apiKey,
@@ -3981,14 +4002,9 @@ const videoChatPlugin = {
               roomName,
               sessionKey: normalizeOptionalString(fields.sessionKey),
               runId: normalizeOptionalString(fields.runId),
-              textLength:
-                typeof fields.textLength === "string" && /^\d+$/.test(fields.textLength)
-                  ? Number.parseInt(fields.textLength, 10)
-                  : undefined,
+              textLength: typeof fields.textLength === "number" ? fields.textLength : undefined,
               interruptible:
-                typeof fields.interruptible === "string"
-                  ? fields.interruptible === "true"
-                  : undefined,
+                typeof fields.interruptible === "boolean" ? fields.interruptible : undefined,
               outputAudioSink:
                 normalizeOptionalString(fields.outputAudioSink) ??
                 sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
@@ -4006,7 +4022,7 @@ const videoChatPlugin = {
               sessionKey: normalizeOptionalString(fields.sessionKey),
               runId: normalizeOptionalString(fields.runId),
               interrupted:
-                typeof fields.interrupted === "string" ? fields.interrupted === "true" : undefined,
+                typeof fields.interrupted === "boolean" ? fields.interrupted : undefined,
               outputAudioSink:
                 normalizeOptionalString(fields.outputAudioSink) ??
                 sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
@@ -4454,9 +4470,10 @@ const videoChatPlugin = {
       sessionKey: string;
       interruptReplyOnNewMessage?: boolean;
     }): Promise<VideoChatSessionResult> => {
+      const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage ?? true;
       logVideoChatEvent(api.logger, "info", "session.create.begin", {
         sessionKey: params.sessionKey,
-        interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+        interruptReplyOnNewMessage,
       });
       let session: VideoChatSessionResult | null = null;
       try {
@@ -4504,7 +4521,7 @@ const videoChatPlugin = {
         }
         logVideoChatEvent(api.logger, "error", "session.create.failed", {
           sessionKey: params.sessionKey,
-          interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+          interruptReplyOnNewMessage,
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
@@ -4722,7 +4739,7 @@ const videoChatPlugin = {
           const payload = await createManagedSession({
             config: cfg,
             sessionKey,
-            interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+            interruptReplyOnNewMessage: params.interruptReplyOnNewMessage,
           });
           respond(true, payload);
         } catch (error) {

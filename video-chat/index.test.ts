@@ -133,6 +133,14 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(normalized, "base64").toString("utf8")) as Record<string, unknown>;
 }
 
+function parseDispatchMetadata(callIndex: number): Record<string, unknown> {
+  const options = mockAgentDispatchCreateDispatch.mock.calls[callIndex]?.[2] as
+    | { metadata?: string }
+    | undefined;
+  expect(typeof options?.metadata).toBe("string");
+  return JSON.parse(options?.metadata ?? "{}") as Record<string, unknown>;
+}
+
 function setup(config: unknown = baseConfig) {
   const runtime = createPluginRuntimeMock();
   const methods = new Map<string, unknown>();
@@ -726,10 +734,16 @@ describe("video-chat plugin", () => {
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
       expect.stringContaining("openclaw-agent-main-main-"),
       expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
-      {
-        metadata:
-          '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
-      },
+      expect.objectContaining({
+        metadata: expect.any(String),
+      }),
+    );
+    expect(parseDispatchMetadata(0)).toEqual(
+      expect.objectContaining({
+        sessionKey: "agent:main/main",
+        imageUrl: "https://example.com/avatar.png",
+        interruptReplyOnNewMessage: true,
+      }),
     );
   });
 
@@ -756,14 +770,20 @@ describe("video-chat plugin", () => {
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
       expect.stringContaining("openclaw-main-"),
       expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
-      {
-        metadata:
-          '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
-      },
+      expect.objectContaining({
+        metadata: expect.any(String),
+      }),
+    );
+    expect(parseDispatchMetadata(0)).toEqual(
+      expect.objectContaining({
+        sessionKey: "agent:main:main",
+        imageUrl: "https://example.com/avatar.png",
+        interruptReplyOnNewMessage: true,
+      }),
     );
   });
 
-  it("always enables reply interruption even when the request passes false", async () => {
+  it("respects a disabled reply interruption request", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.create", {
       sessionKey: "agent:main/main",
@@ -777,14 +797,20 @@ describe("video-chat plugin", () => {
           interruptReplyOnNewMessage?: boolean;
         }
       | undefined;
-    expect(payload?.interruptReplyOnNewMessage).toBe(true);
+    expect(payload?.interruptReplyOnNewMessage).toBe(false);
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
       expect.stringContaining("openclaw-agent-main-main-"),
       expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
-      {
-        metadata:
-          '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
-      },
+      expect.objectContaining({
+        metadata: expect.any(String),
+      }),
+    );
+    expect(parseDispatchMetadata(0)).toEqual(
+      expect.objectContaining({
+        sessionKey: "agent:main/main",
+        imageUrl: "https://example.com/avatar.png",
+        interruptReplyOnNewMessage: false,
+      }),
     );
   });
 
@@ -2047,11 +2073,13 @@ describe("video-chat plugin", () => {
     expect(handled).toBe(true);
     expect(res.statusCode).toBe(200);
     expect(res.header("content-type")).toBe("application/json; charset=utf-8");
+    expect(res.header("cache-control")).toBe("no-store");
     expect(JSON.parse(res.body)).toEqual({
       success: true,
       token: "rtm_token_123",
       modelId: "scribe_v2_realtime",
     });
+    expect(mockFetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
       expect.objectContaining({
@@ -2061,6 +2089,41 @@ describe("video-chat plugin", () => {
         },
       }),
     );
+  });
+
+  it("fails realtime transcription token requests with a timeout error", async () => {
+    vi.useFakeTimers();
+    try {
+      const { httpRoutes } = setup();
+      mockFetch.mockImplementationOnce(
+        async (_url: string, options?: { signal?: AbortSignal }) =>
+          await new Promise<Response>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+            });
+          }),
+      );
+
+      const pendingResponse = invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+        url: "/plugins/video-chat/api/transcribe/token",
+        method: "POST",
+      });
+
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      const { handled, res } = await pendingResponse;
+      expect(handled).toBe(true);
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({
+        success: false,
+        error: {
+          code: "UNAVAILABLE",
+          message: "Claw Cast realtime transcription token request timed out after 4000ms",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retries transient ElevenLabs transcription failures", async () => {
