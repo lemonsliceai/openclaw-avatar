@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
+const AVATAR_CONTROL_EVENT_TOPIC = "video-chat.avatar-control";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -121,6 +122,19 @@ function extractTextFromMessage(message) {
     }
   }
   return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+function decodeRoomDataPayload(payload) {
+  if (typeof payload === "string") {
+    return payload;
+  }
+  if (payload instanceof Uint8Array) {
+    return new TextDecoder().decode(payload);
+  }
+  if (payload && typeof payload === "object" && payload.buffer instanceof ArrayBuffer) {
+    return new TextDecoder().decode(new Uint8Array(payload.buffer));
+  }
+  return "";
 }
 
 function summarizeTrackPublication(publication) {
@@ -682,6 +696,51 @@ async function runVideoChatAgentEntry(ctx) {
       trackKind,
       trackSource,
     });
+  });
+  ctx.room?.on?.("dataReceived", async (payload, participant, kind, topic) => {
+    void participant;
+    void kind;
+    const normalizedTopic = typeof topic === "string" ? topic.trim() : "";
+    if (normalizedTopic !== AVATAR_CONTROL_EVENT_TOPIC) {
+      return;
+    }
+    const decoded = decodeRoomDataPayload(payload);
+    if (!decoded) {
+      return;
+    }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(decoded);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || parsed.type !== "avatar-control" || parsed.action !== "interrupt-speech") {
+      return;
+    }
+    console.log("[video-chat-agent] interrupting avatar speech from room control event");
+    emitParentDebug("speech.interrupt.requested", {
+      sessionKey: metadata.sessionKey,
+      roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+      source: typeof parsed.source === "string" ? parsed.source : "",
+    });
+    try {
+      await session.interrupt({ force: true }).await;
+      emitParentDebug("speech.interrupt.completed", {
+        sessionKey: metadata.sessionKey,
+        roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+        source: typeof parsed.source === "string" ? parsed.source : "",
+      });
+    } catch (error) {
+      console.error(
+        `[video-chat-agent] failed to interrupt avatar speech: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+      );
+      emitParentDebug("speech.interrupt.failed", {
+        sessionKey: metadata.sessionKey,
+        roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+        source: typeof parsed.source === "string" ? parsed.source : "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   console.log("[video-chat-agent] connecting gateway bridge");

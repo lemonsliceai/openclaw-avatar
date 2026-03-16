@@ -45,6 +45,11 @@ const README_HTML_PLACEHOLDER_REGEX = /__README_HTML__/g;
 const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
 const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
+const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL =
+  "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe";
+const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID = "scribe_v2_realtime";
+const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS = 8;
+const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.9;
 const INVALID_CHAT_HISTORY_PARAMS_ERROR = "invalid videoChat.chat.history params";
 const INVALID_CHAT_SEND_PARAMS_ERROR = "invalid videoChat.chat.send params";
 
@@ -849,6 +854,97 @@ function toBase64UrlJson(value: object): string {
   return toBase64Url(Buffer.from(JSON.stringify(value)));
 }
 
+function stripTranscriptionCaptionCues(value: string): string {
+  const timestampCuePattern =
+    /(?:^|\s)(?:\d{1,6}\s+)?\d{2}:\d{2}:\d{2}[,.:]\d{1,3}\s*(?:-->|--)\s*\d{2}:\d{2}:\d{2}[,.:]\d{1,3}(?=$|\s)/g;
+  return value
+    .replace(timestampCuePattern, " ")
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^\d+$/.test(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractElevenLabsSpeechWordLogprobs(payload: Record<string, unknown>): number[] {
+  const rawWords = payload.words;
+  if (!Array.isArray(rawWords)) {
+    return [];
+  }
+  return rawWords.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const type = typeof (entry as { type?: unknown }).type === "string" ? (entry as { type: string }).type : "";
+    if (type && type !== "word") {
+      return [];
+    }
+    const text = typeof (entry as { text?: unknown }).text === "string" ? (entry as { text: string }).text : "";
+    const logprob =
+      typeof (entry as { logprob?: unknown }).logprob === "number"
+        ? (entry as { logprob: number }).logprob
+        : Number.NaN;
+    if (!text.trim() || !Number.isFinite(logprob)) {
+      return [];
+    }
+    return [logprob];
+  });
+}
+
+function parseElevenLabsTranscript(payload: Record<string, unknown>): {
+  transcript: string;
+  filteredReason: string | null;
+  speechWordCount: number;
+  avgWordLogprob: number | null;
+} {
+  const rawTranscript = typeof payload.text === "string" ? payload.text.trim() : "";
+  if (!rawTranscript) {
+    return {
+      transcript: "",
+      filteredReason: "empty",
+      speechWordCount: 0,
+      avgWordLogprob: null,
+    };
+  }
+
+  const transcript = stripTranscriptionCaptionCues(rawTranscript);
+  const wordLogprobs = extractElevenLabsSpeechWordLogprobs(payload);
+  const avgWordLogprob =
+    wordLogprobs.length > 0
+      ? wordLogprobs.reduce((total, value) => total + value, 0) / wordLogprobs.length
+      : null;
+
+  if (!transcript) {
+    return {
+      transcript: "",
+      filteredReason: "caption-cue",
+      speechWordCount: wordLogprobs.length,
+      avgWordLogprob,
+    };
+  }
+
+  if (
+    avgWordLogprob !== null &&
+    wordLogprobs.length >= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS &&
+    avgWordLogprob <= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD
+  ) {
+    return {
+      transcript: "",
+      filteredReason: "low-confidence",
+      speechWordCount: wordLogprobs.length,
+      avgWordLogprob,
+    };
+  }
+
+  return {
+    transcript,
+    filteredReason: null,
+    speechWordCount: wordLogprobs.length,
+    avgWordLogprob,
+  };
+}
+
 function buildVideoChatDispatchMetadata(params: {
   sessionKey: string;
   imageUrl: string;
@@ -1154,6 +1250,7 @@ async function transcribeVideoChatAudio(params: {
   for (let attempt = 1; attempt <= ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS; attempt += 1) {
     const form = new FormData();
     form.append("model_id", ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID);
+    form.append("tag_audio_events", "false");
     form.append(
       "file",
       new Blob([new Uint8Array(audioBuffer)], { type: mimeType ?? "application/octet-stream" }),
@@ -1192,17 +1289,29 @@ async function transcribeVideoChatAudio(params: {
         }
       }
 
-      const transcript = typeof payload?.text === "string" ? payload.text.trim() : "";
-      if (!transcript) {
-        throw new Error("Claw Cast transcription returned no text");
+      const transcriptResult = payload ? parseElevenLabsTranscript(payload) : null;
+      if (!transcriptResult || !transcriptResult.transcript) {
+        logVideoChatEvent(params.logger, "info", "transcription.ignored", {
+          bytes: audioBuffer.length,
+          mimeType: mimeType ?? "application/octet-stream",
+          attempt,
+          reason: transcriptResult?.filteredReason ?? "invalid-payload",
+          speechWordCount: transcriptResult?.speechWordCount ?? 0,
+          avgWordLogprob: transcriptResult?.avgWordLogprob ?? null,
+          transcriptPreview:
+            payload && typeof payload.text === "string" ? truncateForLog(payload.text, 120) : "",
+        });
+        return { transcript: "" };
       }
       logVideoChatEvent(params.logger, "info", "transcription.succeeded", {
         bytes: audioBuffer.length,
         mimeType: mimeType ?? "application/octet-stream",
-        transcriptChars: transcript.length,
+        transcriptChars: transcriptResult.transcript.length,
+        speechWordCount: transcriptResult.speechWordCount,
+        avgWordLogprob: transcriptResult.avgWordLogprob,
         attempt,
       });
-      return { transcript };
+      return { transcript: transcriptResult.transcript };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const networkError =
@@ -1222,6 +1331,54 @@ async function transcribeVideoChatAudio(params: {
   }
 
   throw new Error("Claw Cast transcription failed after retries");
+}
+
+async function createRealtimeVideoChatTranscriptionToken(params: {
+  logger: OpenClawPluginApi["logger"];
+  cfg: OpenClawConfig;
+}): Promise<{ token: string; modelId: string }> {
+  const effectiveConfig = resolveEffectiveVideoChatConfig(params.cfg);
+  const elevenLabsApiKey = normalizeResolvedSecretInputString({
+    value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
+    path: "messages.tts.elevenlabs.apiKey",
+  });
+  if (!elevenLabsApiKey) {
+    throw new Error("Claw Cast realtime transcription is unavailable: missing ElevenLabs API key");
+  }
+
+  logVideoChatEvent(params.logger, "info", "transcription.realtime-token.requested");
+  const response = await fetch(ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "xi-api-key": elevenLabsApiKey,
+    },
+  });
+  const rawBody = await response.text();
+  if (!response.ok) {
+    throw new Error(parseElevenLabsErrorMessage(rawBody, response.status));
+  }
+
+  let payload: Record<string, unknown> | null = null;
+  if (rawBody.trim()) {
+    try {
+      payload = JSON.parse(rawBody) as Record<string, unknown>;
+    } catch {
+      payload = null;
+    }
+  }
+
+  const token = typeof payload?.token === "string" ? payload.token.trim() : "";
+  if (!token) {
+    throw new Error("Claw Cast realtime transcription token request returned no token");
+  }
+
+  logVideoChatEvent(params.logger, "info", "transcription.realtime-token.succeeded", {
+    modelId: ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID,
+  });
+  return {
+    token,
+    modelId: ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID,
+  };
 }
 
 async function generateVideoChatSpeech(params: {
@@ -2487,6 +2644,22 @@ function registerVideoChatHttpRoutes(
             asJsonResponse({
               success: true,
               response: result,
+            }),
+          );
+          return true;
+        }
+
+        if (normalizedPath === "/plugins/video-chat/api/transcribe/token" && method === "POST") {
+          const cfg = api.runtime.config.loadConfig();
+          const result = await createRealtimeVideoChatTranscriptionToken({
+            logger: api.logger,
+            cfg,
+          });
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              ...result,
             }),
           );
           return true;

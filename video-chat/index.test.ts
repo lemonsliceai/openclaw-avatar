@@ -2012,7 +2012,108 @@ describe("video-chat plugin", () => {
     const requestBody = mockFetch.mock.calls[0]?.[1]?.body;
     expect(requestBody).toBeInstanceOf(FormData);
     expect((requestBody as FormData).get("model_id")).toBe("scribe_v1");
+    expect((requestBody as FormData).get("tag_audio_events")).toBe("false");
     expect((requestBody as FormData).get("file")).toBeTruthy();
+  });
+
+  it("strips subtitle timing cues from ElevenLabs transcripts", async () => {
+    const { methods } = setup();
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          text: "00012 00:01:07,348 -- 00:01:10,23\nhello from microphone",
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      ),
+    );
+
+    const respond = await invoke(methods, "videoChat.audio.transcribe", {
+      mimeType: "audio/webm;codecs=opus",
+      data: Buffer.from("audio-bytes").toString("base64"),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
+      "hello from microphone",
+    );
+  });
+
+  it("drops low-confidence hallucinated ElevenLabs transcripts", async () => {
+    const { methods } = setup();
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          text:
+            "So I'm gonna go ahead and get this recording started now so you can hear me talking about the Black Panther Party here at home with us tonight",
+          words: [
+            { type: "word", text: "So", logprob: -1.24 },
+            { type: "word", text: "I'm", logprob: -1.18 },
+            { type: "word", text: "gonna", logprob: -1.31 },
+            { type: "word", text: "go", logprob: -1.09 },
+            { type: "word", text: "ahead", logprob: -1.27 },
+            { type: "word", text: "and", logprob: -1.12 },
+            { type: "word", text: "get", logprob: -1.21 },
+            { type: "word", text: "this", logprob: -1.16 },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      ),
+    );
+
+    const respond = await invoke(methods, "videoChat.audio.transcribe", {
+      mimeType: "audio/webm;codecs=opus",
+      data: Buffer.from("audio-bytes").toString("base64"),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe("");
+  });
+
+  it("mints a realtime transcription token for the browser websocket", async () => {
+    const { httpRoutes } = setup();
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: "rtm_token_123" }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: "/plugins/video-chat/api/transcribe/token",
+      method: "POST",
+    });
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(res.header("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(res.body)).toEqual({
+      success: true,
+      token: "rtm_token_123",
+      modelId: "scribe_v2_realtime",
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          "xi-api-key": "eleven-key",
+        },
+      }),
+    );
   });
 
   it("retries transient ElevenLabs transcription failures", async () => {
