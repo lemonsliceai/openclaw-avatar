@@ -5665,7 +5665,7 @@ function renderChatLog(options = {}) {
     }
   }
 
-  if (chatAwaitingReply) {
+  if (chatAwaitingReply && !hasStreamingAssistantMessage()) {
     chatLogEl.appendChild(createTypingIndicatorGroup());
   }
 
@@ -5691,6 +5691,8 @@ function replaceChatLog(entries) {
       images: hasImages ? entry.images : [],
       timestamp: resolveChatTimestamp(entry.timestamp) ?? Date.now(),
       rawMessage: entry?.rawMessage && typeof entry.rawMessage === "object" ? entry.rawMessage : null,
+      runId: typeof entry?.runId === "string" ? entry.runId : "",
+      streaming: entry?.streaming === true,
     });
   }
   chatAwaitingReply = false;
@@ -5730,12 +5732,109 @@ function appendChatLine(role, textOrMessage, options = {}) {
     images: content.images,
     timestamp: resolveChatTimestamp(options.timestamp) ?? Date.now(),
     rawMessage: options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null,
+    runId: typeof options.runId === "string" ? options.runId : "",
+    streaming: options.streaming === true,
   });
   if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
     chatAwaitingReply = Boolean(options.awaitingReply);
     updateChatControls();
   }
   renderChatLog();
+}
+
+function hasStreamingAssistantMessage() {
+  return chatMessages.some((message) => message?.role === "assistant" && message?.streaming === true);
+}
+
+function findLatestStreamingAssistantMessage(runId = "") {
+  const expectedRunId = typeof runId === "string" ? runId.trim() : "";
+  for (let index = chatMessages.length - 1; index >= 0; index -= 1) {
+    const message = chatMessages[index];
+    if (!message || message.role !== "assistant" || message.streaming !== true) {
+      continue;
+    }
+    if (!expectedRunId || message.runId === expectedRunId) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function upsertStreamingAssistantMessage(textOrMessage, options = {}) {
+  const content =
+    typeof textOrMessage === "string"
+      ? { text: String(textOrMessage), images: [] }
+      : textOrMessage && typeof textOrMessage === "object"
+        ? {
+            text: typeof textOrMessage.text === "string" ? textOrMessage.text : "",
+            images: Array.isArray(textOrMessage.images) ? textOrMessage.images : [],
+          }
+        : { text: "", images: [] };
+  if (!content.text && content.images.length === 0) {
+    return;
+  }
+  const runId = typeof options.runId === "string" ? options.runId.trim() : "";
+  const existing = findLatestStreamingAssistantMessage(runId);
+  if (existing) {
+    existing.text = content.text;
+    existing.images = content.images;
+    existing.timestamp = resolveChatTimestamp(options.timestamp) ?? existing.timestamp ?? Date.now();
+    existing.rawMessage =
+      options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null;
+    renderChatLog();
+    return;
+  }
+  appendChatLine("assistant", content, {
+    timestamp: options.timestamp,
+    rawMessage: options.rawMessage,
+    runId,
+    streaming: true,
+  });
+}
+
+function finalizeStreamingAssistantMessage(textOrMessage, options = {}) {
+  const content =
+    typeof textOrMessage === "string"
+      ? { text: String(textOrMessage), images: [] }
+      : textOrMessage && typeof textOrMessage === "object"
+        ? {
+            text: typeof textOrMessage.text === "string" ? textOrMessage.text : "",
+            images: Array.isArray(textOrMessage.images) ? textOrMessage.images : [],
+          }
+        : { text: "", images: [] };
+  const runId = typeof options.runId === "string" ? options.runId.trim() : "";
+  const existing = findLatestStreamingAssistantMessage(runId);
+  if (existing) {
+    if (content.text || content.images.length > 0) {
+      existing.text = content.text;
+      existing.images = content.images;
+      existing.timestamp = resolveChatTimestamp(options.timestamp) ?? existing.timestamp ?? Date.now();
+      existing.rawMessage =
+        options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null;
+    }
+    existing.streaming = false;
+    if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
+      chatAwaitingReply = Boolean(options.awaitingReply);
+      updateChatControls();
+    }
+    renderChatLog();
+    return true;
+  }
+  if (!content.text && content.images.length === 0) {
+    if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
+      chatAwaitingReply = Boolean(options.awaitingReply);
+      updateChatControls();
+      renderChatLog();
+    }
+    return false;
+  }
+  appendChatLine("assistant", content, {
+    timestamp: options.timestamp,
+    rawMessage: options.rawMessage,
+    runId,
+    awaitingReply: options.awaitingReply,
+  });
+  return true;
 }
 
 function extractAssistantText(message) {
@@ -6045,7 +6144,16 @@ function handleGatewayChatEvent(payload) {
   }
 
   const state = typeof payload.state === "string" ? payload.state : "";
+  const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
   if (state === "delta") {
+    const content = extractChatMessageContent(payload.message);
+    if (content.text || content.images.length > 0) {
+      upsertStreamingAssistantMessage(content, {
+        runId,
+        timestamp: resolveMessageTimestamp(payload.message),
+        rawMessage: payload.message,
+      });
+    }
     setChatAwaitingReply(true);
     setChatStatus("Agent is responding...");
     return;
@@ -6055,16 +6163,14 @@ function handleGatewayChatEvent(payload) {
     if (content.text) {
       rememberRecentAvatarReply(content.text, resolveMessageTimestamp(payload.message));
     }
-    const assistantMessage = content.text || content.images.length > 0 ? content : "[No text in final message]";
-    appendChatLine(
-      "assistant",
-      assistantMessage,
-      {
-        awaitingReply: false,
-        timestamp: resolveMessageTimestamp(payload.message),
-        rawMessage: payload.message,
-      },
-    );
+    const assistantMessage =
+      content.text || content.images.length > 0 ? content : "[No text in final message]";
+    finalizeStreamingAssistantMessage(assistantMessage, {
+      runId,
+      awaitingReply: false,
+      timestamp: resolveMessageTimestamp(payload.message),
+      rawMessage: payload.message,
+    });
     if (!extractMessageUsageMeta(payload.message) && content.text) {
       scheduleAssistantMessageMetadataBackfill({
         sessionKey: expectedSessionKey,
@@ -6079,6 +6185,10 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "error") {
+    finalizeStreamingAssistantMessage("", {
+      runId,
+      awaitingReply: false,
+    });
     clearAvatarInterruptPending({
       forceUnmute: true,
     });
@@ -6089,6 +6199,10 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "aborted") {
+    finalizeStreamingAssistantMessage("", {
+      runId,
+      awaitingReply: false,
+    });
     clearAvatarInterruptPending({
       forceUnmute: true,
     });
