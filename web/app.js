@@ -177,6 +177,7 @@ let serverSpeechRecorderStartPromise = null;
 let serverSpeechRealtimeSocket = null;
 let serverSpeechRealtimeSocketReady = false;
 let serverSpeechRealtimeStopRequested = false;
+const serverSpeechRealtimeSocketsSuppressReconnect = new WeakSet();
 let serverSpeechRealtimeReconnectTimer = null;
 let serverSpeechStartRetryTimer = null;
 let serverSpeechStartRetryCount = 0;
@@ -1900,45 +1901,81 @@ async function handleServerSpeechRealtimeMessage(event) {
 }
 
 function stopServerSpeechTranscription(options = {}) {
-  clearServerSpeechReconnectTimer();
-  clearServerSpeechStartRetryTimer({
-    resetCount: true,
+  cleanupServerSpeechTranscriptionResources({
+    clearReconnectTimer: true,
+    clearStartRetryTimer: true,
+    resetRetryCount: true,
+    clearTokenCache: true,
+    suppressReconnect: true,
+    stopRequested: true,
   });
-  serverSpeechRealtimeStopRequested = true;
+}
+
+function cleanupServerSpeechTranscriptionResources(options = {}) {
+  if (options.clearReconnectTimer) {
+    clearServerSpeechReconnectTimer();
+  }
+  if (options.clearStartRetryTimer) {
+    clearServerSpeechStartRetryTimer({
+      resetCount: options.resetRetryCount === true,
+    });
+  }
+  if (options.clearTokenCache) {
+    clearServerSpeechRealtimeTokenCache();
+  }
+  if (typeof options.stopRequested === "boolean") {
+    serverSpeechRealtimeStopRequested = options.stopRequested;
+  }
   serverSpeechRealtimeSocketReady = false;
-  clearServerSpeechRealtimeTokenCache();
   clearVoiceTranscriptionPending();
-  const socket = serverSpeechRealtimeSocket;
-  serverSpeechRealtimeSocket = null;
-  if (socket && socket.readyState !== WebSocket.CLOSED) {
+  const socket = options.socket ?? serverSpeechRealtimeSocket;
+  if (serverSpeechRealtimeSocket === socket) {
+    serverSpeechRealtimeSocket = null;
+  }
+  if (socket && options.suppressReconnect) {
+    serverSpeechRealtimeSocketsSuppressReconnect.add(socket);
+  }
+  if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
     try {
       socket.close();
     } catch {}
   }
   serverSpeechRecorderLastSpeechAt = 0;
-  if (serverSpeechRecorderProcessorNode) {
-    serverSpeechRecorderProcessorNode.onaudioprocess = null;
+  const processorNode = options.processorNode ?? serverSpeechRecorderProcessorNode;
+  if (processorNode) {
+    processorNode.onaudioprocess = null;
     try {
-      serverSpeechRecorderProcessorNode.disconnect();
+      processorNode.disconnect();
     } catch {}
   }
-  if (serverSpeechRecorderSilenceNode) {
+  const silenceNode = options.silenceNode ?? serverSpeechRecorderSilenceNode;
+  if (silenceNode) {
     try {
-      serverSpeechRecorderSilenceNode.disconnect();
+      silenceNode.disconnect();
     } catch {}
   }
-  if (serverSpeechRecorderSourceNode) {
+  const sourceNode = options.sourceNode ?? serverSpeechRecorderSourceNode;
+  if (sourceNode) {
     try {
-      serverSpeechRecorderSourceNode.disconnect();
+      sourceNode.disconnect();
     } catch {}
   }
-  if (serverSpeechRecorderAudioContext) {
-    void serverSpeechRecorderAudioContext.close().catch(() => {});
+  const audioContext = options.audioContext ?? serverSpeechRecorderAudioContext;
+  if (audioContext) {
+    void audioContext.close().catch(() => {});
   }
-  serverSpeechRecorderAudioContext = null;
-  serverSpeechRecorderSourceNode = null;
-  serverSpeechRecorderProcessorNode = null;
-  serverSpeechRecorderSilenceNode = null;
+  if (serverSpeechRecorderAudioContext === audioContext) {
+    serverSpeechRecorderAudioContext = null;
+  }
+  if (serverSpeechRecorderSourceNode === sourceNode) {
+    serverSpeechRecorderSourceNode = null;
+  }
+  if (serverSpeechRecorderProcessorNode === processorNode) {
+    serverSpeechRecorderProcessorNode = null;
+  }
+  if (serverSpeechRecorderSilenceNode === silenceNode) {
+    serverSpeechRecorderSilenceNode = null;
+  }
   serverSpeechRecorderStartPromise = null;
 }
 
@@ -1952,6 +1989,11 @@ async function startServerSpeechTranscription() {
     return;
   }
   serverSpeechRecorderStartPromise = (async () => {
+    let audioContext = null;
+    let sourceNode = null;
+    let processorNode = null;
+    let silenceNode = null;
+    let socket = null;
     const AudioContextCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
     if (typeof AudioContextCtor !== "function") {
       throw new Error("AudioContext is unavailable for server speech transcription.");
@@ -1961,14 +2003,14 @@ async function startServerSpeechTranscription() {
     const tokenPayload = await getServerSpeechRealtimeToken();
     const token = tokenPayload.token;
     const stream = new MediaStream([mediaStreamTrack]);
-    const audioContext = new AudioContextCtor();
-    const sourceNode = audioContext.createMediaStreamSource(stream);
-    const processorNode = audioContext.createScriptProcessor(
+    audioContext = new AudioContextCtor();
+    sourceNode = audioContext.createMediaStreamSource(stream);
+    processorNode = audioContext.createScriptProcessor(
       ELEVENLABS_REALTIME_TRANSCRIPTION_BUFFER_SIZE,
       1,
       1,
     );
-    const silenceNode = audioContext.createGain();
+    silenceNode = audioContext.createGain();
     silenceNode.gain.value = 0;
     processorNode.connect(silenceNode);
     silenceNode.connect(audioContext.destination);
@@ -1976,7 +2018,7 @@ async function startServerSpeechTranscription() {
       await audioContext.resume();
     } catch {}
     const socketUrl = buildServerSpeechRealtimeSocketUrl(token, tokenPayload?.modelId);
-    const socket = new WebSocket(socketUrl);
+    socket = new WebSocket(socketUrl);
 
     processorNode.onaudioprocess = (event) => {
       if (!serverSpeechRealtimeSocketReady || socket.readyState !== WebSocket.OPEN) {
@@ -2022,11 +2064,17 @@ async function startServerSpeechTranscription() {
       });
     });
     socket.addEventListener("close", (event) => {
-      const intentionalStop = serverSpeechRealtimeStopRequested;
-      serverSpeechRealtimeSocketReady = false;
-      if (serverSpeechRealtimeSocket === socket) {
-        serverSpeechRealtimeSocket = null;
-      }
+      const suppressReconnect = serverSpeechRealtimeSocketsSuppressReconnect.has(socket);
+      serverSpeechRealtimeSocketsSuppressReconnect.delete(socket);
+      const intentionalStop = serverSpeechRealtimeStopRequested || suppressReconnect;
+      cleanupServerSpeechTranscriptionResources({
+        socket,
+        audioContext,
+        sourceNode,
+        processorNode,
+        silenceNode,
+        stopRequested: intentionalStop,
+      });
       if (intentionalStop || !shouldRunVoiceTranscription() || shouldPreferBrowserSpeechRecognition()) {
         return;
       }
@@ -2047,6 +2095,20 @@ async function startServerSpeechTranscription() {
     void prefetchServerSpeechRealtimeToken().catch(() => {});
   })()
     .catch((error) => {
+      const intentionalStop = serverSpeechRealtimeStopRequested;
+      cleanupServerSpeechTranscriptionResources({
+        socket,
+        audioContext,
+        sourceNode,
+        processorNode,
+        silenceNode,
+        suppressReconnect: true,
+        stopRequested: true,
+      });
+      if (intentionalStop) {
+        return;
+      }
+      serverSpeechRealtimeStopRequested = false;
       reportServerSpeechTranscriptionFailure("server-speech-recorder-start-failed", error);
       scheduleServerSpeechStartRetry("server-speech-recorder-start-failed");
     })
@@ -5684,7 +5746,7 @@ function handleAvatarInterruptAcknowledged(payload) {
 function handleAvatarControlMessage(payload) {
   const expectedSessionKey = resolveChatSessionKey();
   const payloadSessionKey = typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
-  if (expectedSessionKey && payloadSessionKey && payloadSessionKey !== expectedSessionKey) {
+  if (!expectedSessionKey || !payloadSessionKey || payloadSessionKey !== expectedSessionKey) {
     return;
   }
   handleAvatarInterruptAcknowledged(payload);

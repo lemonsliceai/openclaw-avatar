@@ -2347,7 +2347,7 @@ function registerVideoChatHttpRoutes(
             const session = await handlers.createSession({
               config: cfg,
               sessionKey,
-              interruptReplyOnNewMessage: params.interruptReplyOnNewMessage,
+              interruptReplyOnNewMessage,
             });
             logVideoChatEvent(api.logger, "info", "http.session.create.completed", {
               sessionKey: session.sessionKey,
@@ -4735,11 +4735,12 @@ const videoChatPlugin = {
             (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
             cfg.session?.mainKey ||
             "main";
+          const interruptReplyOnNewMessage = params.interruptReplyOnNewMessage ?? true;
 
           const payload = await createManagedSession({
             config: cfg,
             sessionKey,
-            interruptReplyOnNewMessage: params.interruptReplyOnNewMessage,
+            interruptReplyOnNewMessage,
           });
           respond(true, payload);
         } catch (error) {
