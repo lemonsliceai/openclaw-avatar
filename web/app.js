@@ -5746,6 +5746,18 @@ function hasStreamingAssistantMessage() {
   return chatMessages.some((message) => message?.role === "assistant" && message?.streaming === true);
 }
 
+function clearStreamingAssistantMessages() {
+  let changed = false;
+  for (const message of chatMessages) {
+    if (!message || message.role !== "assistant" || message.streaming !== true) {
+      continue;
+    }
+    message.streaming = false;
+    changed = true;
+  }
+  return changed;
+}
+
 function findLatestStreamingAssistantMessage(runId = "") {
   const expectedRunId = typeof runId === "string" ? runId.trim() : "";
   for (let index = chatMessages.length - 1; index >= 0; index -= 1) {
@@ -5776,8 +5788,11 @@ function upsertStreamingAssistantMessage(textOrMessage, options = {}) {
   const runId = typeof options.runId === "string" ? options.runId.trim() : "";
   const existing = findLatestStreamingAssistantMessage(runId);
   if (existing) {
-    existing.text = content.text;
-    existing.images = content.images;
+    const isDelta = options.state === "delta";
+    existing.text = isDelta ? `${existing.text ?? ""}${content.text}` : content.text;
+    if (!isDelta) {
+      existing.images = content.images;
+    }
     existing.timestamp = resolveChatTimestamp(options.timestamp) ?? existing.timestamp ?? Date.now();
     existing.rawMessage =
       options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null;
@@ -6101,6 +6116,7 @@ function closeGatewaySocket(reason) {
   gatewaySocketReady = false;
   gatewayConnectRequestId = null;
   chatAwaitingReply = false;
+  clearStreamingAssistantMessages();
   clearAvatarInterruptPending({
     forceUnmute: true,
   });
@@ -6149,6 +6165,7 @@ function handleGatewayChatEvent(payload) {
     const content = extractChatMessageContent(payload.message);
     if (content.text || content.images.length > 0) {
       upsertStreamingAssistantMessage(content, {
+        state,
         runId,
         timestamp: resolveMessageTimestamp(payload.message),
         rawMessage: payload.message,
@@ -6160,21 +6177,27 @@ function handleGatewayChatEvent(payload) {
   }
   if (state === "final") {
     const content = extractChatMessageContent(payload.message);
+    const streamingBubble = findLatestStreamingAssistantMessage(runId);
+    const hasStreamingBubble = Boolean(streamingBubble);
     if (content.text) {
       rememberRecentAvatarReply(content.text, resolveMessageTimestamp(payload.message));
     }
     const assistantMessage =
-      content.text || content.images.length > 0 ? content : "[No text in final message]";
+      !hasStreamingBubble && !content.text && content.images.length === 0
+        ? "[No text in final message]"
+        : content;
     finalizeStreamingAssistantMessage(assistantMessage, {
       runId,
       awaitingReply: false,
       timestamp: resolveMessageTimestamp(payload.message),
       rawMessage: payload.message,
     });
-    if (!extractMessageUsageMeta(payload.message) && content.text) {
+    const resolvedAssistantText =
+      content.text || (hasStreamingBubble && typeof streamingBubble?.text === "string" ? streamingBubble.text : "");
+    if (!extractMessageUsageMeta(payload.message) && resolvedAssistantText) {
       scheduleAssistantMessageMetadataBackfill({
         sessionKey: expectedSessionKey,
-        text: content.text,
+        text: resolvedAssistantText,
         timestamp: resolveMessageTimestamp(payload.message),
       });
     }
@@ -6358,6 +6381,7 @@ async function ensureGatewaySocketConnected() {
       gatewaySocketReady = false;
       gatewayConnectRequestId = null;
       chatAwaitingReply = false;
+      clearStreamingAssistantMessages();
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
       renderChatLog({ scrollToBottom: false });
       setChatStatus("Chat disconnected.");

@@ -13,6 +13,7 @@ export class GatewayWsClient {
   });
   start(): Promise<unknown>;
   stop(): void;
+  request(method: string, params: unknown): Promise<unknown>;
 }
 
 export function computeStreamingTextDelta(

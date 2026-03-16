@@ -190,6 +190,14 @@ describe("computeStreamingTextDelta", () => {
     expect(computeStreamingTextDelta("Hello there", "")).toBe("Hello there");
   });
 
+  it("returns an empty delta when the chunk is unchanged", () => {
+    expect(computeStreamingTextDelta("same", "same")).toBe("");
+  });
+
+  it("returns an empty delta when the next chunk is empty", () => {
+    expect(computeStreamingTextDelta("", "prefix")).toBe("");
+  });
+
   it("returns null when the next chunk is not a monotonic prefix extension", () => {
     expect(computeStreamingTextDelta("Hello world", "Hi")).toBeNull();
   });

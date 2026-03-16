@@ -813,8 +813,34 @@ async function runVideoChatAgentEntry(ctx) {
     const deltaText = computeStreamingTextDelta(normalizedText, reply.streamedText);
     if (deltaText === null) {
       console.warn(
-        `[video-chat-agent] gateway reply delta reset ignored${reply.runId ? ` run=${reply.runId}` : ""}`,
+        `[video-chat-agent] gateway reply delta reset recovered${reply.runId ? ` run=${reply.runId}` : ""}`,
       );
+      reply.streamedText = "";
+      reply.flushedTextLength = 0;
+      if (normalizedText) {
+        reply.controller?.enqueue(normalizedText);
+        reply.ttsStream.pushText(normalizedText);
+      }
+      reply.streamedText = normalizedText;
+      const unflushedTextLength = reply.streamedText.length - reply.flushedTextLength;
+      if (shouldFlushGatewaySpeechDelta(normalizedText, unflushedTextLength, close)) {
+        reply.ttsStream.flush();
+        reply.flushedTextLength = reply.streamedText.length;
+        emitParentDebug("speech.flush", {
+          sessionKey: metadata.sessionKey,
+          roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+          runId: reply.runId,
+          flushedTextLength: reply.flushedTextLength,
+        });
+      }
+      emitParentDebug("speech.delta", {
+        sessionKey: metadata.sessionKey,
+        roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+        runId: reply.runId,
+        textLength: normalizedText.length,
+        deltaLength: normalizedText.length,
+        reset: true,
+      });
     } else if (deltaText) {
       reply.controller?.enqueue(deltaText);
       reply.ttsStream.pushText(deltaText);
@@ -1017,9 +1043,6 @@ async function runVideoChatAgentEntry(ctx) {
           return;
         }
         if (payloadState === "final") {
-          if (!text) {
-            return;
-          }
           if (runId && spokenRuns.has(runId) && activeGatewaySpeech?.runKey !== normalizeGatewayRunKey(runId)) {
             return;
           }
