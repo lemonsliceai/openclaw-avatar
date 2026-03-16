@@ -687,18 +687,60 @@ async function runVideoChatAgentEntry(ctx) {
 
   const spokenRuns = new Set();
   const runProcessingQueues = new Map();
+  let speechProcessingQueue = Promise.resolve();
   let gatewayClient = null;
   let activeGatewaySpeech = null;
   const interruptReplyOnNewMessage = metadata.interruptReplyOnNewMessage === true;
 
-  const emitGatewaySpeechFlush = (reply) => {
-    reply.ttsStream.flush();
-    reply.flushedTextLength = reply.streamedText.length;
+  const buildGatewaySpeechDebugContext = (runId = "") => ({
+    sessionKey: metadata.sessionKey,
+    roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+    runId,
+  });
+
+  const logGatewaySpeechCleanupError = (operation, runId, error) => {
+    const errorMessage = error instanceof Error ? error.stack ?? error.message : String(error);
+    console.error(
+      `[video-chat-agent] failed to ${operation}${runId ? ` run=${runId}` : ""}: ${errorMessage}`,
+    );
+    emitParentDebug("speech.cleanup.failed", {
+      ...buildGatewaySpeechDebugContext(runId),
+      operation,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+
+  const runGatewaySpeechCleanupStep = async (operation, runId, action) => {
+    try {
+      return await action();
+    } catch (error) {
+      logGatewaySpeechCleanupError(operation, runId, error);
+      return undefined;
+    }
+  };
+
+  const queueSpeechProcessing = (action) => {
+    const next = speechProcessingQueue.catch(() => {}).then(action);
+    const cleanup = next.catch(() => {}).finally(() => {
+      if (speechProcessingQueue === cleanup) {
+        speechProcessingQueue = Promise.resolve();
+      }
+    });
+    speechProcessingQueue = cleanup;
+    return next;
+  };
+
+  const emitGatewaySpeechFlush = async (reply) => {
+    const runId = typeof reply?.runId === "string" ? reply.runId : "";
+    const flushedTextLength =
+      reply && typeof reply.streamedText === "string" ? reply.streamedText.length : 0;
+    await runGatewaySpeechCleanupStep("flush gateway speech", runId, () => reply.ttsStream.flush());
+    reply.flushedTextLength = flushedTextLength;
     emitParentDebug("speech.flush", {
       sessionKey: metadata.sessionKey,
       roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
-      runId: reply.runId,
-      flushedTextLength: reply.flushedTextLength,
+      runId,
+      flushedTextLength,
     });
   };
 
@@ -710,21 +752,29 @@ async function runVideoChatAgentEntry(ctx) {
     }
     if (activeGatewaySpeech) {
       activeGatewaySpeech.closed = true;
-      try {
-        activeGatewaySpeech.controller.close();
-      } catch {}
-      try {
-        await activeGatewaySpeech.ttsStream.close();
-      } catch {}
-      try {
-        await session.interrupt({ force: true }).await;
-      } catch {}
+      await runGatewaySpeechCleanupStep(
+        "close active gateway speech controller",
+        activeGatewaySpeech.runId,
+        () => activeGatewaySpeech.controller?.close(),
+      );
+      await runGatewaySpeechCleanupStep(
+        "close active gateway speech stream",
+        activeGatewaySpeech.runId,
+        () => activeGatewaySpeech.ttsStream.close(),
+      );
+      await runGatewaySpeechCleanupStep(
+        "interrupt session for active gateway speech",
+        activeGatewaySpeech.runId,
+        () => session.interrupt({ force: true }).await,
+      );
       activeGatewaySpeech = null;
     }
     if (interruptReplyOnNewMessage) {
-      try {
-        await session.interrupt({ force: true }).await;
-      } catch {}
+      await runGatewaySpeechCleanupStep(
+        "interrupt session before new gateway speech",
+        normalizedRunId,
+        () => session.interrupt({ force: true }).await,
+      );
     }
 
     let controllerRef = null;
@@ -838,7 +888,7 @@ async function runVideoChatAgentEntry(ctx) {
       reply.streamedText = normalizedText;
       const unflushedTextLength = reply.streamedText.length - reply.flushedTextLength;
       if (shouldFlushGatewaySpeechDelta(normalizedText, unflushedTextLength, close)) {
-        emitGatewaySpeechFlush(reply);
+        await emitGatewaySpeechFlush(reply);
       }
       emitParentDebug("speech.delta", {
         sessionKey: metadata.sessionKey,
@@ -854,7 +904,7 @@ async function runVideoChatAgentEntry(ctx) {
       reply.streamedText = normalizedText;
       const unflushedTextLength = reply.streamedText.length - reply.flushedTextLength;
       if (shouldFlushGatewaySpeechDelta(deltaText, unflushedTextLength, close)) {
-        emitGatewaySpeechFlush(reply);
+        await emitGatewaySpeechFlush(reply);
       }
       emitParentDebug("speech.delta", {
         sessionKey: metadata.sessionKey,
@@ -865,16 +915,16 @@ async function runVideoChatAgentEntry(ctx) {
       });
     }
     if (close && reply.flushedTextLength < reply.streamedText.length) {
-      emitGatewaySpeechFlush(reply);
+      await emitGatewaySpeechFlush(reply);
     }
     if (close && !reply.closed) {
       reply.closed = true;
-      try {
-        reply.controller?.close();
-      } catch {}
-      try {
-        reply.ttsStream.endInput();
-      } catch {}
+      await runGatewaySpeechCleanupStep("close gateway speech controller", reply.runId, () =>
+        reply.controller?.close(),
+      );
+      await runGatewaySpeechCleanupStep("end gateway speech input", reply.runId, () =>
+        reply.ttsStream.endInput(),
+      );
       spokenRuns.add(reply.runKey);
     }
   };
@@ -885,15 +935,21 @@ async function runVideoChatAgentEntry(ctx) {
       return;
     }
     activeGatewaySpeech.closed = true;
-    try {
-      activeGatewaySpeech.controller?.close();
-    } catch {}
-    try {
-      await activeGatewaySpeech.ttsStream.close();
-    } catch {}
-    try {
-      await session.interrupt({ force: true }).await;
-    } catch {}
+    await runGatewaySpeechCleanupStep(
+      "close gateway speech controller",
+      activeGatewaySpeech.runId,
+      () => activeGatewaySpeech.controller?.close(),
+    );
+    await runGatewaySpeechCleanupStep(
+      "close gateway speech stream",
+      activeGatewaySpeech.runId,
+      () => activeGatewaySpeech.ttsStream.close(),
+    );
+    await runGatewaySpeechCleanupStep(
+      "interrupt session for stopped gateway speech",
+      activeGatewaySpeech.runId,
+      () => session.interrupt({ force: true }).await,
+    );
     activeGatewaySpeech = null;
   };
 
@@ -919,22 +975,29 @@ async function runVideoChatAgentEntry(ctx) {
         return;
       }
       const text = extractTextFromMessage(payload.message);
-      if (payloadState === "delta") {
-        if (!text || spokenRuns.has(normalizedRunKey)) {
-          return;
-        }
-        await pushGatewaySpeechUpdate(runId, text);
-        return;
-      }
-      if (payloadState === "final") {
-        if (spokenRuns.has(normalizedRunKey) && activeGatewaySpeech?.runKey !== normalizedRunKey) {
-          return;
-        }
-        await pushGatewaySpeechUpdate(runId, text, { close: true });
-        return;
-      }
-      if (payloadState === "aborted" || payloadState === "error") {
-        await stopGatewaySpeech(runId);
+      if (
+        payloadState === "delta" ||
+        payloadState === "final" ||
+        payloadState === "aborted" ||
+        payloadState === "error"
+      ) {
+        await queueSpeechProcessing(async () => {
+          if (payloadState === "delta") {
+            if (!text || spokenRuns.has(normalizedRunKey)) {
+              return;
+            }
+            await pushGatewaySpeechUpdate(runId, text);
+            return;
+          }
+          if (payloadState === "final") {
+            if (spokenRuns.has(normalizedRunKey) && activeGatewaySpeech?.runKey !== normalizedRunKey) {
+              return;
+            }
+            await pushGatewaySpeechUpdate(runId, text, { close: true });
+            return;
+          }
+          await stopGatewaySpeech(runId);
+        });
       }
     } catch (error) {
       console.error(

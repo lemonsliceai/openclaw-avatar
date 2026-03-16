@@ -769,6 +769,17 @@ function resolveChatContentTextParts(content) {
     .filter(Boolean);
 }
 
+function resolveStreamingChatContentTextParts(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content
+    .filter((item) => item && typeof item === "object")
+    .filter((item) => item.type === "text" || item.type === "input_text" || item.type === "output_text")
+    .map((item) => (typeof item.text === "string" ? item.text : ""))
+    .filter((item) => typeof item === "string");
+}
+
 function buildDataUrlFromImageSource(source) {
   if (!source || typeof source !== "object") {
     return "";
@@ -857,6 +868,60 @@ function extractChatMessageContent(message) {
   }
   if (!text && typeof message.text === "string" && message.text.trim()) {
     text = message.text.trim();
+  }
+
+  return { text, images };
+}
+
+function extractStreamingChatMessageContent(message) {
+  if (typeof message === "string") {
+    return { text: message, images: [] };
+  }
+  if (!message || typeof message !== "object") {
+    return { text: "", images: [] };
+  }
+
+  const textParts = resolveStreamingChatContentTextParts(message.content);
+  const images =
+    Array.isArray(message.content)
+      ? message.content
+          .filter((item) => item && typeof item === "object")
+          .map((item) => {
+            const type = typeof item.type === "string" ? item.type.trim() : "";
+            if (
+              type !== "input_image" &&
+              type !== "image" &&
+              type !== "image_url" &&
+              !item.image_url &&
+              !item.imageUrl &&
+              !item.source &&
+              !item.url
+            ) {
+              return null;
+            }
+            const url = resolveChatImageUrl(item);
+            if (!url) {
+              return null;
+            }
+            return {
+              url,
+              alt:
+                typeof item.alt === "string" && item.alt.trim()
+                  ? item.alt.trim()
+                  : typeof item.name === "string" && item.name.trim()
+                    ? item.name.trim()
+                    : "Pasted image",
+            };
+          })
+          .filter(Boolean)
+      : [];
+
+  let text = textParts.join("");
+  if (!text && typeof message.content === "string") {
+    text = message.content;
+  }
+  if (!text && typeof message.text === "string") {
+    text = message.text;
   }
 
   return { text, images };
@@ -6192,7 +6257,7 @@ function handleGatewayChatEvent(payload) {
   const state = typeof payload.state === "string" ? payload.state : "";
   const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
   if (state === "delta") {
-    const content = extractChatMessageContent(payload.message);
+    const content = extractStreamingChatMessageContent(payload.message);
     if (content.text || content.images.length > 0) {
       upsertStreamingAssistantMessage(content, {
         state,
@@ -6209,8 +6274,10 @@ function handleGatewayChatEvent(payload) {
     const content = extractChatMessageContent(payload.message);
     const streamingBubble = findLatestStreamingAssistantMessage(runId);
     const hasStreamingBubble = Boolean(streamingBubble);
-    if (content.text) {
-      rememberRecentAvatarReply(content.text, resolveMessageTimestamp(payload.message));
+    const resolvedAssistantText =
+      content.text || (hasStreamingBubble && typeof streamingBubble?.text === "string" ? streamingBubble.text : "");
+    if (resolvedAssistantText) {
+      rememberRecentAvatarReply(resolvedAssistantText, resolveMessageTimestamp(payload.message));
     }
     const assistantMessage =
       !hasStreamingBubble && !content.text && content.images.length === 0
@@ -6222,8 +6289,6 @@ function handleGatewayChatEvent(payload) {
       timestamp: resolveMessageTimestamp(payload.message),
       rawMessage: payload.message,
     });
-    const resolvedAssistantText =
-      content.text || (hasStreamingBubble && typeof streamingBubble?.text === "string" ? streamingBubble.text : "");
     if (!extractMessageUsageMeta(payload.message) && resolvedAssistantText) {
       scheduleAssistantMessageMetadataBackfill({
         sessionKey: expectedSessionKey,
