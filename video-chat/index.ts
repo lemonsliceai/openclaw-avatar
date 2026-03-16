@@ -30,6 +30,7 @@ const VIDEO_CHAT_ROOM_PREFIX = "openclaw";
 const VIDEO_CHAT_ROOM_PART_FALLBACK = "main";
 const VIDEO_CHAT_ROOM_PART_MAX_LENGTH = 48;
 const VIDEO_CHAT_AGENT_NAME = "openclaw-video-chat";
+const VIDEO_CHAT_SIDECAR_AGENT_NAME_ENV = "OPENCLAW_VIDEO_CHAT_AGENT_NAME";
 const VIDEO_CHAT_PLUGIN_ID = "video-chat";
 const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.11";
 const VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
@@ -82,9 +83,38 @@ type VideoChatSessionResult = {
   interruptReplyOnNewMessage: boolean;
 };
 
+type VideoChatAgentDispatchResult = {
+  id: string;
+  room: string;
+  agentName: string;
+};
+
+type VideoChatSessionRuntimeStatus = {
+  roomName: string;
+  createdAt: number;
+  updatedAt: number;
+  jobId?: string;
+  jobAcceptedAt?: number;
+  agentSessionConnectedAt?: number;
+  agentSessionOutputAudioSink?: string;
+  avatarStartBeginAt?: number;
+  avatarStartConnectedAt?: number;
+  avatarOutputAudioSink?: string;
+  avatarParticipantIdentity?: string;
+  gatewayChatFinalAt?: number;
+  speechBeginAt?: number;
+  speechFinishedAt?: number;
+  speechFailedAt?: number;
+  speechError?: string;
+};
+
 type VideoChatSessionStopResult = {
   stopped: true;
   roomName: string;
+};
+
+type VideoChatLogger = Pick<OpenClawPluginApi["logger"], "info" | "warn" | "error"> & {
+  debug?: (message: string) => void;
 };
 
 type SidecarCredentials = {
@@ -98,6 +128,8 @@ type SidecarCredentials = {
 };
 
 type VideoChatAgentSidecar = {
+  agentName: string;
+  configFingerprint: string | null;
   isRunning: () => boolean;
   waitForReady: () => Promise<void>;
   stop: () => Promise<void>;
@@ -155,8 +187,11 @@ type VideoChatSessionHandlers = {
     interruptReplyOnNewMessage?: boolean;
   }) => Promise<VideoChatSessionResult>;
   stopSession: (params: { roomName: string }) => Promise<VideoChatSessionStopResult>;
-  restartSidecar: (params: { config: OpenClawConfig }) => Promise<{ restarted: boolean }>;
-  stopSidecar: () => Promise<{ stopped: boolean }>;
+  loadSessionStatus: (params: {
+    roomName: string;
+  }) => Promise<VideoChatSessionRuntimeStatus | null> | VideoChatSessionRuntimeStatus | null;
+  restartSidecar: (params: { config: OpenClawConfig; reason?: string }) => Promise<{ restarted: boolean }>;
+  stopSidecar: (params?: { reason?: string }) => Promise<{ stopped: boolean }>;
 };
 
 type VideoChatChatAttachmentInput = {
@@ -221,6 +256,119 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function summarizeIdempotencyKeyForLog(value: unknown): {
+  idempotencyKeyPresent: boolean;
+  idempotencyKeyDigest?: string;
+} {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return {
+      idempotencyKeyPresent: false,
+    };
+  }
+  return {
+    idempotencyKeyPresent: true,
+    idempotencyKeyDigest: createHmac("sha256", VIDEO_CHAT_PLUGIN_ID)
+      .update(normalized)
+      .digest("hex")
+      .slice(0, 12),
+  };
+}
+
+function cloneConfigSnapshot(config: OpenClawConfig): OpenClawConfig {
+  if (typeof structuredClone === "function") {
+    return structuredClone(config);
+  }
+  return JSON.parse(JSON.stringify(config)) as OpenClawConfig;
+}
+
+function formatLogValue(value: unknown): string {
+  if (value === undefined) {
+    return "undefined";
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    const compact = normalized.length > 140 ? `${normalized.slice(0, 137)}...` : normalized;
+    return JSON.stringify(compact);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => formatLogValue(item)).join(",")}]`;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatLogFields(fields: Record<string, unknown>): string {
+  return Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${formatLogValue(value)}`)
+    .join(" ");
+}
+
+function logVideoChatEvent(
+  logger: VideoChatLogger,
+  level: "debug" | "info" | "warn" | "error",
+  event: string,
+  fields: Record<string, unknown> = {},
+): void {
+  const suffix = formatLogFields(fields);
+  const message = `[video-chat] ${event}${suffix ? ` ${suffix}` : ""}`;
+  if (level === "debug") {
+    if (typeof logger.debug === "function") {
+      logger.debug(message);
+    }
+    return;
+  }
+  logger[level](message);
+}
+
+function parseVideoChatDebugFieldValue(rawValue: string): unknown {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.startsWith('"')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed;
+    }
+  }
+  if (trimmed === "true") {
+    return true;
+  }
+  if (trimmed === "false") {
+    return false;
+  }
+  if (trimmed === "null") {
+    return null;
+  }
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric) && /^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+    return numeric;
+  }
+  return trimmed;
+}
+
+function parseVideoChatDebugFields(rawFields: string): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  const matcher = /([A-Za-z][A-Za-z0-9]*)=("(?:\\.|[^"])*"|true|false|null|-?\d+(?:\.\d+)?|[^\s]+)/g;
+  for (const match of rawFields.matchAll(matcher)) {
+    const [, key, rawValue] = match;
+    fields[key] = parseVideoChatDebugFieldValue(rawValue);
+  }
+  return fields;
 }
 
 function parseVersionSegments(value: unknown): number[] | null {
@@ -998,6 +1146,10 @@ async function transcribeVideoChatAudio(params: {
 
   const mimeType = normalizeMimeType(params.mimeType);
   const fileName = `input${extensionForAudioMimeType(mimeType)}`;
+  logVideoChatEvent(params.logger, "info", "transcription.requested", {
+    bytes: audioBuffer.length,
+    mimeType: mimeType ?? "application/octet-stream",
+  });
 
   for (let attempt = 1; attempt <= ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS; attempt += 1) {
     const form = new FormData();
@@ -1044,6 +1196,12 @@ async function transcribeVideoChatAudio(params: {
       if (!transcript) {
         throw new Error("Claw Cast transcription returned no text");
       }
+      logVideoChatEvent(params.logger, "info", "transcription.succeeded", {
+        bytes: audioBuffer.length,
+        mimeType: mimeType ?? "application/octet-stream",
+        transcriptChars: transcript.length,
+        attempt,
+      });
       return { transcript };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1370,15 +1528,19 @@ function withNoStoreHeaders(payload: HttpResponsePayload): HttpResponsePayload {
   };
 }
 
-function parseRequestPathname(urlValue: string | undefined): string | null {
+function parseRequestUrl(urlValue: string | undefined): URL | null {
   if (!urlValue) {
     return null;
   }
   try {
-    return new URL(urlValue, "http://127.0.0.1").pathname;
+    return new URL(urlValue, "http://127.0.0.1");
   } catch {
     return null;
   }
+}
+
+function parseRequestPathname(urlValue: string | undefined): string | null {
+  return parseRequestUrl(urlValue)?.pathname ?? null;
 }
 
 async function resolveExistingDirectory(candidates: string[]): Promise<string | null> {
@@ -2161,10 +2323,19 @@ function registerVideoChatHttpRoutes(
               (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
               cfg.session?.mainKey ||
               "main";
+            logVideoChatEvent(api.logger, "info", "http.session.create.requested", {
+              sessionKey,
+              interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+            });
             const session = await handlers.createSession({
               config: cfg,
               sessionKey,
               interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+            });
+            logVideoChatEvent(api.logger, "info", "http.session.create.completed", {
+              sessionKey: session.sessionKey,
+              roomName: session.roomName,
+              chatSessionKey: session.chatSessionKey,
             });
             sendHttpResponse(
               res,
@@ -2188,13 +2359,44 @@ function registerVideoChatHttpRoutes(
           return true;
         }
 
+        if (normalizedPath === "/plugins/video-chat/api/session/status" && method === "GET") {
+          const requestUrl = parseRequestUrl(req.url);
+          const roomName = normalizeOptionalString(requestUrl?.searchParams.get("roomName"));
+          if (!roomName) {
+            throw new Error("roomName is required");
+          }
+          logVideoChatEvent(api.logger, "info", "http.session.status.requested", {
+            roomName,
+          });
+          const status = await handlers.loadSessionStatus({ roomName });
+          logVideoChatEvent(api.logger, "info", "http.session.status.completed", {
+            roomName,
+            found: Boolean(status),
+            updatedAt: status?.updatedAt,
+          });
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              status,
+            }),
+          );
+          return true;
+        }
+
         if (normalizedPath === "/plugins/video-chat/api/session/stop" && method === "POST") {
           const params = await readRequestJson(req);
           if (typeof params.roomName !== "string") {
             throw new Error("invalid videoChat.session.stop params");
           }
+          logVideoChatEvent(api.logger, "info", "http.session.stop.requested", {
+            roomName: params.roomName,
+          });
           const result = await handlers.stopSession({
             roomName: params.roomName,
+          });
+          logVideoChatEvent(api.logger, "info", "http.session.stop.completed", {
+            roomName: result.roomName,
           });
           sendHttpResponse(
             res,
@@ -2208,7 +2410,14 @@ function registerVideoChatHttpRoutes(
 
         if (normalizedPath === "/plugins/video-chat/api/sidecar/restart" && method === "POST") {
           const cfg = api.runtime.config.loadConfig();
-          const result = await handlers.restartSidecar({ config: cfg });
+          logVideoChatEvent(api.logger, "info", "http.sidecar.restart.requested");
+          const result = await handlers.restartSidecar({
+            config: cfg,
+            reason: "http-sidecar-restart",
+          });
+          logVideoChatEvent(api.logger, "info", "http.sidecar.restart.completed", {
+            restarted: result.restarted,
+          });
           sendHttpResponse(
             res,
             asJsonResponse({
@@ -2220,7 +2429,13 @@ function registerVideoChatHttpRoutes(
         }
 
         if (normalizedPath === "/plugins/video-chat/api/sidecar/stop" && method === "POST") {
-          const result = await handlers.stopSidecar();
+          logVideoChatEvent(api.logger, "info", "http.sidecar.stop.requested");
+          const result = await handlers.stopSidecar({
+            reason: "http-sidecar-stop",
+          });
+          logVideoChatEvent(api.logger, "info", "http.sidecar.stop.completed", {
+            stopped: result.stopped,
+          });
           sendHttpResponse(
             res,
             asJsonResponse({
@@ -2232,7 +2447,16 @@ function registerVideoChatHttpRoutes(
         }
 
         if (normalizedPath === "/plugins/video-chat/api/chat/history" && method === "POST") {
-          const result = await handlers.loadHistory(await readChatHistoryParams(req));
+          const params = await readChatHistoryParams(req);
+          logVideoChatEvent(api.logger, "info", "http.chat.history.requested", {
+            sessionKey: params.sessionKey,
+            limit: params.limit ?? 30,
+          });
+          const result = await handlers.loadHistory(params);
+          logVideoChatEvent(api.logger, "info", "http.chat.history.completed", {
+            sessionKey: params.sessionKey,
+            messageCount: Array.isArray(result.messages) ? result.messages.length : 0,
+          });
           sendHttpResponse(
             res,
             asJsonResponse({
@@ -2244,7 +2468,20 @@ function registerVideoChatHttpRoutes(
         }
 
         if (normalizedPath === "/plugins/video-chat/api/chat/send" && method === "POST") {
-          const result = await handlers.sendMessage(await readChatSendParams(req));
+          const params = await readChatSendParams(req);
+          logVideoChatEvent(api.logger, "info", "http.chat.send.requested", {
+            sessionKey: params.sessionKey,
+            messageChars: params.message.length,
+            attachmentCount: params.attachments?.length ?? 0,
+            ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
+          });
+          const result = await handlers.sendMessage(params);
+          logVideoChatEvent(api.logger, "info", "http.chat.send.completed", {
+            sessionKey: params.sessionKey,
+            messageChars: params.message.length,
+            attachmentCount: params.attachments?.length ?? 0,
+            ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
+          });
           sendHttpResponse(
             res,
             asJsonResponse({
@@ -2264,12 +2501,22 @@ function registerVideoChatHttpRoutes(
             throw new Error("invalid videoChat.audio.transcribe params");
           }
           const cfg = api.runtime.config.loadConfig();
+          const base64Length = params.data.length;
+          logVideoChatEvent(api.logger, "info", "http.transcribe.requested", {
+            mimeType: params.mimeType ?? "application/octet-stream",
+            base64Chars: base64Length,
+          });
           const result = await transcribeVideoChatAudio({
             runtime: api.runtime,
             logger: api.logger,
             cfg,
             base64Data: params.data,
             mimeType: params.mimeType,
+          });
+          logVideoChatEvent(api.logger, "info", "http.transcribe.completed", {
+            mimeType: params.mimeType ?? "application/octet-stream",
+            base64Chars: base64Length,
+            transcriptChars: result.transcript.length,
           });
           sendHttpResponse(
             res,
@@ -2311,6 +2558,12 @@ function registerVideoChatHttpRoutes(
           message.includes("invalid ") || message.endsWith(" is required")
             ? "INVALID_REQUEST"
             : "UNAVAILABLE";
+        logVideoChatEvent(api.logger, code === "INVALID_REQUEST" ? "warn" : "error", "http.request.failed", {
+          method,
+          path: normalizedPath,
+          code,
+          error: message,
+        });
         sendHttpResponse(
           res,
           asJsonResponse(
@@ -2520,6 +2773,13 @@ function buildSidecarInstanceArg(gateway: SidecarGatewayRuntime): string {
   return `${VIDEO_CHAT_SIDECAR_INSTANCE_ARG_PREFIX}gateway-port-${gateway.port}`;
 }
 
+function buildSidecarAgentName(params: {
+  gateway: SidecarGatewayRuntime;
+  generation: number;
+}): string {
+  return `${VIDEO_CHAT_AGENT_NAME}-${params.gateway.port}-${params.generation}-${randomUUID().slice(0, 8)}`;
+}
+
 function buildStartupSidecarCleanupPatterns(params: {
   bridgeScriptPath: string;
   wrapperScriptPath: string;
@@ -2629,6 +2889,7 @@ async function createVideoChatSession(params: {
   config: OpenClawConfig;
   sessionKey: string;
   interruptReplyOnNewMessage?: boolean;
+  agentName?: string;
   nowMs?: number;
 }): Promise<VideoChatSessionResult> {
   const effectiveConfig = resolveEffectiveVideoChatConfig(params.config);
@@ -2679,18 +2940,6 @@ async function createVideoChatSession(params: {
       source: "openclaw-control-ui",
       sessionKey: params.sessionKey,
     },
-    roomConfig: {
-      agents: [
-        {
-          agentName: VIDEO_CHAT_AGENT_NAME,
-          metadata: buildVideoChatDispatchMetadata({
-            sessionKey: chatSessionKey,
-            imageUrl: lemonSliceImageUrl,
-            interruptReplyOnNewMessage,
-          }),
-        },
-      ],
-    },
     nowMs: params.nowMs,
   });
 
@@ -2702,7 +2951,7 @@ async function createVideoChatSession(params: {
     livekitUrl,
     participantIdentity,
     participantToken,
-    agentName: VIDEO_CHAT_AGENT_NAME,
+    agentName: normalizeOptionalString(params.agentName) ?? VIDEO_CHAT_AGENT_NAME,
     interruptReplyOnNewMessage,
   };
 }
@@ -2761,6 +3010,418 @@ function resolveVideoChatAgentCredentials(config: OpenClawConfig): SidecarCreden
   };
 }
 
+function resolveVideoChatLiveKitCredentials(config: OpenClawConfig): {
+  livekitUrl: string;
+  livekitApiKey: string;
+  livekitApiSecret: string;
+} | null {
+  const credentials = resolveVideoChatAgentCredentials(config);
+  if (!credentials) {
+    return null;
+  }
+  return {
+    livekitUrl: credentials.livekitUrl,
+    livekitApiKey: credentials.livekitApiKey,
+    livekitApiSecret: credentials.livekitApiSecret,
+  };
+}
+
+function resolveVideoChatConfigFingerprint(config: OpenClawConfig): string | null {
+  const credentials = resolveVideoChatLiveKitCredentials(config);
+  if (!credentials) {
+    return null;
+  }
+  return JSON.stringify(credentials);
+}
+
+function isSameConfigFingerprint(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  return (left ?? null) === (right ?? null);
+}
+
+function isNotFoundVideoChatDispatchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const status =
+    typeof (error as { status?: unknown })?.status === "number"
+      ? Number((error as { status: number }).status)
+      : typeof (error as { statusCode?: unknown })?.statusCode === "number"
+        ? Number((error as { statusCode: number }).statusCode)
+        : null;
+  const rawCode = (error as { code?: unknown })?.code;
+  const code =
+    typeof rawCode === "string"
+      ? rawCode.toLowerCase()
+      : typeof rawCode === "number"
+        ? String(rawCode)
+        : "";
+  const normalizedMessage = message.toLowerCase();
+  return (
+    status === 404 ||
+    code === "404" ||
+    code === "not_found" ||
+    normalizedMessage.includes("not found") ||
+    normalizedMessage.includes("404")
+  );
+}
+
+function shouldRunVideoChatRuntimeObservation(): boolean {
+  if (process.env.OPENCLAW_VIDEO_CHAT_DISABLE_SESSION_OBSERVER === "1") {
+    return false;
+  }
+  return !(
+    process.env.NODE_ENV === "test" ||
+    typeof process.env.VITEST === "string" ||
+    typeof process.env.VITEST_POOL_ID === "string" ||
+    typeof process.env.VITEST_WORKER_ID === "string" ||
+    process.argv.some((value) => value.includes("vitest"))
+  );
+}
+
+function sleepWithUnref(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    timer.unref?.();
+  });
+}
+
+async function createVideoChatRoom(params: {
+  config: OpenClawConfig;
+  roomName: string;
+  logger: VideoChatLogger;
+}): Promise<void> {
+  const credentials = resolveVideoChatLiveKitCredentials(params.config);
+  if (!credentials) {
+    throw new Error("Claw Cast room creation is unavailable: missing LiveKit credentials");
+  }
+  logVideoChatEvent(params.logger, "info", "livekit.room.create.begin", {
+    roomName: params.roomName,
+  });
+  try {
+    const { RoomServiceClient } = await import("livekit-server-sdk");
+    const client = new RoomServiceClient(
+      credentials.livekitUrl,
+      credentials.livekitApiKey,
+      credentials.livekitApiSecret,
+    );
+    await client.createRoom({
+      name: params.roomName,
+    });
+    logVideoChatEvent(params.logger, "info", "livekit.room.create.succeeded", {
+      roomName: params.roomName,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logVideoChatEvent(params.logger, "error", "livekit.room.create.failed", {
+      roomName: params.roomName,
+      error: message,
+    });
+    throw new Error(`Claw Cast room creation failed: ${message}`);
+  }
+}
+
+async function deleteVideoChatRoom(params: {
+  config: OpenClawConfig;
+  roomName: string;
+  logger: VideoChatLogger;
+}): Promise<void> {
+  const credentials = resolveVideoChatLiveKitCredentials(params.config);
+  if (!credentials) {
+    logVideoChatEvent(params.logger, "warn", "livekit.room.delete.skipped", {
+      roomName: params.roomName,
+      reason: "missing-livekit-credentials",
+    });
+    return;
+  }
+  logVideoChatEvent(params.logger, "info", "livekit.room.delete.begin", {
+    roomName: params.roomName,
+  });
+  try {
+    const { RoomServiceClient } = await import("livekit-server-sdk");
+    const client = new RoomServiceClient(
+      credentials.livekitUrl,
+      credentials.livekitApiKey,
+      credentials.livekitApiSecret,
+    );
+    await client.deleteRoom(params.roomName);
+    logVideoChatEvent(params.logger, "info", "livekit.room.delete.succeeded", {
+      roomName: params.roomName,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status =
+      typeof (error as { status?: unknown })?.status === "number"
+        ? Number((error as { status: number }).status)
+        : typeof (error as { statusCode?: unknown })?.statusCode === "number"
+          ? Number((error as { statusCode: number }).statusCode)
+          : null;
+    const code =
+      typeof (error as { code?: unknown })?.code === "string"
+        ? (error as { code: string }).code.toLowerCase()
+        : "";
+    if (status === 404 || code === "not_found" || message.toLowerCase().includes("not found")) {
+      logVideoChatEvent(params.logger, "info", "livekit.room.delete.skipped", {
+        roomName: params.roomName,
+        reason: "not-found",
+        error: message,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function observeVideoChatSessionState(params: {
+  config: OpenClawConfig;
+  roomName: string;
+  participantIdentity: string;
+  dispatchId: string;
+  logger: VideoChatLogger;
+  isActive?: () => boolean;
+  maxAttempts?: number;
+  delayMs?: number;
+}): Promise<void> {
+  if (!shouldRunVideoChatRuntimeObservation()) {
+    return;
+  }
+  const credentials = resolveVideoChatLiveKitCredentials(params.config);
+  if (!credentials) {
+    return;
+  }
+  const maxAttempts = Number.isFinite(params.maxAttempts) ? Math.max(1, params.maxAttempts ?? 0) : 12;
+  const delayMs = Number.isFinite(params.delayMs) ? Math.max(100, params.delayMs ?? 0) : 1_000;
+  try {
+    const { AgentDispatchClient, RoomServiceClient } = await import("livekit-server-sdk");
+    const dispatchClient = new AgentDispatchClient(
+      credentials.livekitUrl,
+      credentials.livekitApiKey,
+      credentials.livekitApiSecret,
+    );
+    const roomClient = new RoomServiceClient(
+      credentials.livekitUrl,
+      credentials.livekitApiKey,
+      credentials.livekitApiSecret,
+    );
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (params.isActive && !params.isActive()) {
+        return;
+      }
+
+      const [roomsResult, participantsResult, dispatchResult] = await Promise.allSettled([
+        roomClient.listRooms([params.roomName]),
+        roomClient.listParticipants(params.roomName),
+        dispatchClient.getDispatch(params.dispatchId, params.roomName),
+      ]);
+
+      const rooms = roomsResult.status === "fulfilled" ? roomsResult.value : [];
+      const participants = participantsResult.status === "fulfilled" ? participantsResult.value : [];
+      const dispatch = dispatchResult.status === "fulfilled" ? dispatchResult.value : undefined;
+      const participantIdentities = participants
+        .map((participant) => (typeof participant?.identity === "string" ? participant.identity : ""))
+        .filter(Boolean);
+      const browserParticipantJoined = participantIdentities.includes(params.participantIdentity);
+      const dispatchJobs = Array.isArray(dispatch?.state?.jobs) ? dispatch.state.jobs : [];
+      const dispatchJobIds = dispatchJobs
+        .map((job) => (typeof job?.id === "string" ? job.id : ""))
+        .filter(Boolean);
+      const dispatchJobStatuses = dispatchJobs.map((job) => ({
+        id: typeof job?.id === "string" ? job.id : "",
+        status: typeof job?.state?.status === "number" ? job.state.status : undefined,
+        error: typeof job?.state?.error === "string" && job.state.error.trim() ? job.state.error : undefined,
+        startedAt:
+          typeof job?.state?.startedAt === "bigint" ? job.state.startedAt.toString() : undefined,
+        endedAt: typeof job?.state?.endedAt === "bigint" ? job.state.endedAt.toString() : undefined,
+      }));
+      const dispatchJobStatusSummary = dispatchJobStatuses.reduce<Record<string, number>>((summary, job) => {
+        const statusKey = job.status === undefined ? "unknown" : String(job.status);
+        summary[statusKey] = (summary[statusKey] ?? 0) + 1;
+        return summary;
+      }, {});
+      const deletedAt =
+        typeof dispatch?.state?.deletedAt === "bigint" ? dispatch.state.deletedAt.toString() : undefined;
+
+      logVideoChatEvent(params.logger, "info", "livekit.session.observe", {
+        attempt,
+        roomName: params.roomName,
+        roomExists: rooms.some((room) => room?.name === params.roomName),
+        participantCount: participantIdentities.length,
+        browserParticipantJoined,
+        dispatchId: params.dispatchId,
+        dispatchExists: Boolean(dispatch),
+        dispatchJobCount: dispatchJobIds.length,
+        dispatchJobStatusSummary:
+          Object.keys(dispatchJobStatusSummary).length > 0 ? dispatchJobStatusSummary : undefined,
+        dispatchDeletedAt: deletedAt,
+        roomError:
+          roomsResult.status === "rejected"
+            ? roomsResult.reason instanceof Error
+              ? roomsResult.reason.message
+              : String(roomsResult.reason)
+            : undefined,
+        participantError:
+          participantsResult.status === "rejected"
+            ? participantsResult.reason instanceof Error
+              ? participantsResult.reason.message
+              : String(participantsResult.reason)
+            : undefined,
+        dispatchError:
+          dispatchResult.status === "rejected"
+            ? dispatchResult.reason instanceof Error
+              ? dispatchResult.reason.message
+              : String(dispatchResult.reason)
+            : undefined,
+      });
+      logVideoChatEvent(params.logger, "debug", "livekit.session.observe.detail", {
+        attempt,
+        roomName: params.roomName,
+        dispatchId: params.dispatchId,
+        participantIdentities,
+        browserParticipantIdentity: params.participantIdentity,
+        dispatchJobIds,
+        dispatchJobStatuses,
+      });
+
+      if (browserParticipantJoined && dispatchJobIds.length > 0) {
+        logVideoChatEvent(params.logger, "info", "livekit.session.observe.ready", {
+          roomName: params.roomName,
+          participantIdentity: params.participantIdentity,
+          dispatchId: params.dispatchId,
+          dispatchJobIds,
+          attempts: attempt,
+        });
+        return;
+      }
+
+      if (attempt < maxAttempts) {
+        await sleepWithUnref(delayMs);
+      }
+    }
+
+    logVideoChatEvent(params.logger, "warn", "livekit.session.observe.timeout", {
+      roomName: params.roomName,
+      participantIdentity: params.participantIdentity,
+      dispatchId: params.dispatchId,
+      attempts: maxAttempts,
+    });
+  } catch (error) {
+    logVideoChatEvent(params.logger, "warn", "livekit.session.observe.failed", {
+      roomName: params.roomName,
+      participantIdentity: params.participantIdentity,
+      dispatchId: params.dispatchId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function createVideoChatAgentDispatch(params: {
+  config: OpenClawConfig;
+  session: VideoChatSessionResult;
+  logger: VideoChatLogger;
+}): Promise<VideoChatAgentDispatchResult> {
+  const credentials = resolveVideoChatLiveKitCredentials(params.config);
+  if (!credentials) {
+    throw new Error("Claw Cast agent dispatch is unavailable: missing LiveKit credentials");
+  }
+  const effectiveConfig = resolveEffectiveVideoChatConfig(params.config);
+  const imageUrl = normalizeOptionalString(effectiveConfig.videoChat?.lemonSlice?.imageUrl);
+  if (!imageUrl) {
+    throw new Error("Claw Cast agent dispatch is unavailable: missing LemonSlice image URL");
+  }
+  const metadata = buildVideoChatDispatchMetadata({
+    sessionKey: params.session.chatSessionKey,
+    imageUrl,
+    interruptReplyOnNewMessage: params.session.interruptReplyOnNewMessage,
+  });
+  logVideoChatEvent(params.logger, "info", "agent-dispatch.create.begin", {
+    roomName: params.session.roomName,
+    agentName: params.session.agentName,
+    chatSessionKey: params.session.chatSessionKey,
+  });
+  try {
+    const { AgentDispatchClient } = await import("livekit-server-sdk");
+    const client = new AgentDispatchClient(
+      credentials.livekitUrl,
+      credentials.livekitApiKey,
+      credentials.livekitApiSecret,
+    );
+    const dispatch = await client.createDispatch(params.session.roomName, params.session.agentName, {
+      metadata,
+    });
+    logVideoChatEvent(params.logger, "info", "agent-dispatch.create.succeeded", {
+      roomName: params.session.roomName,
+      agentName: params.session.agentName,
+      dispatchId: dispatch.id,
+    });
+    return {
+      id: dispatch.id,
+      room: dispatch.room,
+      agentName: dispatch.agentName,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logVideoChatEvent(params.logger, "error", "agent-dispatch.create.failed", {
+      roomName: params.session.roomName,
+      agentName: params.session.agentName,
+      chatSessionKey: params.session.chatSessionKey,
+      error: message,
+    });
+    throw new Error(`Claw Cast agent dispatch failed: ${message}`);
+  }
+}
+
+async function deleteVideoChatAgentDispatch(params: {
+  config: OpenClawConfig;
+  roomName: string;
+  dispatchId: string;
+  logger: VideoChatLogger;
+}): Promise<void> {
+  const credentials = resolveVideoChatLiveKitCredentials(params.config);
+  if (!credentials) {
+    logVideoChatEvent(params.logger, "warn", "agent-dispatch.delete.skipped", {
+      roomName: params.roomName,
+      dispatchId: params.dispatchId,
+      reason: "missing-livekit-credentials",
+    });
+    return;
+  }
+  logVideoChatEvent(params.logger, "info", "agent-dispatch.delete.begin", {
+    roomName: params.roomName,
+    dispatchId: params.dispatchId,
+  });
+  try {
+    const { AgentDispatchClient } = await import("livekit-server-sdk");
+    const client = new AgentDispatchClient(
+      credentials.livekitUrl,
+      credentials.livekitApiKey,
+      credentials.livekitApiSecret,
+    );
+    await client.deleteDispatch(params.dispatchId, params.roomName);
+    logVideoChatEvent(params.logger, "info", "agent-dispatch.delete.succeeded", {
+      roomName: params.roomName,
+      dispatchId: params.dispatchId,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isNotFoundVideoChatDispatchError(error)) {
+      logVideoChatEvent(params.logger, "info", "agent-dispatch.delete.skipped", {
+        roomName: params.roomName,
+        dispatchId: params.dispatchId,
+        reason: "already-deleted",
+        error: message,
+      });
+      return;
+    }
+    logVideoChatEvent(params.logger, "warn", "agent-dispatch.delete.failed", {
+      roomName: params.roomName,
+      dispatchId: params.dispatchId,
+      error: message,
+    });
+    throw error;
+  }
+}
+
 function attachLineLogger(
   stream: NodeJS.ReadableStream | null | undefined,
   logger: (message: string) => void,
@@ -2797,6 +3458,7 @@ function attachLineLogger(
 function buildWorkerEnv(params: {
   gateway: SidecarGatewayRuntime;
   credentials: SidecarCredentials;
+  agentName: string;
 }): NodeJS.ProcessEnv {
   const instanceArg = buildSidecarInstanceArg(params.gateway);
   const env: NodeJS.ProcessEnv = {
@@ -2808,6 +3470,7 @@ function buildWorkerEnv(params: {
     OPENCLAW_VIDEO_CHAT_LEMONSLICE_API_KEY: params.credentials.lemonSliceApiKey,
     OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY: params.credentials.elevenLabsApiKey,
     OPENCLAW_VIDEO_CHAT_INSTANCE_ARG: instanceArg,
+    [VIDEO_CHAT_SIDECAR_AGENT_NAME_ENV]: params.agentName,
   };
 
   if (params.gateway.auth.mode === "token" && params.gateway.auth.token) {
@@ -2829,6 +3492,8 @@ async function startVideoChatAgentSidecar(params: {
   config: OpenClawConfig;
   gateway: SidecarGatewayRuntime;
   log: SidecarLogger;
+  agentName: string;
+  onWorkerLine?: (message: string) => void;
 }): Promise<VideoChatAgentSidecar | null> {
   if (params.gateway.auth.mode === "trusted-proxy" || params.gateway.auth.mode === "none") {
     params.log.warn(
@@ -2844,6 +3509,7 @@ async function startVideoChatAgentSidecar(params: {
     );
     return null;
   }
+  const configFingerprint = resolveVideoChatConfigFingerprint(params.config);
 
   const entryScript = process.argv[1];
   const bridgeScriptPath = resolveSidecarBridgeScriptPath();
@@ -2865,7 +3531,9 @@ async function startVideoChatAgentSidecar(params: {
     );
     return null;
   }
-  params.log.info(`Claw Cast agent sidecar launch command: ${launchCommand.description}`);
+  params.log.info(
+    `Claw Cast agent sidecar launch command: ${launchCommand.description} agentName=${params.agentName}`,
+  );
 
   try {
     const stalePids = await stopMatchingProcesses({
@@ -2945,6 +3613,7 @@ async function startVideoChatAgentSidecar(params: {
   };
 
   const observeWorkerLine = (message: string) => {
+    params.onWorkerLine?.(message);
     if (childReady) {
       return;
     }
@@ -2966,6 +3635,7 @@ async function startVideoChatAgentSidecar(params: {
       env: buildWorkerEnv({
         gateway: params.gateway,
         credentials,
+        agentName: params.agentName,
       }),
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
@@ -2973,6 +3643,9 @@ async function startVideoChatAgentSidecar(params: {
     child = next;
     childProcessGroupId =
       typeof next.pid === "number" && Number.isInteger(next.pid) && next.pid > 0 ? next.pid : null;
+    params.log.info(
+      `[video-chat-agent] spawned sidecar process pid=${childProcessGroupId ?? "unknown"} agentName=${params.agentName} command=${activeLaunchCommand.description}`,
+    );
     attachLineLogger(
       next.stdout,
       (message) => params.log.info(`[video-chat-agent] ${message}`),
@@ -3041,6 +3714,8 @@ async function startVideoChatAgentSidecar(params: {
   spawnChild();
 
   return {
+    agentName: params.agentName,
+    configFingerprint,
     isRunning: () => hasRunningChild(),
     waitForReady: async () => {
       await readyPromise;
@@ -3122,7 +3797,222 @@ const videoChatPlugin = {
     let sidecar: VideoChatAgentSidecar | null = null;
     let sidecarStartupPromise: Promise<VideoChatAgentSidecar | null> | null = null;
     let sidecarGeneration = 0;
+    let sidecarAgentName: string | null = null;
+    let sidecarAgentNameGeneration = -1;
     let lastGateway: GatewayRuntime | null = null;
+    const agentDispatchIdsByRoom = new Map<string, string>();
+    const sessionObservationIdsByRoom = new Map<string, string>();
+    const sessionRuntimeStatusByRoom = new Map<string, VideoChatSessionRuntimeStatus>();
+    const roomConfigByName = new Map<string, OpenClawConfig>();
+    const sessionByRoom = new Map<string, VideoChatSessionResult>();
+
+    const updateSessionRuntimeStatus = (
+      roomName: string,
+      patch: Partial<VideoChatSessionRuntimeStatus>,
+    ): VideoChatSessionRuntimeStatus => {
+      const now = Date.now();
+      const current = sessionRuntimeStatusByRoom.get(roomName) ?? {
+        roomName,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const next = {
+        ...current,
+        ...patch,
+        roomName,
+        updatedAt: now,
+      };
+      sessionRuntimeStatusByRoom.set(roomName, next);
+      return next;
+    };
+
+    const clearSessionRuntimeStatus = (roomName: string): void => {
+      sessionRuntimeStatusByRoom.delete(roomName);
+    };
+
+    const rememberManagedRoom = (session: VideoChatSessionResult, config: OpenClawConfig): void => {
+      sessionByRoom.set(session.roomName, { ...session });
+      roomConfigByName.set(session.roomName, cloneConfigSnapshot(config));
+    };
+
+    const getManagedRoomConfig = (roomName: string): OpenClawConfig =>
+      roomConfigByName.get(roomName) ?? api.runtime.config.loadConfig();
+
+    const clearManagedRoom = (roomName: string): void => {
+      agentDispatchIdsByRoom.delete(roomName);
+      sessionObservationIdsByRoom.delete(roomName);
+      clearSessionRuntimeStatus(roomName);
+      sessionByRoom.delete(roomName);
+      roomConfigByName.delete(roomName);
+    };
+
+    const startManagedRoomObservation = (params: {
+      session: VideoChatSessionResult;
+      config: OpenClawConfig;
+      dispatchId: string;
+    }): void => {
+      const sessionObservationId = randomUUID();
+      const observedRoomName = params.session.roomName;
+      sessionObservationIdsByRoom.set(observedRoomName, sessionObservationId);
+      void observeVideoChatSessionState({
+        config: params.config,
+        roomName: observedRoomName,
+        participantIdentity: params.session.participantIdentity,
+        dispatchId: params.dispatchId,
+        logger: api.logger,
+        isActive: () => sessionObservationIdsByRoom.get(observedRoomName) === sessionObservationId,
+      });
+    };
+
+    const assignManagedRoomDispatch = async (params: {
+      session: VideoChatSessionResult;
+      config: OpenClawConfig;
+      commit?: boolean;
+    }): Promise<VideoChatAgentDispatchResult> => {
+      const dispatch = await createVideoChatAgentDispatch({
+        config: params.config,
+        session: params.session,
+        logger: api.logger,
+      });
+      if (params.commit === false) {
+        return dispatch;
+      }
+      sessionByRoom.set(params.session.roomName, { ...params.session });
+      agentDispatchIdsByRoom.set(params.session.roomName, dispatch.id);
+      startManagedRoomObservation({
+        session: params.session,
+        config: params.config,
+        dispatchId: dispatch.id,
+      });
+      return dispatch;
+    };
+
+    const commitManagedRoomDispatch = (params: {
+      session: VideoChatSessionResult;
+      config: OpenClawConfig;
+      dispatch: VideoChatAgentDispatchResult;
+    }): void => {
+      sessionByRoom.set(params.session.roomName, { ...params.session });
+      agentDispatchIdsByRoom.set(params.session.roomName, params.dispatch.id);
+      startManagedRoomObservation({
+        session: params.session,
+        config: params.config,
+        dispatchId: params.dispatch.id,
+      });
+    };
+
+    const collectRoomsForRedispatch = (): Array<{
+      roomName: string;
+      session: VideoChatSessionResult;
+      config: OpenClawConfig;
+      dispatchId?: string;
+    }> => {
+      const roomNames = new Set<string>([
+        ...sessionByRoom.keys(),
+        ...roomConfigByName.keys(),
+        ...agentDispatchIdsByRoom.keys(),
+        ...sessionRuntimeStatusByRoom.keys(),
+      ]);
+      const rooms: Array<{
+        roomName: string;
+        session: VideoChatSessionResult;
+        config: OpenClawConfig;
+        dispatchId?: string;
+      }> = [];
+      for (const roomName of roomNames) {
+        const session = sessionByRoom.get(roomName);
+        const config = roomConfigByName.get(roomName);
+        if (!session || !config) {
+          continue;
+        }
+        rooms.push({
+          roomName,
+          session: { ...session },
+          config,
+          dispatchId: agentDispatchIdsByRoom.get(roomName),
+        });
+      }
+      return rooms;
+    };
+
+    const observeWorkerRuntimeLine = (message: string): void => {
+      const childEventMatch = message.match(
+        /^\[video-chat-agent\/job pid=\d+\]\s+([A-Za-z0-9._-]+)(?:\s+(.*))?$/,
+      );
+      if (childEventMatch && !childEventMatch[1]?.includes("[")) {
+        const [, eventName, rawFields = ""] = childEventMatch;
+        const fields = parseVideoChatDebugFields(rawFields);
+        const roomName = normalizeOptionalString(fields.roomName);
+        if (!roomName) {
+          return;
+        }
+        switch (eventName) {
+          case "agent-session.start.connected":
+            updateSessionRuntimeStatus(roomName, {
+              agentSessionConnectedAt: Date.now(),
+              agentSessionOutputAudioSink: normalizeOptionalString(fields.outputAudioSink),
+            });
+            return;
+          case "avatar.start.begin":
+            updateSessionRuntimeStatus(roomName, {
+              avatarStartBeginAt: Date.now(),
+            });
+            return;
+          case "avatar.start.connected":
+            updateSessionRuntimeStatus(roomName, {
+              avatarStartConnectedAt: Date.now(),
+              avatarOutputAudioSink: normalizeOptionalString(fields.outputAudioSink),
+              avatarParticipantIdentity: normalizeOptionalString(fields.avatarParticipantIdentity),
+            });
+            return;
+          case "gateway-chat-event.received":
+            if (fields.state === "final") {
+              updateSessionRuntimeStatus(roomName, {
+                gatewayChatFinalAt: Date.now(),
+              });
+            }
+            return;
+          case "speech.begin":
+            updateSessionRuntimeStatus(roomName, {
+              speechBeginAt: Date.now(),
+              avatarOutputAudioSink:
+                normalizeOptionalString(fields.outputAudioSink) ??
+                sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
+            });
+            return;
+          case "speech.finished":
+            updateSessionRuntimeStatus(roomName, {
+              speechFinishedAt: Date.now(),
+              avatarOutputAudioSink:
+                normalizeOptionalString(fields.outputAudioSink) ??
+                sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
+            });
+            return;
+          case "speech.failed":
+            updateSessionRuntimeStatus(roomName, {
+              speechFailedAt: Date.now(),
+              speechError: normalizeOptionalString(fields.error),
+              avatarOutputAudioSink:
+                normalizeOptionalString(fields.outputAudioSink) ??
+                sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
+            });
+            return;
+          default:
+            return;
+        }
+      }
+
+      const requestAcceptedMatch = message.match(
+        /^\[video-chat-agent\]\s+request func accepted job\s+jobId=([^\s]+)\s+roomName=([^\s]+)\s+/,
+      );
+      if (requestAcceptedMatch) {
+        const [, jobId, roomName] = requestAcceptedMatch;
+        updateSessionRuntimeStatus(roomName, {
+          jobId,
+          jobAcceptedAt: Date.now(),
+        });
+      }
+    };
 
     const isCurrentSidecarGeneration = (generation: number): boolean =>
       generation === sidecarGeneration;
@@ -3132,13 +4022,29 @@ const videoChatPlugin = {
       return sidecarGeneration;
     };
 
+    const resolveSidecarAgentName = (
+      gateway: SidecarGatewayRuntime,
+      generation: number,
+    ): string => {
+      if (!sidecarAgentName || sidecarAgentNameGeneration !== generation) {
+        sidecarAgentName = buildSidecarAgentName({ gateway, generation });
+        sidecarAgentNameGeneration = generation;
+      }
+      return sidecarAgentName;
+    };
+
+    const clearSidecarAgentName = (): void => {
+      sidecarAgentName = null;
+      sidecarAgentNameGeneration = -1;
+    };
+
     const isGatewayRuntime = (gateway: SidecarGatewayRuntime): gateway is GatewayRuntime =>
       gateway.auth.mode !== "none";
 
     const ensureSidecarRunning = async (
       config: OpenClawConfig,
       gateway?: SidecarGatewayRuntime,
-    ): Promise<void> => {
+    ): Promise<string | null> => {
       if (gateway && isGatewayRuntime(gateway)) {
         lastGateway = gateway;
       }
@@ -3148,12 +4054,42 @@ const videoChatPlugin = {
         api.logger.warn(
           "Claw Cast agent sidecar disabled: gateway runtime details are unavailable",
         );
-        return;
+        return null;
       }
+      const currentAgentName = resolveSidecarAgentName(runtimeGateway, attemptGeneration);
+      const requestedFingerprint = resolveVideoChatConfigFingerprint(config);
+
+      const stopSidecarForFingerprintMismatch = async (
+        activeSidecar: VideoChatAgentSidecar,
+        source: "cached" | "starting" | "started",
+      ): Promise<void> => {
+        logVideoChatEvent(api.logger, "warn", "sidecar.recycle.config-mismatch", {
+          generation: attemptGeneration,
+          source,
+          agentName: activeSidecar.agentName,
+          activeFingerprint: activeSidecar.configFingerprint,
+          requestedFingerprint,
+        });
+        await activeSidecar.stop().catch(() => {});
+        if (sidecar === activeSidecar) {
+          sidecar = null;
+        }
+      };
 
       const getOrStartSidecar = async (): Promise<VideoChatAgentSidecar | null> => {
         if (!isCurrentSidecarGeneration(attemptGeneration)) {
           return null;
+        }
+        if (sidecar) {
+          if (!isSameConfigFingerprint(sidecar.configFingerprint, requestedFingerprint)) {
+            const staleSidecar = sidecar;
+            await stopSidecarForFingerprintMismatch(staleSidecar, "cached");
+            if (!isCurrentSidecarGeneration(attemptGeneration)) {
+              return null;
+            }
+          } else {
+            return sidecar;
+          }
         }
         if (sidecar) {
           return sidecar;
@@ -3163,6 +4099,13 @@ const videoChatPlugin = {
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
             return null;
           }
+          if (
+            startingSidecar &&
+            !isSameConfigFingerprint(startingSidecar.configFingerprint, requestedFingerprint)
+          ) {
+            await stopSidecarForFingerprintMismatch(startingSidecar, "starting");
+            return null;
+          }
           sidecar = sidecar ?? startingSidecar;
           return sidecar;
         }
@@ -3170,12 +4113,21 @@ const videoChatPlugin = {
           config,
           gateway: runtimeGateway,
           log: api.logger,
+          agentName: currentAgentName,
+          onWorkerLine: observeWorkerRuntimeLine,
         });
         sidecarStartupPromise = startupPromise;
         try {
           const startedSidecar = await startupPromise;
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
             await startedSidecar?.stop().catch(() => {});
+            return null;
+          }
+          if (
+            startedSidecar &&
+            !isSameConfigFingerprint(startedSidecar.configFingerprint, requestedFingerprint)
+          ) {
+            await stopSidecarForFingerprintMismatch(startedSidecar, "started");
             return null;
           }
           sidecar = startedSidecar;
@@ -3189,15 +4141,25 @@ const videoChatPlugin = {
 
       for (let attempt = 1; attempt <= VIDEO_CHAT_SIDECAR_START_MAX_ATTEMPTS; attempt += 1) {
         if (!isCurrentSidecarGeneration(attemptGeneration)) {
-          return;
+          return null;
         }
+        logVideoChatEvent(api.logger, "info", "sidecar.ensure.attempt", {
+          attempt,
+          generation: attemptGeneration,
+          agentName: currentAgentName,
+          gatewayPort: runtimeGateway.port,
+          gatewayAuthMode: runtimeGateway.auth.mode,
+          requestedFingerprint,
+          hasExistingSidecar: Boolean(sidecar),
+          startupInFlight: Boolean(sidecarStartupPromise),
+        });
 
         const staleSidecar = sidecar;
         if (staleSidecar && !staleSidecar.isRunning()) {
           api.logger.warn("[video-chat-agent] detected stale sidecar state; restarting worker");
           await staleSidecar.stop().catch(() => {});
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return;
+            return null;
           }
           if (sidecar === staleSidecar) {
             sidecar = null;
@@ -3206,22 +4168,29 @@ const videoChatPlugin = {
 
         const activeSidecar = await getOrStartSidecar();
         if (!isCurrentSidecarGeneration(attemptGeneration) || !activeSidecar) {
-          return;
+          continue;
         }
 
         try {
           await activeSidecar.waitForReady();
           if (!isCurrentSidecarGeneration(attemptGeneration) || sidecar !== activeSidecar) {
-            return;
+            return null;
           }
           await activeSidecar.waitForIdle();
           if (!isCurrentSidecarGeneration(attemptGeneration) || sidecar !== activeSidecar) {
-            return;
+            return null;
           }
-          return;
+          logVideoChatEvent(api.logger, "info", "sidecar.ready", {
+            attempt,
+            generation: attemptGeneration,
+            agentName: activeSidecar.agentName,
+            gatewayPort: runtimeGateway.port,
+            configFingerprint: activeSidecar.configFingerprint,
+          });
+          return activeSidecar.agentName;
         } catch (error) {
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return;
+            return null;
           }
           const message = error instanceof Error ? error.message : String(error);
           api.logger.warn(
@@ -3229,7 +4198,7 @@ const videoChatPlugin = {
           );
           await activeSidecar.stop().catch(() => {});
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
-            return;
+            return null;
           }
           if (sidecar === activeSidecar) {
             sidecar = null;
@@ -3241,21 +4210,47 @@ const videoChatPlugin = {
           }
         }
       }
+      return null;
     };
 
-    const resetSidecarJobs = async (): Promise<void> => {
+    const resetSidecarJobs = async (reason = "unspecified"): Promise<void> => {
       if (!sidecar) {
+        logVideoChatEvent(api.logger, "info", "sidecar.jobs.reset.skipped", {
+          reason,
+          activeSidecar: false,
+        });
         return;
       }
-      await sidecar.resetJobs().catch((error) => {
-        api.logger.warn(
-          `[video-chat-agent] failed to reset sidecar jobs: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      logVideoChatEvent(api.logger, "info", "sidecar.jobs.reset.begin", {
+        reason,
       });
+      try {
+        await sidecar.resetJobs();
+        logVideoChatEvent(api.logger, "info", "sidecar.jobs.reset.completed", {
+          reason,
+        });
+      } catch (error) {
+        logVideoChatEvent(api.logger, "warn", "sidecar.jobs.reset.failed", {
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     };
 
-    const stopManagedSidecar = async (): Promise<{ stopped: boolean }> => {
+    const stopManagedSidecar = async (params?: {
+      reason?: string;
+      clearRoomTracking?: boolean;
+    }): Promise<{ stopped: boolean }> => {
+      const reason = params?.reason ?? "unspecified";
+      const clearRoomTracking = params?.clearRoomTracking === true;
+      logVideoChatEvent(api.logger, "info", "sidecar.stop.requested", {
+        reason,
+        agentName: sidecarAgentName,
+        activeSidecar: Boolean(sidecar),
+        startupInFlight: Boolean(sidecarStartupPromise),
+      });
       const stopGeneration = nextSidecarGeneration();
+      clearSidecarAgentName();
       const startupPromise = sidecarStartupPromise;
       let activeSidecar = sidecar;
       if (!activeSidecar && startupPromise) {
@@ -3268,6 +4263,18 @@ const videoChatPlugin = {
         if (isCurrentSidecarGeneration(stopGeneration)) {
           sidecar = null;
         }
+        if (clearRoomTracking) {
+          agentDispatchIdsByRoom.clear();
+          sessionObservationIdsByRoom.clear();
+          sessionRuntimeStatusByRoom.clear();
+          sessionByRoom.clear();
+          roomConfigByName.clear();
+        }
+        logVideoChatEvent(api.logger, "info", "sidecar.stop.completed", {
+          reason,
+          agentName: null,
+          stopped: false,
+        });
         return { stopped: false };
       }
       await activeSidecar.stop().catch(() => {});
@@ -3277,17 +4284,144 @@ const videoChatPlugin = {
       if (sidecarStartupPromise === startupPromise) {
         sidecarStartupPromise = null;
       }
+      if (clearRoomTracking) {
+        agentDispatchIdsByRoom.clear();
+        sessionObservationIdsByRoom.clear();
+        sessionRuntimeStatusByRoom.clear();
+        sessionByRoom.clear();
+        roomConfigByName.clear();
+      }
+      logVideoChatEvent(api.logger, "info", "sidecar.stop.completed", {
+        reason,
+        agentName: null,
+        stopped: true,
+      });
       return { stopped: true };
     };
 
     const restartManagedSidecar = async (params: {
       config: OpenClawConfig;
       gateway?: GatewayRuntime;
+      reason?: string;
     }): Promise<{ restarted: boolean }> => {
-      await stopManagedSidecar();
+      logVideoChatEvent(api.logger, "info", "sidecar.restart.requested", {
+        reason: params.reason ?? "unspecified",
+        agentName: sidecarAgentName,
+        gatewayPort: params.gateway?.port ?? lastGateway?.port,
+        gatewayAuthMode:
+          params.gateway?.auth.mode ??
+          lastGateway?.auth.mode ??
+          resolveGatewayRuntimeFromConfig(params.config)?.auth.mode ??
+          "unknown",
+      });
+      const roomsToRedispatch = collectRoomsForRedispatch();
+      await stopManagedSidecar({ reason: `restart:${params.reason ?? "unspecified"}` });
       const runtimeGateway =
         params.gateway ?? lastGateway ?? resolveGatewayRuntimeFromConfig(params.config) ?? undefined;
-      await ensureSidecarRunning(params.config, runtimeGateway);
+      const readyAgentName = await ensureSidecarRunning(params.config, runtimeGateway);
+      if (!readyAgentName) {
+        logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.skipped", {
+          reason: params.reason ?? "unspecified",
+          gatewayPort: runtimeGateway?.port,
+          gatewayAuthMode: runtimeGateway?.auth.mode ?? "unknown",
+          roomCount: roomsToRedispatch.length,
+        });
+        logVideoChatEvent(api.logger, "info", "sidecar.restart.completed", {
+          reason: params.reason ?? "unspecified",
+          restarted: false,
+          agentName: null,
+          gatewayPort: runtimeGateway?.port,
+          redispatchedRoomCount: 0,
+        });
+        return { restarted: false };
+      }
+      const activeSidecar = sidecar;
+      const activeFingerprint = activeSidecar?.configFingerprint ?? null;
+      const requestedFingerprint = resolveVideoChatConfigFingerprint(params.config);
+      let redispatchedRoomCount = 0;
+      for (const room of roomsToRedispatch) {
+        const roomFingerprint = resolveVideoChatConfigFingerprint(room.config);
+        if (
+          !isSameConfigFingerprint(roomFingerprint, activeFingerprint) ||
+          !isSameConfigFingerprint(roomFingerprint, requestedFingerprint)
+        ) {
+          logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.skipped", {
+            roomName: room.roomName,
+            priorDispatchId: room.dispatchId,
+            reason: "config-fingerprint-mismatch",
+            roomFingerprint,
+            requestedFingerprint,
+            activeFingerprint,
+            agentName: readyAgentName,
+          });
+          continue;
+        }
+        const nextSession = {
+          ...room.session,
+          agentName: readyAgentName,
+        };
+        try {
+          const oldDispatchId = room.dispatchId;
+          const nextDispatch = await assignManagedRoomDispatch({
+            session: nextSession,
+            config: room.config,
+            commit: false,
+          });
+          try {
+            if (oldDispatchId && oldDispatchId !== nextDispatch.id) {
+              await deleteVideoChatAgentDispatch({
+                config: room.config,
+                roomName: room.roomName,
+                dispatchId: oldDispatchId,
+                logger: api.logger,
+              });
+            }
+          } catch (error) {
+            if (nextDispatch.id !== oldDispatchId) {
+              await deleteVideoChatAgentDispatch({
+                config: room.config,
+                roomName: room.roomName,
+                dispatchId: nextDispatch.id,
+                logger: api.logger,
+              }).catch((cleanupError) => {
+                logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.rollback.failed", {
+                  roomName: room.roomName,
+                  dispatchId: nextDispatch.id,
+                  priorDispatchId: oldDispatchId,
+                  error:
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+                });
+              });
+            }
+            throw error;
+          }
+          commitManagedRoomDispatch({
+            session: nextSession,
+            config: room.config,
+            dispatch: nextDispatch,
+          });
+          redispatchedRoomCount += 1;
+          logVideoChatEvent(api.logger, "info", "sidecar.restart.redispatch.succeeded", {
+            roomName: room.roomName,
+            priorDispatchId: oldDispatchId,
+            dispatchId: nextDispatch.id,
+            agentName: nextSession.agentName,
+          });
+        } catch (error) {
+          logVideoChatEvent(api.logger, "warn", "sidecar.restart.redispatch.failed", {
+            roomName: room.roomName,
+            priorDispatchId: room.dispatchId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      logVideoChatEvent(api.logger, "info", "sidecar.restart.completed", {
+        reason: params.reason ?? "unspecified",
+        restarted: Boolean(sidecar),
+        agentName: readyAgentName,
+        gatewayPort: runtimeGateway?.port,
+        redispatchedRoomCount,
+      });
       return { restarted: Boolean(sidecar) };
     };
 
@@ -3296,15 +4430,98 @@ const videoChatPlugin = {
       sessionKey: string;
       interruptReplyOnNewMessage?: boolean;
     }): Promise<VideoChatSessionResult> => {
-      await ensureSidecarRunning(params.config);
-      return createVideoChatSession(params);
+      logVideoChatEvent(api.logger, "info", "session.create.begin", {
+        sessionKey: params.sessionKey,
+        interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+      });
+      let session: VideoChatSessionResult | null = null;
+      try {
+        const readyAgentName = await ensureSidecarRunning(params.config);
+        if (!readyAgentName) {
+          throw new Error("Claw Cast agent sidecar did not start.");
+        }
+        session = await createVideoChatSession({
+          ...params,
+          agentName: readyAgentName,
+        });
+        const roomConfigSnapshot = cloneConfigSnapshot(params.config);
+        rememberManagedRoom(session, roomConfigSnapshot);
+        updateSessionRuntimeStatus(session.roomName, {
+          createdAt: Date.now(),
+        });
+        await createVideoChatRoom({
+          config: roomConfigSnapshot,
+          roomName: session.roomName,
+          logger: api.logger,
+        });
+        const dispatch = await assignManagedRoomDispatch({
+          session,
+          config: roomConfigSnapshot,
+        });
+        logVideoChatEvent(api.logger, "info", "session.create.succeeded", {
+          sessionKey: session.sessionKey,
+          chatSessionKey: session.chatSessionKey,
+          roomName: session.roomName,
+          participantIdentity: session.participantIdentity,
+          agentName: session.agentName,
+          dispatchId: dispatch.id,
+          interruptReplyOnNewMessage: session.interruptReplyOnNewMessage,
+        });
+        return session;
+      } catch (error) {
+        if (session?.roomName) {
+          const roomConfig = getManagedRoomConfig(session.roomName);
+          await deleteVideoChatRoom({
+            config: roomConfig,
+            roomName: session.roomName,
+            logger: api.logger,
+          });
+          clearManagedRoom(session.roomName);
+        }
+        logVideoChatEvent(api.logger, "error", "session.create.failed", {
+          sessionKey: params.sessionKey,
+          interruptReplyOnNewMessage: params.interruptReplyOnNewMessage === true,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     };
 
     const stopManagedSession = async (params: {
       roomName: string;
     }): Promise<VideoChatSessionStopResult> => {
+      logVideoChatEvent(api.logger, "info", "session.stop.begin", {
+        roomName: params.roomName,
+      });
+      if (!roomConfigByName.has(params.roomName) || !sessionObservationIdsByRoom.has(params.roomName)) {
+        const message = `Claw Cast session stop refused for unmanaged room ${params.roomName}`;
+        logVideoChatEvent(api.logger, "warn", "session.stop.skipped", {
+          roomName: params.roomName,
+          reason: "unmanaged-room",
+        });
+        throw new Error(message);
+      }
+      const roomConfig = getManagedRoomConfig(params.roomName);
+      const dispatchId = agentDispatchIdsByRoom.get(params.roomName);
       const result = await stopVideoChatSession({ roomName: params.roomName });
-      await resetSidecarJobs();
+      if (dispatchId) {
+        await deleteVideoChatAgentDispatch({
+          config: roomConfig,
+          roomName: params.roomName,
+          dispatchId,
+          logger: api.logger,
+        });
+      }
+      await resetSidecarJobs(`session-stop:${params.roomName}`);
+      await deleteVideoChatRoom({
+        config: roomConfig,
+        roomName: params.roomName,
+        logger: api.logger,
+      });
+      clearManagedRoom(params.roomName);
+      logVideoChatEvent(api.logger, "info", "session.stop.completed", {
+        roomName: result.roomName,
+      });
       return result;
     };
 
@@ -3312,13 +4529,22 @@ const videoChatPlugin = {
       sessionKey: string;
       limit?: number;
     }): Promise<VideoChatChatHistoryResult> => {
+      logVideoChatEvent(api.logger, "info", "chat.history.requested", {
+        sessionKey: params.sessionKey,
+        limit: params.limit ?? 30,
+      });
       const subagentRuntime = getVideoChatSubagentRuntime(api);
       const result = await subagentRuntime.getSessionMessages({
         sessionKey: params.sessionKey,
         limit: params.limit ?? 30,
       });
+      const messages = Array.isArray(result.messages) ? result.messages : [];
+      logVideoChatEvent(api.logger, "info", "chat.history.succeeded", {
+        sessionKey: params.sessionKey,
+        messageCount: messages.length,
+      });
       return {
-        messages: Array.isArray(result.messages) ? result.messages : [],
+        messages,
       };
     };
 
@@ -3328,6 +4554,12 @@ const videoChatPlugin = {
       attachments?: VideoChatChatAttachmentInput[];
       idempotencyKey?: string;
     }): Promise<VideoChatChatSendResult> => {
+      logVideoChatEvent(api.logger, "info", "chat.send.begin", {
+        sessionKey: params.sessionKey,
+        messageChars: params.message.length,
+        attachmentCount: params.attachments?.length ?? 0,
+        ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
+      });
       const subagentRuntime = getVideoChatSubagentRuntime(api);
       // The gateway agent schema accepts attachments even though the current runtime typings
       // only expose the text-centric subset.
@@ -3340,15 +4572,34 @@ const videoChatPlugin = {
           : {}),
         ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
       };
-      return await subagentRuntime.run(runParams);
+      try {
+        const result = await subagentRuntime.run(runParams);
+        logVideoChatEvent(api.logger, "info", "chat.send.succeeded", {
+          sessionKey: params.sessionKey,
+          messageChars: params.message.length,
+          attachmentCount: params.attachments?.length ?? 0,
+          ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
+        });
+        return result;
+      } catch (error) {
+        logVideoChatEvent(api.logger, "error", "chat.send.failed", {
+          sessionKey: params.sessionKey,
+          messageChars: params.message.length,
+          attachmentCount: params.attachments?.length ?? 0,
+          ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     };
 
     registerVideoChatSetupCli(api);
     registerVideoChatHttpRoutes(api, {
       createSession: createManagedSession,
       stopSession: stopManagedSession,
-      restartSidecar: async ({ config }) => restartManagedSidecar({ config }),
-      stopSidecar: async () => stopManagedSidecar(),
+      loadSessionStatus: ({ roomName }) => sessionRuntimeStatusByRoom.get(roomName) ?? null,
+      restartSidecar: async ({ config, reason }) => restartManagedSidecar({ config, reason }),
+      stopSidecar: async (params) => stopManagedSidecar(params),
       loadHistory: loadManagedChatHistory,
       sendMessage: sendManagedChatMessage,
     });
@@ -3501,7 +4752,10 @@ const videoChatPlugin = {
             return;
           }
           const cfg = api.runtime.config.loadConfig();
-          respond(true, await restartManagedSidecar({ config: cfg }));
+          respond(
+            true,
+            await restartManagedSidecar({ config: cfg, reason: "gateway-method-sidecar-restart" }),
+          );
         } catch (error) {
           respondGatewayError(
             respond,
@@ -3519,7 +4773,7 @@ const videoChatPlugin = {
           if (!assertMethodParams(params, "videoChat.sidecar.stop", respond)) {
             return;
           }
-          respond(true, await stopManagedSidecar());
+          respond(true, await stopManagedSidecar({ reason: "gateway-method-sidecar-stop" }));
         } catch (error) {
           respondGatewayError(
             respond,
@@ -3669,10 +4923,18 @@ const videoChatPlugin = {
     api.registerService({
       id: "video-chat-agent",
       start: async (ctx) => {
+        logVideoChatEvent(api.logger, "info", "service.start", {
+          serviceId: "video-chat-agent",
+          gatewayPort: ctx.gateway?.port,
+          gatewayAuthMode: ctx.gateway?.auth.mode ?? "unknown",
+        });
         await ensureSidecarRunning(ctx.config, ctx.gateway);
       },
       stop: async () => {
-        await stopManagedSidecar();
+        logVideoChatEvent(api.logger, "info", "service.stop", {
+          serviceId: "video-chat-agent",
+        });
+        await stopManagedSidecar({ reason: "service-stop", clearRoomTracking: true });
       },
     });
   },

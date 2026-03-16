@@ -12,6 +12,15 @@ const {
   mockResetProcessGroupChildren,
   mockStopChildProcess,
   mockStopMatchingProcesses,
+  mockRoomServiceClientCtor,
+  mockRoomServiceCreateRoom,
+  mockRoomServiceDeleteRoom,
+  mockRoomServiceListRooms,
+  mockRoomServiceListParticipants,
+  mockAgentDispatchClientCtor,
+  mockAgentDispatchCreateDispatch,
+  mockAgentDispatchGetDispatch,
+  mockAgentDispatchDeleteDispatch,
 } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockStat: vi.fn(),
@@ -20,6 +29,22 @@ const {
   mockResetProcessGroupChildren: vi.fn().mockResolvedValue(undefined),
   mockStopChildProcess: vi.fn().mockResolvedValue(undefined),
   mockStopMatchingProcesses: vi.fn().mockResolvedValue([]),
+  mockRoomServiceClientCtor: vi.fn(),
+  mockRoomServiceCreateRoom: vi.fn().mockResolvedValue({
+    sid: "RM_123",
+    name: "openclaw-main-12345678",
+  }),
+  mockRoomServiceDeleteRoom: vi.fn().mockResolvedValue(undefined),
+  mockRoomServiceListRooms: vi.fn().mockResolvedValue([]),
+  mockRoomServiceListParticipants: vi.fn().mockResolvedValue([]),
+  mockAgentDispatchClientCtor: vi.fn(),
+  mockAgentDispatchCreateDispatch: vi.fn().mockResolvedValue({
+    id: "dispatch-123",
+    room: "openclaw-main-12345678",
+    agentName: "openclaw-video-chat",
+  }),
+  mockAgentDispatchGetDispatch: vi.fn().mockResolvedValue(undefined),
+  mockAgentDispatchDeleteDispatch: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -51,6 +76,26 @@ vi.mock("./sidecar-process-control.js", () => ({
   resetProcessGroupChildren: mockResetProcessGroupChildren,
   stopChildProcess: mockStopChildProcess,
   stopMatchingProcesses: mockStopMatchingProcesses,
+}));
+
+vi.mock("livekit-server-sdk", () => ({
+  RoomServiceClient: class MockRoomServiceClient {
+    constructor(...args: unknown[]) {
+      mockRoomServiceClientCtor(...args);
+    }
+    createRoom = mockRoomServiceCreateRoom;
+    deleteRoom = mockRoomServiceDeleteRoom;
+    listRooms = mockRoomServiceListRooms;
+    listParticipants = mockRoomServiceListParticipants;
+  },
+  AgentDispatchClient: class MockAgentDispatchClient {
+    constructor(...args: unknown[]) {
+      mockAgentDispatchClientCtor(...args);
+    }
+    createDispatch = mockAgentDispatchCreateDispatch;
+    getDispatch = mockAgentDispatchGetDispatch;
+    deleteDispatch = mockAgentDispatchDeleteDispatch;
+  },
 }));
 
 type RespondCall = [boolean, unknown?, { code: string; message: string }?];
@@ -85,6 +130,10 @@ const baseConfig = {
 const DEFAULT_GATEWAY_PORT = 1;
 const SIDE_CAR_INSTANCE_ARG = `--openclaw-video-chat-instance=gateway-port-${DEFAULT_GATEWAY_PORT}`;
 const SERVICE_GATEWAY_INSTANCE_ARG = "--openclaw-video-chat-instance=gateway-port-4321";
+
+function expectEphemeralAgentName(value: unknown) {
+  expect(value).toEqual(expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/));
+}
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
   const [, payload] = token.split(".");
@@ -251,6 +300,8 @@ async function invoke(
     | "videoChat.setup.save"
     | "videoChat.session.create"
     | "videoChat.session.stop"
+    | "videoChat.sidecar.restart"
+    | "videoChat.sidecar.stop"
     | "videoChat.chat.history"
     | "videoChat.chat.send"
     | "videoChat.audio.transcribe"
@@ -275,6 +326,22 @@ describe("video-chat plugin", () => {
     delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
     mockSpawn.mockImplementation(() => createSpawnedChild(4999));
     mockStopMatchingProcesses.mockResolvedValue([]);
+    mockRoomServiceCreateRoom.mockImplementation(async ({ name }: { name: string }) => ({
+      sid: `RM_${name}`,
+      name,
+    }));
+    mockRoomServiceDeleteRoom.mockResolvedValue(undefined);
+    mockRoomServiceListRooms.mockResolvedValue([]);
+    mockRoomServiceListParticipants.mockResolvedValue([]);
+    mockAgentDispatchCreateDispatch.mockImplementation(
+      async (roomName: string, agentName: string) => ({
+        id: `dispatch-for-${roomName}`,
+        room: roomName,
+        agentName,
+      }),
+    );
+    mockAgentDispatchGetDispatch.mockResolvedValue(undefined);
+    mockAgentDispatchDeleteDispatch.mockResolvedValue(undefined);
     mockFetch.mockResolvedValue(
       new Response(JSON.stringify({ text: "hello from microphone" }), {
         status: 200,
@@ -662,19 +729,24 @@ describe("video-chat plugin", () => {
       | undefined;
     expect(payload?.roomName).toContain("openclaw-agent-main-main-");
     expect(payload?.participantToken?.split(".")).toHaveLength(3);
-    expect(payload?.agentName).toBe("openclaw-video-chat");
+    expectEphemeralAgentName(payload?.agentName);
     expect(payload?.interruptReplyOnNewMessage).toBe(true);
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
-      roomConfig: {
-        agents: [
-          {
-            agentName: "openclaw-video-chat",
-            metadata:
-              '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
-          },
-        ],
+      video: {
+        roomJoin: true,
       },
     });
+    expect(mockRoomServiceCreateRoom).toHaveBeenCalledWith({
+      name: expect.stringContaining("openclaw-agent-main-main-"),
+    });
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
+      expect.stringContaining("openclaw-agent-main-main-"),
+      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      {
+        metadata:
+          '{"sessionKey":"agent:main/main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":true}',
+      },
+    );
   });
 
   it("returns canonical chat session key for default main session", async () => {
@@ -693,37 +765,248 @@ describe("video-chat plugin", () => {
     expect(payload?.sessionKey).toBe("main");
     expect(payload?.chatSessionKey).toBe("agent:main:main");
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
-      roomConfig: {
-        agents: [
-          {
-            metadata:
-              '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":false}',
-          },
-        ],
+      video: {
+        roomJoin: true,
       },
     });
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
+      expect.stringContaining("openclaw-main-"),
+      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      {
+        metadata:
+          '{"sessionKey":"agent:main:main","imageUrl":"https://example.com/avatar.png","interruptReplyOnNewMessage":false}',
+      },
+    );
+  });
+
+  it("refuses to create a session when the sidecar does not start", async () => {
+    const { methods } = setup({
+      ...baseConfig,
+      gateway: {
+        auth: {
+          mode: "none",
+        },
+      },
+    });
+
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.message).toContain("sidecar did not start");
+    expect(mockRoomServiceCreateRoom).not.toHaveBeenCalled();
+    expect(mockAgentDispatchCreateDispatch).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 
   it("stops a session", async () => {
     const { methods } = setup();
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
     const respond = await invoke(methods, "videoChat.session.stop", {
-      roomName: "openclaw-main-12345678",
+      roomName,
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
     expect(call?.[1]).toEqual({
       stopped: true,
-      roomName: "openclaw-main-12345678",
+      roomName,
     });
+  });
+
+  it("deletes the explicit LiveKit dispatch during session stop", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+
+    await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledWith(
+      `dispatch-for-${roomName}`,
+      roomName,
+    );
+    expect(mockRoomServiceDeleteRoom).toHaveBeenCalledWith(roomName);
+  });
+
+  it("treats missing LiveKit rooms as already deleted during session stop", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockRoomServiceDeleteRoom.mockRejectedValueOnce(
+      Object.assign(new Error("room not found"), {
+        status: 404,
+        code: "not_found",
+      }),
+    );
+
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      stopped: true,
+      roomName,
+    });
+  });
+
+  it("bubbles unexpected LiveKit room delete failures during session stop", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockRoomServiceDeleteRoom.mockRejectedValueOnce(new Error("delete failed"));
+
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.message).toContain("delete failed");
+  });
+
+  it("preserves managed room tracking when remote room deletion fails", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockRoomServiceDeleteRoom
+      .mockRejectedValueOnce(new Error("delete failed"))
+      .mockResolvedValueOnce(undefined);
+
+    const firstRespond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+    const firstCall = firstRespond.mock.calls[0] as RespondCall | undefined;
+    expect(firstCall?.[0]).toBe(false);
+    expect(firstCall?.[2]?.message).toContain("delete failed");
+
+    const secondRespond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+    const secondCall = secondRespond.mock.calls[0] as RespondCall | undefined;
+    expect(secondCall?.[0]).toBe(true);
+    expect(secondCall?.[1]).toEqual({
+      stopped: true,
+      roomName,
+    });
+    expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves managed room tracking when dispatch deletion fails", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockAgentDispatchDeleteDispatch
+      .mockRejectedValueOnce(new Error("dispatch delete failed"))
+      .mockResolvedValueOnce(undefined);
+
+    const firstRespond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+    const firstCall = firstRespond.mock.calls[0] as RespondCall | undefined;
+    expect(firstCall?.[0]).toBe(false);
+    expect(firstCall?.[2]?.message).toContain("dispatch delete failed");
+    expect(mockRoomServiceDeleteRoom).not.toHaveBeenCalled();
+
+    const secondRespond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+    const secondCall = secondRespond.mock.calls[0] as RespondCall | undefined;
+    expect(secondCall?.[0]).toBe(true);
+    expect(secondCall?.[1]).toEqual({
+      stopped: true,
+      roomName,
+    });
+    expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledTimes(2);
+    expect(mockRoomServiceDeleteRoom).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats missing LiveKit dispatches as already deleted during session stop", async () => {
+    const { methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    mockAgentDispatchDeleteDispatch.mockRejectedValueOnce(
+      Object.assign(new Error("dispatch not found"), {
+        status: 404,
+        code: "not_found",
+      }),
+    );
+
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      stopped: true,
+      roomName,
+    });
+    expect(mockRoomServiceDeleteRoom).toHaveBeenCalledWith(roomName);
+  });
+
+  it("uses the room's stored LiveKit snapshot during session stop", async () => {
+    const { methods, runtime } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+
+    mockAgentDispatchClientCtor.mockClear();
+    mockRoomServiceClientCtor.mockClear();
+    vi.mocked(runtime.config.loadConfig).mockReturnValue({
+      ...baseConfig,
+      videoChat: {
+        ...baseConfig.videoChat,
+        livekit: {
+          url: "wss://rotated.livekit.cloud",
+          apiKey: "rotated-key",
+          apiSecret: "rotated-secret",
+        },
+      },
+    } as never);
+
+    await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    expect(mockAgentDispatchClientCtor).toHaveBeenCalledWith(
+      "wss://example.livekit.cloud",
+      "lk-key",
+      "lk-secret",
+    );
+    expect(mockRoomServiceClientCtor).toHaveBeenCalledWith(
+      "wss://example.livekit.cloud",
+      "lk-key",
+      "lk-secret",
+    );
   });
 
   it("cleans stale wrapper jobs during session stop", async () => {
     const { methods } = setup();
 
-    await invoke(methods, "videoChat.session.create", {});
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
     await invoke(methods, "videoChat.session.stop", {
-      roomName: "openclaw-main-12345678",
+      roomName,
     });
 
     expect(mockStopMatchingProcesses).toHaveBeenNthCalledWith(1, {
@@ -752,10 +1035,26 @@ describe("video-chat plugin", () => {
     });
   });
 
+  it("refuses to stop rooms that are not tracked by this runtime", async () => {
+    const { methods } = setup();
+
+    const respond = await invoke(methods, "videoChat.session.stop", {
+      roomName: "openclaw-main-unknown",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.message).toContain("unmanaged room");
+    expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
+    expect(mockRoomServiceDeleteRoom).not.toHaveBeenCalled();
+  });
+
   it("waits for an in-flight sidecar reset before creating the next session", async () => {
     const { methods } = setup();
 
-    await invoke(methods, "videoChat.session.create", {});
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
 
     let resolveReset: () => void = () => {};
     const resetPromise = new Promise<void>((resolve) => {
@@ -764,10 +1063,12 @@ describe("video-chat plugin", () => {
     mockResetProcessGroupChildren.mockImplementationOnce(() => resetPromise);
 
     const stopPromise = invoke(methods, "videoChat.session.stop", {
-      roomName: "openclaw-main-12345678",
+      roomName,
     });
 
-    await flushMicrotasks();
+    await vi.waitFor(() => {
+      expect(mockResetProcessGroupChildren).toHaveBeenCalledTimes(1);
+    });
 
     let createFinished = false;
     const createPromise = invoke(methods, "videoChat.session.create", {}).then((respond) => {
@@ -845,6 +1146,177 @@ describe("video-chat plugin", () => {
     await service?.stop?.();
   });
 
+  it("re-dispatches active rooms to the replacement sidecar during restart", async () => {
+    const { methods } = setup();
+    let dispatchSequence = 0;
+    mockAgentDispatchCreateDispatch.mockImplementation(async (roomName: string, agentName: string) => ({
+      id: `dispatch-${++dispatchSequence}`,
+      room: roomName,
+      agentName,
+    }));
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as
+      | {
+          agentName?: string;
+          roomName?: string;
+        }
+      | undefined;
+    const roomName = createPayload?.roomName ?? "";
+    const firstAgentName = createPayload?.agentName ?? "";
+
+    await invoke(methods, "videoChat.sidecar.restart", {});
+
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(2);
+    expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[0]).toBe(roomName);
+    expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[1]).toEqual(
+      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+    );
+    expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[1]).not.toBe(firstAgentName);
+    expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledWith("dispatch-1", roomName);
+  });
+
+  it("rolls back the replacement dispatch if deleting the old dispatch fails during restart", async () => {
+    const { methods } = setup();
+    let dispatchSequence = 0;
+    mockAgentDispatchCreateDispatch.mockImplementation(async (roomName: string, agentName: string) => ({
+      id: `dispatch-${++dispatchSequence}`,
+      room: roomName,
+      agentName,
+    }));
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+
+    mockAgentDispatchDeleteDispatch
+      .mockRejectedValueOnce(new Error("dispatch delete failed"))
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+
+    const restartRespond = await invoke(methods, "videoChat.sidecar.restart", {});
+    expect((restartRespond.mock.calls[0] as RespondCall | undefined)?.[0]).toBe(true);
+
+    await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    expect(mockAgentDispatchDeleteDispatch.mock.calls[0]).toEqual(["dispatch-1", roomName]);
+    expect(mockAgentDispatchDeleteDispatch.mock.calls[1]).toEqual(["dispatch-2", roomName]);
+    expect(mockAgentDispatchDeleteDispatch.mock.calls[2]).toEqual(["dispatch-1", roomName]);
+  });
+
+  it("uses a new sidecar-specific agent name after restart", async () => {
+    const { methods } = setup();
+
+    const firstCreateRespond = await invoke(methods, "videoChat.session.create", {});
+    const firstCreatePayload = firstCreateRespond.mock.calls[0]?.[1] as
+      | {
+          agentName?: string;
+          roomName?: string;
+        }
+      | undefined;
+    const firstAgentName = firstCreatePayload?.agentName ?? "";
+    expectEphemeralAgentName(firstAgentName);
+
+    await invoke(methods, "videoChat.sidecar.restart", {});
+
+    const secondCreateRespond = await invoke(methods, "videoChat.session.create", {});
+    const secondCreatePayload = secondCreateRespond.mock.calls[0]?.[1] as
+      | {
+          agentName?: string;
+          roomName?: string;
+        }
+      | undefined;
+    const secondAgentName = secondCreatePayload?.agentName ?? "";
+    expectEphemeralAgentName(secondAgentName);
+    expect(secondAgentName).not.toBe(firstAgentName);
+
+    expect(mockAgentDispatchCreateDispatch.mock.calls[0]?.[1]).toBe(firstAgentName);
+    expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[1]).not.toBe(firstAgentName);
+    expect(mockAgentDispatchCreateDispatch.mock.calls[2]?.[1]).toBe(secondAgentName);
+  });
+
+  it("recycles the sidecar when the LiveKit credential fingerprint changes", async () => {
+    const { methods, runtime } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+    await flushMicrotasks();
+
+    vi.mocked(runtime.config.loadConfig).mockReturnValue({
+      ...baseConfig,
+      videoChat: {
+        ...baseConfig.videoChat,
+        livekit: {
+          url: "wss://rotated.livekit.cloud",
+          apiKey: "rotated-key",
+          apiSecret: "rotated-secret",
+        },
+      },
+    } as never);
+
+    const respond = await invoke(methods, "videoChat.session.create", {});
+
+    expect((respond.mock.calls[0] as RespondCall | undefined)?.[0]).toBe(true);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockStopChildProcess).toHaveBeenCalled();
+  });
+
+  it("skips redispatch when the replacement sidecar does not start", async () => {
+    const { methods, runtime } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    vi.mocked(runtime.config.loadConfig).mockReturnValue({
+      ...baseConfig,
+      gateway: {
+        auth: {
+          mode: "none",
+        },
+      },
+    } as never);
+
+    const respond = await invoke(methods, "videoChat.sidecar.restart", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      restarted: false,
+    });
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(1);
+    expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips redispatch when the room snapshot fingerprint no longer matches the active sidecar", async () => {
+    const { methods, runtime } = setup();
+
+    await invoke(methods, "videoChat.session.create", {});
+
+    vi.mocked(runtime.config.loadConfig).mockReturnValue({
+      ...baseConfig,
+      videoChat: {
+        ...baseConfig.videoChat,
+        livekit: {
+          url: "wss://rotated.livekit.cloud",
+          apiKey: "rotated-key",
+          apiSecret: "rotated-secret",
+        },
+      },
+    } as never);
+
+    const respond = await invoke(methods, "videoChat.sidecar.restart", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(call?.[1]).toEqual({
+      restarted: true,
+    });
+    expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(1);
+    expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+  });
+
   it("stops the sidecar through the HTTP API", async () => {
     const { httpRoutes, methods } = setup();
 
@@ -862,6 +1334,61 @@ describe("video-chat plugin", () => {
       stopped: true,
     });
     expect(mockStopChildProcess).toHaveBeenCalled();
+  });
+
+  it("reports worker runtime progress through the HTTP session status route", async () => {
+    const child = createSpawnedChild(4110);
+    mockSpawn.mockImplementationOnce(() => child);
+    const { httpRoutes, methods } = setup();
+
+    const createRespond = await invoke(methods, "videoChat.session.create", {});
+    const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
+    const roomName = createPayload?.roomName ?? "";
+
+    child.stdout.emit(
+      "data",
+      `[video-chat-agent] request func accepted job jobId=AJ_test roomName=${roomName} agentName=openclaw-video-chat-1-1-12345678\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[video-chat-agent/job pid=999] agent-session.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="SyncedAudioOutput"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[video-chat-agent/job pid=999] avatar.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="DataStreamAudioOutput" avatarParticipantIdentity="lemonslice-avatar-agent"\n`,
+    );
+
+    await flushMicrotasks();
+
+    const statusResponse = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName)}`,
+    });
+
+    expect(statusResponse.handled).toBe(true);
+    expect(JSON.parse(statusResponse.res.body)).toMatchObject({
+      success: true,
+      status: {
+        roomName,
+        jobId: "AJ_test",
+        agentSessionOutputAudioSink: "SyncedAudioOutput",
+        avatarOutputAudioSink: "DataStreamAudioOutput",
+        avatarParticipantIdentity: "lemonslice-avatar-agent",
+      },
+    });
+
+    await invoke(methods, "videoChat.session.stop", {
+      roomName,
+    });
+
+    const clearedStatusResponse = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
+      url: `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName)}`,
+    });
+
+    expect(clearedStatusResponse.handled).toBe(true);
+    expect(JSON.parse(clearedStatusResponse.res.body)).toEqual({
+      success: true,
+      status: null,
+    });
   });
 
   it("loads chat history through the runtime subagent API", async () => {

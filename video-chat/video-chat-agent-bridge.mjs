@@ -1,8 +1,9 @@
 import path from "node:path";
-import { createRequire } from "node:module";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
+const DEFAULT_AGENT_NAME = "openclaw-video-chat";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -10,6 +11,10 @@ function requireEnv(name) {
     throw new Error(`Missing required env var ${name}`);
   }
   return value;
+}
+
+function resolveAgentName() {
+  return process.env.OPENCLAW_VIDEO_CHAT_AGENT_NAME?.trim() || DEFAULT_AGENT_NAME;
 }
 
 function resolveInstanceArg(argv) {
@@ -102,6 +107,93 @@ function startParentWatchdog(onOrphaned, intervalMs = 1000) {
   };
 }
 
+function attachChildLineLogger(stream, logger) {
+  if (!stream || typeof stream.on !== "function") {
+    return;
+  }
+  let buffer = "";
+  stream.on("data", (chunk) => {
+    buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) {
+        break;
+      }
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) {
+        logger(line);
+      }
+    }
+  });
+  stream.on("end", () => {
+    const tail = buffer.trim();
+    buffer = "";
+    if (tail) {
+      logger(tail);
+    }
+  });
+}
+
+function patchJobProcessForkLogging() {
+  const require = createRequire(import.meta.url);
+  const childProcess = require("node:child_process");
+  if (childProcess.__openclawVideoChatForkLoggingPatched) {
+    return;
+  }
+  const originalFork = childProcess.fork.bind(childProcess);
+  childProcess.fork = function patchedFork(modulePath, args, options) {
+    const modulePathString =
+      typeof modulePath === "string"
+        ? modulePath
+        : modulePath && typeof modulePath === "object" && typeof modulePath.href === "string"
+          ? modulePath.href
+          : String(modulePath ?? "");
+    const normalizedModulePath = modulePathString.replace(/^file:\/\//, "");
+    const isJobProcess = normalizedModulePath.includes("job_proc_lazy_main");
+    const nextOptions =
+      isJobProcess
+        ? {
+            ...(options || {}),
+            silent: true,
+            stdio: ["pipe", "pipe", "pipe", "ipc"],
+          }
+        : options;
+    const child = originalFork(modulePath, args, nextOptions);
+    if (isJobProcess) {
+      const label = `[video-chat-agent/job pid=${child.pid ?? "unknown"}]`;
+      attachChildLineLogger(child.stdout, (line) => {
+        console.log(`${label} ${line}`);
+      });
+      attachChildLineLogger(child.stderr, (line) => {
+        console.error(`${label} ${line}`);
+      });
+      child.on("message", (message) => {
+        if (!message || typeof message !== "object") {
+          return;
+        }
+        const caseName = message.case;
+        if (caseName !== "openclawVideoChatDebug") {
+          return;
+        }
+        const value = message.value && typeof message.value === "object" ? message.value : {};
+        const event =
+          typeof value.event === "string" && value.event.trim() ? value.event.trim() : "unknown";
+        const fields = value.fields && typeof value.fields === "object" ? value.fields : {};
+        const fieldEntries = Object.entries(fields)
+          .filter(([, fieldValue]) => fieldValue !== undefined)
+          .map(([key, fieldValue]) => `${key}=${JSON.stringify(fieldValue)}`)
+          .join(" ");
+        console.log(`${label} ${event}${fieldEntries ? ` ${fieldEntries}` : ""}`);
+      });
+      console.log(`${label} spawned module=${normalizedModulePath}`);
+    }
+    return child;
+  };
+  childProcess.__openclawVideoChatForkLoggingPatched = true;
+  syncBuiltinESMExports();
+}
+
 async function main() {
   const instanceArg = resolveInstanceArg(process.argv);
   if (instanceArg) {
@@ -115,7 +207,9 @@ async function main() {
     path.dirname(fileURLToPath(import.meta.url)),
     "video-chat-agent-runner-wrapper.mjs",
   );
+  const agentName = resolveAgentName();
   const depResolutionPaths = Array.from(new Set([runnerPath, depsBaseRunnerPath]));
+  patchJobProcessForkLogging();
   const agentsModule = await loadAgentsModule(depResolutionPaths);
   const AgentServer = getExport(agentsModule, "AgentServer");
   const ServerOptions = getExport(agentsModule, "ServerOptions");
@@ -128,7 +222,18 @@ async function main() {
   const worker = new AgentServer(
     new ServerOptions({
       agent: wrapperPath,
-      agentName: "openclaw-video-chat",
+      agentName,
+      requestFunc: async (jobRequest) => {
+        const roomName = typeof jobRequest?.room?.name === "string" ? jobRequest.room.name : "";
+        const jobId = typeof jobRequest?.id === "string" ? jobRequest.id : "";
+        console.log(
+          `[video-chat-agent] request func accepting job jobId=${jobId} roomName=${roomName} agentName=${agentName}`,
+        );
+        await jobRequest.accept();
+        console.log(
+          `[video-chat-agent] request func accepted job jobId=${jobId} roomName=${roomName} agentName=${agentName}`,
+        );
+      },
       wsURL: requireEnv("LIVEKIT_URL"),
       apiKey: requireEnv("LIVEKIT_API_KEY"),
       apiSecret: requireEnv("LIVEKIT_API_SECRET"),
@@ -137,7 +242,7 @@ async function main() {
     }),
   );
   worker.event.once("worker_registered", (workerId) => {
-    console.log(`[video-chat-agent] worker registered and ready id=${workerId}`);
+    console.log(`[video-chat-agent] worker registered and ready id=${workerId} agentName=${agentName}`);
   });
 
   let shuttingDown = false;
@@ -187,7 +292,7 @@ async function main() {
     });
   });
 
-  console.log("[video-chat-agent] starting LiveKit agent server");
+  console.log(`[video-chat-agent] starting LiveKit agent server agentName=${agentName}`);
   try {
     await worker.run();
   } finally {

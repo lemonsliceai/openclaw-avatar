@@ -106,6 +106,11 @@ const AVATAR_PIP_MAX_VIDEO_HEIGHT = 560;
 const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/icons/phone-off.svg";
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const AVATAR_JOIN_TIMEOUT_ERROR_CODE = "AVATAR_JOIN_TIMEOUT";
+const AVATAR_JOIN_TIMEOUT_MS = 12_000;
+const AVATAR_JOIN_PROGRESS_GRACE_MS = 12_000;
+const AVATAR_JOIN_MAX_TIMEOUT_MS = 45_000;
+const AVATAR_STATUS_POLL_MS = 1_000;
+const AVATAR_STATUS_REQUEST_TIMEOUT_MS = 4_000;
 const AVATAR_AUTO_RECOVERY_MAX_ATTEMPTS = 3;
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
@@ -195,8 +200,11 @@ const avatarMessageOverlayState = {
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
+let gatewayHandshakeError = null;
 let gatewayConnectRequestId = null;
 let gatewayRequestCounter = 0;
+let gatewayReconnectTimer = null;
+let gatewayReconnectBackoffActive = false;
 const gatewayPendingRequests = new Map();
 const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
 const sensitiveFieldCopyButtons = Array.from(document.querySelectorAll("[data-copy-secret]"));
@@ -1313,6 +1321,16 @@ function setChatStatus(text) {
   chatStatusEl.title = text;
 }
 
+async function handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey) {
+  if (liveUpdatesReady) {
+    setChatStatus("Awaiting agent reply...");
+    return true;
+  }
+  const replyReceived = await refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey);
+  setChatStatus(replyReceived ? "Reply received." : "Message sent. Reconnecting chat updates...");
+  return replyReceived;
+}
+
 async function submitVoiceTranscript(rawTranscript) {
   const transcript = typeof rawTranscript === "string" ? rawTranscript.trim() : "";
   if (!transcript) {
@@ -1355,7 +1373,7 @@ async function submitVoiceTranscript(rawTranscript) {
   setChatStatus("Sending message...");
 
   try {
-    await ensureGatewaySocketConnected();
+    const liveUpdatesReady = await primeGatewaySocketForChat();
     const payload = await requestJson("/plugins/video-chat/api/chat/send", {
       method: "POST",
       body: JSON.stringify({
@@ -1371,7 +1389,7 @@ async function submitVoiceTranscript(rawTranscript) {
       idempotencyKey,
       response,
     });
-    setChatStatus("Awaiting agent reply...");
+    await handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey);
     return true;
   } catch (error) {
     appendChatLine("system", error instanceof Error ? error.message : "Voice chat send failed.", {
@@ -5325,7 +5343,78 @@ function clearGatewayPendingRequests(error) {
   }
 }
 
+function clearGatewayReconnectTimer() {
+  gatewayReconnectBackoffActive = false;
+  if (gatewayReconnectTimer === null) {
+    return;
+  }
+  clearTimeout(gatewayReconnectTimer);
+  gatewayReconnectTimer = null;
+}
+
+function createGatewayAuthError(message) {
+  const error = new Error(message);
+  error.code = "GATEWAY_AUTH_FAILED";
+  return error;
+}
+
+function isGatewaySocketAuthError(error) {
+  if (!error) {
+    return false;
+  }
+  const code = typeof error?.code === "string" ? error.code : "";
+  if (code === "GATEWAY_AUTH_FAILED") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /unauthorized|invalid token|auth|401|403|forbidden/i.test(message);
+}
+
+function reportGatewaySocketAuthFailure(error) {
+  setOutput({
+    action: "auth-failed",
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function scheduleGatewaySocketReconnect(delayMs = 1_000) {
+  if (
+    gatewayReconnectTimer !== null ||
+    gatewayHandshakePromise ||
+    !activeSession ||
+    !hasGatewayToken() ||
+    (gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN && gatewaySocketReady)
+  ) {
+    return;
+  }
+  gatewayReconnectBackoffActive = true;
+  gatewayReconnectTimer = setTimeout(() => {
+    gatewayReconnectTimer = null;
+    if (!activeSession || !hasGatewayToken()) {
+      gatewayReconnectBackoffActive = false;
+      return;
+    }
+    void ensureGatewaySocketConnected().catch((error) => {
+      if (isGatewaySocketAuthError(error)) {
+        gatewayReconnectBackoffActive = false;
+        reportGatewaySocketAuthFailure(error);
+        return;
+      }
+      setOutput({
+        action: "chat-websocket-reconnect-failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      scheduleGatewaySocketReconnect(Math.min(delayMs * 2, 10_000));
+    }).then(() => {
+      if (gatewaySocketReady) {
+        gatewayReconnectBackoffActive = false;
+      }
+    });
+  }, delayMs);
+}
+
 function closeGatewaySocket(reason) {
+  clearGatewayReconnectTimer();
   gatewaySocketReady = false;
   gatewayConnectRequestId = null;
   chatAwaitingReply = false;
@@ -5339,6 +5428,26 @@ function closeGatewaySocket(reason) {
   clearGatewayPendingRequests(new Error(reason));
   updateChatControls();
   renderChatLog({ scrollToBottom: false });
+}
+
+async function primeGatewaySocketForChat() {
+  try {
+    await ensureGatewaySocketConnected();
+    clearGatewayReconnectTimer();
+    return true;
+  } catch (error) {
+    if (isGatewaySocketAuthError(error)) {
+      reportGatewaySocketAuthFailure(error);
+      setChatStatus(error instanceof Error ? error.message : "Gateway authentication failed.");
+      return false;
+    }
+    setOutput({
+      action: "chat-websocket-unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    scheduleGatewaySocketReconnect();
+    return false;
+  }
 }
 
 function handleGatewayChatEvent(payload) {
@@ -5433,6 +5542,7 @@ function handleGatewaySocketMessage(raw) {
       gatewayConnectRequestId = null;
       if (!frame.ok) {
         const message = frame?.error?.message || "Gateway websocket authorization failed.";
+        gatewayHandshakeError = createGatewayAuthError(message);
         closeGatewaySocket(message);
         setChatStatus(message);
         return;
@@ -5495,6 +5605,7 @@ async function ensureGatewaySocketConnected() {
     const ws = new WebSocket(socketUrl);
     gatewaySocket = ws;
     gatewaySocketReady = false;
+    gatewayHandshakeError = null;
     gatewayConnectRequestId = null;
 
     const connectTimer = setTimeout(() => {
@@ -5510,20 +5621,39 @@ async function ensureGatewaySocketConnected() {
       }
     });
 
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (evt) => {
+      const handshakeStillPending = !settled || gatewayConnectRequestId !== null;
+      const closeReason = typeof evt?.reason === "string" ? evt.reason.toLowerCase() : "";
+      const authFailure =
+        gatewayHandshakeError ||
+        evt?.code === 1008 ||
+        /unauthorized|invalid token|auth|401|403|forbidden/i.test(closeReason);
       if (!settled) {
         clearTimeout(connectTimer);
-        onSettledError(new Error("Gateway websocket closed before connect completed."));
+        const closeError =
+          gatewayHandshakeError ||
+          (authFailure
+            ? createGatewayAuthError(
+                typeof evt?.reason === "string" && evt.reason.trim()
+                  ? evt.reason.trim()
+                  : "Gateway websocket authorization failed.",
+              )
+            : new Error("Gateway websocket closed before connect completed."));
+        onSettledError(closeError);
       }
       if (gatewaySocket === ws) {
         gatewaySocket = null;
       }
+      gatewayHandshakeError = null;
       gatewaySocketReady = false;
       gatewayConnectRequestId = null;
       chatAwaitingReply = false;
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
       renderChatLog({ scrollToBottom: false });
       setChatStatus("Chat disconnected.");
+      if (!handshakeStillPending && !authFailure && !gatewayReconnectBackoffActive) {
+        scheduleGatewaySocketReconnect();
+      }
     });
 
     ws.addEventListener("error", () => {
@@ -5572,6 +5702,10 @@ async function loadChatHistory() {
       limit: 30,
     }),
   });
+  applyChatHistory(history);
+}
+
+function applyChatHistory(history) {
   renderedVoiceUserRuns.clear();
   clearRecentAvatarReplies();
   const entries = [];
@@ -5609,6 +5743,85 @@ async function loadChatHistory() {
     }
   }
   replaceChatLog(entries);
+  return messages;
+}
+
+function historyHasAssistantReplyAfterIdempotencyKey(messages, idempotencyKey) {
+  const expectedKey = typeof idempotencyKey === "string" ? idempotencyKey.trim() : "";
+  if (!expectedKey) {
+    return false;
+  }
+  let sawMatchingUserMessage = false;
+  for (const message of messages) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    const role = typeof message.role === "string" ? message.role : "";
+    if (!sawMatchingUserMessage) {
+      if (role !== "user") {
+        continue;
+      }
+      const messageIdempotencyKey =
+        typeof message.idempotencyKey === "string" ? message.idempotencyKey.trim() : "";
+      if (messageIdempotencyKey === expectedKey) {
+        sawMatchingUserMessage = true;
+      }
+      continue;
+    }
+    if (role !== "assistant") {
+      continue;
+    }
+    const content = extractChatMessageContent(message);
+    if (content.text || content.images.length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey) {
+  try {
+    const history = await requestJson("/plugins/video-chat/api/chat/history", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionKey,
+        limit: 30,
+      }),
+    });
+    if (resolveChatSessionKey() !== sessionKey) {
+      return false;
+    }
+    const messages = applyChatHistory(history);
+    return historyHasAssistantReplyAfterIdempotencyKey(messages, idempotencyKey);
+  } catch (error) {
+    setOutput({
+      action: "chat-history-refresh-failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+function isAbortError(error) {
+  return (
+    (typeof DOMException === "function" && error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+async function requestJsonWithTimeout(path, options = {}, timeoutMs = AVATAR_STATUS_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await requestJson(path, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function backfillAssistantMessageMetadataFromHistory(params = {}) {
@@ -5876,25 +6089,159 @@ function isAvatarJoinTimeoutError(error) {
   );
 }
 
+function hasAvatarBackendProgress(status) {
+  return Boolean(
+    status &&
+      typeof status === "object" &&
+      (status.jobAcceptedAt ||
+        status.agentSessionConnectedAt ||
+        status.avatarStartBeginAt ||
+        status.avatarStartConnectedAt ||
+        status.gatewayChatFinalAt ||
+        status.speechBeginAt ||
+        status.speechFinishedAt),
+  );
+}
+
+function describeAvatarSessionProgress(status) {
+  if (!status || typeof status !== "object") {
+    return "";
+  }
+  if (status.speechFailedAt) {
+    return status.speechError
+      ? `Avatar speech failed on the worker: ${status.speechError}`
+      : "Avatar speech failed on the worker.";
+  }
+  if (status.speechBeginAt && !status.speechFinishedAt) {
+    return "Avatar started speaking. Waiting for the room media to catch up...";
+  }
+  if (status.speechFinishedAt) {
+    return "Avatar reply finished on the worker. Waiting for room media...";
+  }
+  if (status.avatarStartConnectedAt) {
+    return "Avatar renderer connected. Waiting for the room stream...";
+  }
+  if (status.avatarStartBeginAt) {
+    return "Starting the avatar renderer...";
+  }
+  if (status.agentSessionConnectedAt) {
+    return "Agent connected to the room. Starting avatar audio...";
+  }
+  if (status.jobAcceptedAt) {
+    return "Avatar worker accepted the room job...";
+  }
+  return "";
+}
+
+async function fetchAvatarSessionStatus(roomName, options = {}) {
+  if (typeof roomName !== "string" || !roomName.trim()) {
+    return null;
+  }
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : AVATAR_STATUS_REQUEST_TIMEOUT_MS;
+  try {
+    const payload = await requestJsonWithTimeout(
+      `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName.trim())}`,
+      {},
+      timeoutMs,
+    );
+    return payload?.status && typeof payload.status === "object" ? payload.status : null;
+  } catch (error) {
+    if (isAbortError(error)) {
+      debugLog("avatar-status:fetch-timeout", {
+        roomName,
+        timeoutMs,
+      });
+      return null;
+    }
+    debugLog("avatar-status:fetch-failed", {
+      roomName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 async function waitForAvatarParticipant(room, options = {}) {
-  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 12_000;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : AVATAR_JOIN_TIMEOUT_MS;
+  const progressGraceMs = Number.isFinite(options.progressGraceMs)
+    ? options.progressGraceMs
+    : AVATAR_JOIN_PROGRESS_GRACE_MS;
+  const maxTimeoutMs = Number.isFinite(options.maxTimeoutMs)
+    ? options.maxTimeoutMs
+    : AVATAR_JOIN_MAX_TIMEOUT_MS;
+  const statusPollMs = Number.isFinite(options.statusPollMs) ? options.statusPollMs : AVATAR_STATUS_POLL_MS;
+  const statusRequestTimeoutMs = Number.isFinite(options.statusRequestTimeoutMs)
+    ? options.statusRequestTimeoutMs
+    : AVATAR_STATUS_REQUEST_TIMEOUT_MS;
   const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 200;
+  const roomName =
+    (typeof options.roomName === "string" && options.roomName.trim()) ||
+    activeSession?.roomName ||
+    "";
+  const waitingMessage =
+    typeof options.loadingMessage === "string" && options.loadingMessage.trim()
+      ? options.loadingMessage.trim()
+      : AVATAR_LOADING_STATUS;
   const startedAt = Date.now();
-  while (Date.now() - startedAt <= timeoutMs) {
+  const maxDeadlineAt = startedAt + maxTimeoutMs;
+  let deadlineAt = Math.min(maxDeadlineAt, startedAt + timeoutMs);
+  let lastStatusPollAt = 0;
+  let lastObservedStatus = null;
+  let activeLoadingMessage = waitingMessage;
+  setAvatarLoadingState(true, activeLoadingMessage);
+  while (Date.now() <= deadlineAt) {
     if (activeRoom !== room) {
+      setAvatarLoadingState(false);
       throw new Error("Room changed before avatar joined.");
     }
     if (!activeSession) {
+      setAvatarLoadingState(false);
       throw new Error("Session ended before avatar joined.");
     }
     if (hasAvatarParticipantInRoom(room) || hasAvatarVideo()) {
+      setAvatarLoadingState(false);
       return;
+    }
+    const now = Date.now();
+    if (roomName && now - lastStatusPollAt >= statusPollMs) {
+      lastStatusPollAt = now;
+      const remainingPollBudgetMs = Math.max(250, deadlineAt - now);
+      const status = await fetchAvatarSessionStatus(roomName, {
+        timeoutMs: Math.min(statusRequestTimeoutMs, remainingPollBudgetMs),
+      });
+      if (status) {
+        lastObservedStatus = status;
+        if (status.speechFailedAt) {
+          setAvatarLoadingState(false);
+          throw createAvatarJoinTimeoutError(
+            describeAvatarSessionProgress(status) || "Avatar worker failed before joining the room.",
+          );
+        }
+        const nextLoadingMessage = describeAvatarSessionProgress(status);
+        if (nextLoadingMessage && nextLoadingMessage !== activeLoadingMessage) {
+          activeLoadingMessage = nextLoadingMessage;
+          setAvatarLoadingState(true, activeLoadingMessage);
+        }
+        const statusUpdatedAt = resolveChatTimestamp(status.updatedAt);
+        if (hasAvatarBackendProgress(status) && Number.isFinite(statusUpdatedAt)) {
+          deadlineAt = Math.max(
+            deadlineAt,
+            Math.min(maxDeadlineAt, statusUpdatedAt + progressGraceMs),
+          );
+        }
+      }
     }
     await new Promise((resolve) => {
       setTimeout(resolve, pollMs);
     });
   }
-  throw createAvatarJoinTimeoutError("Timed out waiting for avatar to join the room.");
+  setAvatarLoadingState(false);
+  const lastProgressMessage = describeAvatarSessionProgress(lastObservedStatus);
+  throw createAvatarJoinTimeoutError(
+    lastProgressMessage
+      ? `Timed out waiting for avatar to join the room. Last backend progress: ${lastProgressMessage}`
+      : "Timed out waiting for avatar to join the room.",
+  );
 }
 
 async function restartVideoChatSidecar() {
@@ -5937,6 +6284,8 @@ async function connectToRoomAndEnsureAvatar(options = {}) {
   try {
     await waitForAvatarParticipant(room, {
       timeoutMs: options.avatarJoinTimeoutMs,
+      roomName: activeSession?.roomName ?? "",
+      loadingMessage: options.loadingMessage,
     });
   } catch (error) {
     if (
@@ -6940,7 +7289,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   setChatStatus("Sending message...");
 
   try {
-    await ensureGatewaySocketConnected();
+    const liveUpdatesReady = await primeGatewaySocketForChat();
     const payload = await requestJson("/plugins/video-chat/api/chat/send", {
       method: "POST",
       body: JSON.stringify({
@@ -6952,7 +7301,7 @@ async function submitChatMessage(rawMessage, options = {}) {
     });
     const response = payload?.response ?? {};
     setOutput({ action: "chat-sent", sessionKey, response });
-    setChatStatus("Awaiting agent reply...");
+    await handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey);
     return true;
   } catch (error) {
     setChatComposerInputValue(sourceInput, message);
