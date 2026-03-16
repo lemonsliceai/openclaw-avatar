@@ -260,6 +260,8 @@ const chatComposerDrafts = {
   },
 };
 let chatAwaitingReply = false;
+let chatRenderQueued = false;
+let chatRenderScrollToBottom = false;
 let chatComposerAttachmentIdCounter = 0;
 const debugLogEntries = [];
 const assistantMetadataBackfillTimers = new Map();
@@ -767,6 +769,17 @@ function resolveChatContentTextParts(content) {
     .filter(Boolean);
 }
 
+function resolveStreamingChatContentTextParts(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content
+    .filter((item) => item && typeof item === "object")
+    .filter((item) => item.type === "text" || item.type === "input_text" || item.type === "output_text")
+    .map((item) => (typeof item.text === "string" ? item.text : ""))
+    .filter((item) => typeof item === "string");
+}
+
 function buildDataUrlFromImageSource(source) {
   if (!source || typeof source !== "object") {
     return "";
@@ -855,6 +868,60 @@ function extractChatMessageContent(message) {
   }
   if (!text && typeof message.text === "string" && message.text.trim()) {
     text = message.text.trim();
+  }
+
+  return { text, images };
+}
+
+function extractStreamingChatMessageContent(message) {
+  if (typeof message === "string") {
+    return { text: message, images: [] };
+  }
+  if (!message || typeof message !== "object") {
+    return { text: "", images: [] };
+  }
+
+  const textParts = resolveStreamingChatContentTextParts(message.content);
+  const images =
+    Array.isArray(message.content)
+      ? message.content
+          .filter((item) => item && typeof item === "object")
+          .map((item) => {
+            const type = typeof item.type === "string" ? item.type.trim() : "";
+            if (
+              type !== "input_image" &&
+              type !== "image" &&
+              type !== "image_url" &&
+              !item.image_url &&
+              !item.imageUrl &&
+              !item.source &&
+              !item.url
+            ) {
+              return null;
+            }
+            const url = resolveChatImageUrl(item);
+            if (!url) {
+              return null;
+            }
+            return {
+              url,
+              alt:
+                typeof item.alt === "string" && item.alt.trim()
+                  ? item.alt.trim()
+                  : typeof item.name === "string" && item.name.trim()
+                    ? item.name.trim()
+                    : "Pasted image",
+            };
+          })
+          .filter(Boolean)
+      : [];
+
+  let text = textParts.join("");
+  if (!text && typeof message.content === "string") {
+    text = message.content;
+  }
+  if (!text && typeof message.text === "string") {
+    text = message.text;
   }
 
   return { text, images };
@@ -5665,7 +5732,7 @@ function renderChatLog(options = {}) {
     }
   }
 
-  if (chatAwaitingReply) {
+  if (chatAwaitingReply && !hasStreamingAssistantMessage()) {
     chatLogEl.appendChild(createTypingIndicatorGroup());
   }
 
@@ -5676,6 +5743,27 @@ function renderChatLog(options = {}) {
       }
     });
   }
+}
+
+function scheduleChatRender(options = {}) {
+  if (options.scrollToBottom !== false) {
+    chatRenderScrollToBottom = true;
+  }
+  if (chatRenderQueued) {
+    return;
+  }
+  chatRenderQueued = true;
+  const flushRender = () => {
+    chatRenderQueued = false;
+    const scrollToBottom = chatRenderScrollToBottom;
+    chatRenderScrollToBottom = false;
+    renderChatLog({ scrollToBottom });
+  };
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(flushRender);
+    return;
+  }
+  flushRender();
 }
 
 function replaceChatLog(entries) {
@@ -5691,6 +5779,8 @@ function replaceChatLog(entries) {
       images: hasImages ? entry.images : [],
       timestamp: resolveChatTimestamp(entry.timestamp) ?? Date.now(),
       rawMessage: entry?.rawMessage && typeof entry.rawMessage === "object" ? entry.rawMessage : null,
+      runId: typeof entry?.runId === "string" ? entry.runId : "",
+      streaming: entry?.streaming === true,
     });
   }
   chatAwaitingReply = false;
@@ -5730,12 +5820,131 @@ function appendChatLine(role, textOrMessage, options = {}) {
     images: content.images,
     timestamp: resolveChatTimestamp(options.timestamp) ?? Date.now(),
     rawMessage: options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null,
+    runId: typeof options.runId === "string" ? options.runId : "",
+    streaming: options.streaming === true,
   });
   if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
     chatAwaitingReply = Boolean(options.awaitingReply);
     updateChatControls();
   }
   renderChatLog();
+}
+
+function hasStreamingAssistantMessage() {
+  return chatMessages.some((message) => message?.role === "assistant" && message?.streaming === true);
+}
+
+function clearStreamingAssistantMessages() {
+  let changed = false;
+  for (const message of chatMessages) {
+    if (!message || message.role !== "assistant" || message.streaming !== true) {
+      continue;
+    }
+    message.streaming = false;
+    changed = true;
+  }
+  return changed;
+}
+
+function findLatestStreamingAssistantMessage(runId = "") {
+  const expectedRunId = typeof runId === "string" ? runId.trim() : "";
+  for (let index = chatMessages.length - 1; index >= 0; index -= 1) {
+    const message = chatMessages[index];
+    if (!message || message.role !== "assistant" || message.streaming !== true) {
+      continue;
+    }
+    if (!expectedRunId || message.runId === expectedRunId) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function upsertStreamingAssistantMessage(textOrMessage, options = {}) {
+  const content =
+    typeof textOrMessage === "string"
+      ? { text: String(textOrMessage), images: [] }
+      : textOrMessage && typeof textOrMessage === "object"
+        ? {
+            text: typeof textOrMessage.text === "string" ? textOrMessage.text : "",
+            images: Array.isArray(textOrMessage.images) ? textOrMessage.images : [],
+          }
+        : { text: "", images: [] };
+  if (!content.text && content.images.length === 0) {
+    return;
+  }
+  const runId = typeof options.runId === "string" ? options.runId.trim() : "";
+  const existing = findLatestStreamingAssistantMessage(runId);
+  if (existing) {
+    const isDelta = options.state === "delta";
+    existing.text = isDelta ? `${existing.text ?? ""}${content.text}` : content.text;
+    if (!isDelta) {
+      existing.images = content.images;
+    }
+    existing.timestamp = resolveChatTimestamp(options.timestamp) ?? existing.timestamp ?? Date.now();
+    existing.rawMessage =
+      options.rawMessage && typeof options.rawMessage === "object" ? options.rawMessage : null;
+    scheduleChatRender({ scrollToBottom: options.scrollToBottom });
+    return;
+  }
+  appendChatLine("assistant", content, {
+    timestamp: options.timestamp,
+    rawMessage: options.rawMessage,
+    runId,
+    streaming: true,
+  });
+}
+
+function finalizeStreamingAssistantMessage(textOrMessage, options = {}) {
+  const content =
+    typeof textOrMessage === "string"
+      ? { text: String(textOrMessage), images: [] }
+      : textOrMessage && typeof textOrMessage === "object"
+        ? {
+            text: typeof textOrMessage.text === "string" ? textOrMessage.text : "",
+            images: Array.isArray(textOrMessage.images) ? textOrMessage.images : [],
+          }
+        : { text: "", images: [] };
+  const runId = typeof options.runId === "string" ? options.runId.trim() : "";
+  const existing = findLatestStreamingAssistantMessage(runId);
+  if (existing) {
+    const hasRawMessage = options.rawMessage && typeof options.rawMessage === "object";
+    const resolvedTimestamp = resolveChatTimestamp(options.timestamp);
+    if (content.text || content.images.length > 0) {
+      if (content.text) {
+        existing.text = content.text;
+      }
+      existing.images = content.images;
+      existing.timestamp = resolvedTimestamp ?? existing.timestamp ?? Date.now();
+      existing.rawMessage =
+        hasRawMessage ? options.rawMessage : null;
+    } else if (hasRawMessage) {
+      existing.rawMessage = options.rawMessage;
+      existing.timestamp = resolvedTimestamp ?? existing.timestamp ?? Date.now();
+    }
+    existing.streaming = false;
+    if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
+      chatAwaitingReply = Boolean(options.awaitingReply);
+      updateChatControls();
+    }
+    renderChatLog();
+    return true;
+  }
+  if (!content.text && content.images.length === 0) {
+    if (Object.prototype.hasOwnProperty.call(options, "awaitingReply")) {
+      chatAwaitingReply = Boolean(options.awaitingReply);
+      updateChatControls();
+      renderChatLog();
+    }
+    return false;
+  }
+  appendChatLine("assistant", content, {
+    timestamp: options.timestamp,
+    rawMessage: options.rawMessage,
+    runId,
+    awaitingReply: options.awaitingReply,
+  });
+  return true;
 }
 
 function extractAssistantText(message) {
@@ -6002,6 +6211,7 @@ function closeGatewaySocket(reason) {
   gatewaySocketReady = false;
   gatewayConnectRequestId = null;
   chatAwaitingReply = false;
+  clearStreamingAssistantMessages();
   clearAvatarInterruptPending({
     forceUnmute: true,
   });
@@ -6045,30 +6255,44 @@ function handleGatewayChatEvent(payload) {
   }
 
   const state = typeof payload.state === "string" ? payload.state : "";
+  const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
   if (state === "delta") {
+    const content = extractStreamingChatMessageContent(payload.message);
+    if (content.text || content.images.length > 0) {
+      upsertStreamingAssistantMessage(content, {
+        state,
+        runId,
+        timestamp: resolveMessageTimestamp(payload.message),
+        rawMessage: payload.message,
+      });
+    }
     setChatAwaitingReply(true);
     setChatStatus("Agent is responding...");
     return;
   }
   if (state === "final") {
     const content = extractChatMessageContent(payload.message);
-    if (content.text) {
-      rememberRecentAvatarReply(content.text, resolveMessageTimestamp(payload.message));
+    const streamingBubble = findLatestStreamingAssistantMessage(runId);
+    const hasStreamingBubble = Boolean(streamingBubble);
+    const resolvedAssistantText =
+      content.text || (hasStreamingBubble && typeof streamingBubble?.text === "string" ? streamingBubble.text : "");
+    if (resolvedAssistantText) {
+      rememberRecentAvatarReply(resolvedAssistantText, resolveMessageTimestamp(payload.message));
     }
-    const assistantMessage = content.text || content.images.length > 0 ? content : "[No text in final message]";
-    appendChatLine(
-      "assistant",
-      assistantMessage,
-      {
-        awaitingReply: false,
-        timestamp: resolveMessageTimestamp(payload.message),
-        rawMessage: payload.message,
-      },
-    );
-    if (!extractMessageUsageMeta(payload.message) && content.text) {
+    const assistantMessage =
+      !hasStreamingBubble && !content.text && content.images.length === 0
+        ? "[No text in final message]"
+        : content;
+    finalizeStreamingAssistantMessage(assistantMessage, {
+      runId,
+      awaitingReply: false,
+      timestamp: resolveMessageTimestamp(payload.message),
+      rawMessage: payload.message,
+    });
+    if (!extractMessageUsageMeta(payload.message) && resolvedAssistantText) {
       scheduleAssistantMessageMetadataBackfill({
         sessionKey: expectedSessionKey,
-        text: content.text,
+        text: resolvedAssistantText,
         timestamp: resolveMessageTimestamp(payload.message),
       });
     }
@@ -6079,6 +6303,10 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "error") {
+    finalizeStreamingAssistantMessage("", {
+      runId,
+      awaitingReply: false,
+    });
     clearAvatarInterruptPending({
       forceUnmute: true,
     });
@@ -6089,6 +6317,10 @@ function handleGatewayChatEvent(payload) {
     return;
   }
   if (state === "aborted") {
+    finalizeStreamingAssistantMessage("", {
+      runId,
+      awaitingReply: false,
+    });
     clearAvatarInterruptPending({
       forceUnmute: true,
     });
@@ -6244,6 +6476,8 @@ async function ensureGatewaySocketConnected() {
       gatewaySocketReady = false;
       gatewayConnectRequestId = null;
       chatAwaitingReply = false;
+      updateChatControls();
+      clearStreamingAssistantMessages();
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
       renderChatLog({ scrollToBottom: false });
       setChatStatus("Chat disconnected.");

@@ -3,8 +3,10 @@ import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-// @ts-expect-error The runner ships as plain JS in the plugin package.
-import videoChatAgent, { GatewayWsClient } from "./video-chat-agent-runner.js";
+import videoChatAgent, {
+  GatewayWsClient,
+  computeStreamingTextDelta,
+} from "./video-chat-agent-runner.js";
 
 class MockWebSocket extends EventEmitter {
   static CONNECTING = 0;
@@ -176,6 +178,28 @@ describe("GatewayWsClient", () => {
 
     await vi.runOnlyPendingTimersAsync();
     expect(MockWebSocket.instances).toHaveLength(1);
+  });
+});
+
+describe("computeStreamingTextDelta", () => {
+  it("returns the newly appended suffix for cumulative gateway text", () => {
+    expect(computeStreamingTextDelta("Hello there", "Hello")).toBe(" there");
+  });
+
+  it("returns the full text for the first streamed chunk", () => {
+    expect(computeStreamingTextDelta("Hello there", "")).toBe("Hello there");
+  });
+
+  it("returns an empty delta when the chunk is unchanged", () => {
+    expect(computeStreamingTextDelta("same", "same")).toBe("");
+  });
+
+  it("returns an empty delta when the next chunk is empty", () => {
+    expect(computeStreamingTextDelta("", "prefix")).toBe("");
+  });
+
+  it("returns null when the next chunk is not a monotonic prefix extension", () => {
+    expect(computeStreamingTextDelta("Hello world", "Hi")).toBeNull();
   });
 });
 
