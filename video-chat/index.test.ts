@@ -2191,6 +2191,7 @@ describe("video-chat plugin", () => {
     expect(readmePage.res.body).toContain('id="keys-health-value"');
     expect(readmePage.res.body).toContain('id="package-version-value"');
     expect(readmePage.res.body).toContain('id="theme-toggle"');
+    expect(readmePage.res.body).toContain('id="nav-collapse-toggle"');
     expect(readmePage.res.body).toContain('/plugins/video-chat/app.js?v=');
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
     expect(readmePage.res.body).toContain("/plugins/video-chat/assets/GreenConfig.png");
