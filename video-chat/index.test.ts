@@ -2187,6 +2187,11 @@ describe("video-chat plugin", () => {
     expect(readmePage.res.statusCode).toBe(200);
     expect(readmePage.res.header("content-type")).toBe("text/html; charset=utf-8");
     expect(readmePage.res.body).toContain("<title>Claw Cast README</title>");
+    expect(readmePage.res.body).toContain('id="gateway-health-value"');
+    expect(readmePage.res.body).toContain('id="keys-health-value"');
+    expect(readmePage.res.body).toContain('id="package-version-value"');
+    expect(readmePage.res.body).toContain('id="theme-toggle"');
+    expect(readmePage.res.body).toContain('/plugins/video-chat/app.js?v=');
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
     expect(readmePage.res.body).toContain("/plugins/video-chat/assets/GreenConfig.png");
     expect(readmePage.res.body).not.toContain("__README_HTML__");
