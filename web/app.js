@@ -193,6 +193,7 @@ let preferredMicMuted = false;
 let avatarSpeakerMuted = false;
 let avatarMutedForPendingChatReply = false;
 let avatarInterruptPending = false;
+let voiceTranscriptionPending = false;
 let avatarAutoStartInPictureInPicture = true;
 let avatarDocumentPictureInPictureWindow = null;
 let avatarDocumentPictureInPictureCleanup = null;
@@ -1333,13 +1334,13 @@ async function handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idem
 async function submitVoiceTranscript(rawTranscript) {
   const transcript = typeof rawTranscript === "string" ? rawTranscript.trim() : "";
   if (!transcript) {
-    setAvatarMutedForPendingChatReply(false);
+    clearVoiceTranscriptionPending();
     return false;
   }
 
   const sessionKey = resolveChatSessionKey();
   if (!sessionKey) {
-    setAvatarMutedForPendingChatReply(false);
+    clearVoiceTranscriptionPending();
     return false;
   }
 
@@ -1348,7 +1349,7 @@ async function submitVoiceTranscript(rawTranscript) {
       reason: "avatar-echo",
       transcriptLength: transcript.length,
     });
-    setAvatarMutedForPendingChatReply(false);
+    clearVoiceTranscriptionPending();
     return false;
   }
 
@@ -1360,7 +1361,7 @@ async function submitVoiceTranscript(rawTranscript) {
     transcript.toLowerCase() === priorTranscriptEntry.transcript &&
     Date.now() - priorTranscriptEntry.at < VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS;
   if (duplicateTranscript) {
-    setAvatarMutedForPendingChatReply(false);
+    clearVoiceTranscriptionPending();
     return false;
   }
   lastVoiceTranscriptByConnection.set(dedupeKey, {
@@ -1372,6 +1373,9 @@ async function submitVoiceTranscript(rawTranscript) {
   setChatPaneOpen(true);
   appendChatLine("user", transcript, {
     awaitingReply: true,
+  });
+  clearVoiceTranscriptionPending({
+    keepMuted: true,
   });
   setChatStatus("Sending message...");
 
@@ -1405,7 +1409,7 @@ async function submitVoiceTranscript(rawTranscript) {
     });
     setOutput({ action: "voice-chat-send-failed", error: String(error) });
     setChatStatus("Voice chat send failed.");
-    setAvatarMutedForPendingChatReply(false);
+    clearVoiceTranscriptionPending();
     return false;
   }
 }
@@ -1463,6 +1467,7 @@ function clearBrowserSpeechRecognitionRestartTimer() {
 function stopBrowserSpeechRecognition() {
   browserSpeechRecognitionShouldRun = false;
   clearBrowserSpeechRecognitionRestartTimer();
+  clearVoiceTranscriptionPending();
   if (!browserSpeechRecognition || !browserSpeechRecognitionActive) {
     return;
   }
@@ -1811,7 +1816,7 @@ async function handleServerSpeechRealtimeMessage(event) {
     const transcriptResult = parseServerSpeechRealtimeTranscript(payload);
     const transcript = transcriptResult.transcript;
     if (transcript) {
-      setAvatarMutedForPendingChatReply(true);
+      requestAvatarInterruptForVoiceTranscription("voice-transcription");
     }
     return;
   }
@@ -1826,20 +1831,20 @@ async function handleServerSpeechRealtimeMessage(event) {
         reason: transcriptResult.filteredReason,
       });
     }
-    setAvatarMutedForPendingChatReply(false);
+    clearVoiceTranscriptionPending();
     return;
   }
   try {
     const submitted = await submitVoiceTranscript(transcript);
     if (!submitted) {
-      setAvatarMutedForPendingChatReply(false);
+      clearVoiceTranscriptionPending();
     }
     setOutput({
       action: "server-speech-transcribed",
       transcriptChars: transcript.length,
     });
   } catch (error) {
-    setAvatarMutedForPendingChatReply(false);
+    clearVoiceTranscriptionPending();
     setOutput({ action: "voice-chat-transcript-submit-failed", error: String(error) });
   }
 }
@@ -1849,6 +1854,7 @@ function stopServerSpeechTranscription(options = {}) {
   serverSpeechRealtimeStopRequested = true;
   serverSpeechRealtimeSocketReady = false;
   clearServerSpeechRealtimeTokenCache();
+  clearVoiceTranscriptionPending();
   const socket = serverSpeechRealtimeSocket;
   serverSpeechRealtimeSocket = null;
   if (socket && socket.readyState !== WebSocket.CLOSED) {
@@ -2027,35 +2033,27 @@ function ensureBrowserSpeechRecognition() {
     }
     if (finalized.length > 0) {
       void submitVoiceTranscript(finalized.join(" ")).catch((error) => {
-        setAvatarMutedForPendingChatReply(false);
+        clearVoiceTranscriptionPending();
         setOutput({ action: "voice-chat-transcript-submit-failed", error: String(error) });
       });
     }
   });
 
   recognition.addEventListener("speechstart", () => {
-    setAvatarMutedForPendingChatReply(true);
-  });
-
-  recognition.addEventListener("speechend", () => {
-    if (!chatAwaitingReply) {
-      setAvatarMutedForPendingChatReply(false);
-    }
+    requestAvatarInterruptForVoiceTranscription("voice-transcription");
   });
 
   recognition.addEventListener("error", (event) => {
     browserSpeechRecognitionActive = false;
     const code = typeof event?.error === "string" ? event.error : "unknown";
     if (code === "aborted" || code === "no-speech") {
-      if (!chatAwaitingReply) {
-        setAvatarMutedForPendingChatReply(false);
-      }
+      clearVoiceTranscriptionPending();
       return;
     }
     if (code === "not-allowed" || code === "service-not-allowed") {
       browserSpeechRecognitionShouldRun = false;
       setChatStatus("Browser speech recognition permission was denied.");
-      setAvatarMutedForPendingChatReply(false);
+      clearVoiceTranscriptionPending();
       setServerSpeechTranscriptionFallback(code);
       syncVoiceTranscription();
       return;
@@ -2065,18 +2063,14 @@ function ensureBrowserSpeechRecognition() {
       error: code,
       message: typeof event?.message === "string" ? event.message : "",
     });
-    if (!chatAwaitingReply) {
-      setAvatarMutedForPendingChatReply(false);
-    }
+    clearVoiceTranscriptionPending();
     setServerSpeechTranscriptionFallback(code);
     syncVoiceTranscription();
   });
 
   recognition.addEventListener("end", () => {
     browserSpeechRecognitionActive = false;
-    if (!chatAwaitingReply) {
-      setAvatarMutedForPendingChatReply(false);
-    }
+    clearVoiceTranscriptionPending();
     if (!browserSpeechRecognitionShouldRun) {
       return;
     }
@@ -4629,6 +4623,41 @@ function setAvatarMutedForPendingChatReply(nextValue) {
   applyAvatarSpeakerMuteState();
 }
 
+function clearVoiceTranscriptionPending(options = {}) {
+  const keepMuted = options.keepMuted === true;
+  voiceTranscriptionPending = false;
+  if (keepMuted || chatAwaitingReply || avatarInterruptPending) {
+    return;
+  }
+  setAvatarMutedForPendingChatReply(false);
+}
+
+function requestAvatarInterruptForVoiceTranscription(source = "voice-transcription") {
+  if (voiceTranscriptionPending) {
+    setAvatarMutedForPendingChatReply(true);
+    return;
+  }
+  voiceTranscriptionPending = true;
+  setAvatarMutedForPendingChatReply(true);
+  if (avatarInterruptPending) {
+    return;
+  }
+  if (!resolveChatSessionKey()) {
+    return;
+  }
+  avatarInterruptPending = true;
+  void publishAvatarControlMessage("interrupt-speech", {
+    source,
+  }).then((sent) => {
+    if (!sent && avatarInterruptPending) {
+      avatarInterruptPending = false;
+      if (!chatAwaitingReply && !voiceTranscriptionPending) {
+        setAvatarMutedForPendingChatReply(false);
+      }
+    }
+  });
+}
+
 function resumeAvatarMediaPlayback(reason = "manual") {
   syncAvatarDocumentPictureInPictureMedia();
 
@@ -5547,7 +5576,9 @@ function handleAvatarInterruptAcknowledged(payload) {
     action: "avatar-control-acknowledged",
     controlAction: payload.action,
   });
-  setAvatarMutedForPendingChatReply(false);
+  if (!chatAwaitingReply && !voiceTranscriptionPending) {
+    setAvatarMutedForPendingChatReply(false);
+  }
 }
 
 function handleAvatarControlMessage(payload) {
