@@ -1038,6 +1038,29 @@
                 <span>Session key</span>
                 <input type="text" name="sessionKey" placeholder="main" />
               </label>
+              <label class="field full">
+                <span>Avatar image URL</span>
+                <input
+                  type="url"
+                  id="session-image-url"
+                  name="avatarImageUrl"
+                  placeholder="https://example.com/avatar.png"
+                  required
+                />
+              </label>
+              <label class="field full">
+                <span>Avatar timeout (seconds)</span>
+                <input
+                  type="number"
+                  id="avatar-timeout-seconds"
+                  name="avatarTimeoutSeconds"
+                  min="1"
+                  max="600"
+                  step="1"
+                  value="60"
+                  inputmode="numeric"
+                />
+              </label>
               <div class="session-key-help">
                 <p><strong>How to pick a key:</strong> leave this blank or enter <code>main</code> to use the default OpenClaw session (<code>session.mainKey</code>, which falls back to <code>main</code>).</p>
                 <ul>
@@ -1047,7 +1070,7 @@
                 </ul>
               </div>
               <div class="row">
-                <button class="btn primary" type="submit">Start Session</button>
+                <button class="btn primary" type="submit" id="start-session">Start Session</button>
                 <button class="btn danger" type="button" id="stop-session">Stop Session</button>
               </div>
               <div class="session-form__toggles">
@@ -1219,7 +1242,7 @@
                 <textarea
                   id="chat-input"
                   rows="1"
-                  placeholder="Message the active session. Press Enter to send, Shift+Enter for a new line."
+                  placeholder="Type a message"
                 ></textarea>
                 <div class="agent-chat__toolbar">
                   <div class="agent-chat__toolbar-left">

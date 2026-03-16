@@ -5,6 +5,9 @@ const setupRawForm = document.getElementById("setup-raw-form");
 const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
 const sessionForm = document.getElementById("session-form");
+const startSessionButton = document.getElementById("start-session");
+const sessionImageUrlInput = document.getElementById("session-image-url");
+const avatarTimeoutSecondsInput = document.getElementById("avatar-timeout-seconds");
 const startInPictureInPictureCheckbox = document.getElementById("start-in-pip");
 const reloadButton = document.getElementById("reload-status");
 const configCancelButton = document.getElementById("config-cancel");
@@ -70,6 +73,8 @@ const CHAT_PANE_WIDTH_STORAGE_KEY = "videoChat.chatPaneWidth";
 const MIC_MUTED_STORAGE_KEY = "videoChat.microphoneMuted";
 const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
 const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "videoChat.avatarAutoStartInPictureInPicture";
+const SESSION_IMAGE_URL_STORAGE_KEY = "videoChat.sessionImageUrl";
+const SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY = "videoChat.sessionAvatarTimeoutSeconds";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -102,6 +107,9 @@ const AVATAR_PIP_END_CALL_ICON_URL = "https://unpkg.com/lucide-static@0.321.0/ic
 const AVATAR_PARTICIPANT_IDENTITY = "lemonslice-avatar-agent";
 const AVATAR_JOIN_TIMEOUT_ERROR_CODE = "AVATAR_JOIN_TIMEOUT";
 const AVATAR_JOIN_TIMEOUT_MS = 12_000;
+const SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS = 60;
+const SESSION_AVATAR_TIMEOUT_MIN_SECONDS = 1;
+const SESSION_AVATAR_TIMEOUT_MAX_SECONDS = 600;
 const AVATAR_JOIN_PROGRESS_GRACE_MS = 12_000;
 const AVATAR_JOIN_MAX_TIMEOUT_MS = 45_000;
 const AVATAR_STATUS_POLL_MS = 1_000;
@@ -157,6 +165,8 @@ const CHAT_WELCOME_SUGGESTIONS = [
   "Summarize the latest exchange",
   "Give me a next step",
 ];
+const CHAT_INPUT_PLACEHOLDER_TEXT = "Type a message";
+const AVATAR_AUTO_HELLO_MESSAGE = "hello";
 
 let activeSession = null;
 let activeRoom = null;
@@ -240,7 +250,6 @@ let openClawCompatibility = {
 let activeConfigSectionFilter = "all";
 let activeConfigMode = "form";
 let setupFormBaseline = {
-  lemonSliceImageUrl: "",
   livekitUrl: "",
   elevenLabsVoiceId: "",
   lemonSliceApiKey: "",
@@ -249,8 +258,12 @@ let setupFormBaseline = {
   elevenLabsApiKey: "",
 };
 let setupRawBaseline = "";
+let activeSessionImageUrl = "";
+let activeSessionAvatarJoinTimeoutMs = SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS * 1000;
 const renderedVoiceUserRuns = new Set();
 const chatMessages = [];
+const avatarAutoHelloSentSessionKeys = new Set();
+const avatarAutoHelloPendingSessionKeys = new Set();
 const chatComposerDrafts = {
   main: {
     attachments: [],
@@ -1253,6 +1266,26 @@ function persistBooleanPreference(key, value) {
   }
 }
 
+function getStoredStringPreference(key, fallback = "") {
+  try {
+    const stored = localStorage.getItem(key);
+    if (typeof stored === "string") {
+      return stored;
+    }
+  } catch {
+    // Ignore storage failures.
+  }
+  return fallback;
+}
+
+function persistStringPreference(key, value) {
+  try {
+    localStorage.setItem(key, typeof value === "string" ? value : String(value ?? ""));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 function loadMediaPreferences() {
   preferredMicMuted = getStoredBooleanPreference(MIC_MUTED_STORAGE_KEY);
   avatarSpeakerMuted = getStoredBooleanPreference(AVATAR_SPEAKER_MUTED_STORAGE_KEY);
@@ -1262,9 +1295,67 @@ function loadMediaPreferences() {
   }
 }
 
-function buildSessionCreatePayload(sessionKey) {
+function loadSessionFormPreferences() {
+  if (sessionImageUrlInput && typeof sessionImageUrlInput.value === "string" && !sessionImageUrlInput.value) {
+    sessionImageUrlInput.value = getStoredStringPreference(SESSION_IMAGE_URL_STORAGE_KEY, "");
+  }
+  if (avatarTimeoutSecondsInput && typeof avatarTimeoutSecondsInput.value === "string") {
+    const storedTimeout = getStoredStringPreference(
+      SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY,
+      avatarTimeoutSecondsInput.value || String(SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS),
+    );
+    avatarTimeoutSecondsInput.value = String(parseSessionAvatarTimeoutSeconds(storedTimeout));
+  }
+  updateSessionStartButtonState();
+}
+
+function parseSessionAvatarTimeoutSeconds(rawValue) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) {
+    return SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS;
+  }
+  const rounded = Math.floor(parsed);
+  return Math.min(
+    SESSION_AVATAR_TIMEOUT_MAX_SECONDS,
+    Math.max(SESSION_AVATAR_TIMEOUT_MIN_SECONDS, rounded),
+  );
+}
+
+function resolveSessionAvatarJoinTimeoutMs(rawValue) {
+  return parseSessionAvatarTimeoutSeconds(rawValue) * 1000;
+}
+
+function resolveSessionImageUrlValue(rawValue) {
+  return normalizeOptionalInputValue(rawValue);
+}
+
+function updateSessionStartButtonState() {
+  if (!startSessionButton) {
+    return;
+  }
+  startSessionButton.disabled = !resolveSessionImageUrlValue(sessionImageUrlInput?.value);
+}
+
+async function validateSessionImageUrl(imageUrl) {
+  const normalizedImageUrl = resolveSessionImageUrlValue(imageUrl);
+  if (!normalizedImageUrl) {
+    throw new Error("Avatar image URL is required.");
+  }
+}
+
+function syncSessionInputsFromSetupStatus() {
+  updateSessionStartButtonState();
+}
+
+function buildSessionCreatePayload(sessionKey, options = {}) {
+  const avatarImageUrl = resolveSessionImageUrlValue(options.avatarImageUrl);
+  if (!avatarImageUrl) {
+    throw new Error("Avatar image URL is required.");
+  }
   return {
     sessionKey,
+    avatarImageUrl,
+    avatarTimeoutSeconds: parseSessionAvatarTimeoutSeconds(options.avatarTimeoutSeconds),
     interruptReplyOnNewMessage: true,
   };
 }
@@ -2863,7 +2954,6 @@ function getSetupFieldValue(name) {
 
 const setupPayloadFieldNames = [
   "lemonSliceApiKey",
-  "lemonSliceImageUrl",
   "livekitUrl",
   "livekitApiKey",
   "livekitApiSecret",
@@ -3022,7 +3112,6 @@ function snapshotSetupRawBaseline() {
 
 function snapshotSetupFormBaseline() {
   setupFormBaseline = {
-    lemonSliceImageUrl: getSetupFieldValue("lemonSliceImageUrl"),
     livekitUrl: getSetupFieldValue("livekitUrl"),
     elevenLabsVoiceId: getSetupFieldValue("elevenLabsVoiceId"),
     lemonSliceApiKey: getSetupFieldValue("lemonSliceApiKey"),
@@ -3063,9 +3152,7 @@ function isSetupFormDirty() {
     return false;
   }
 
-  const urlsDirty =
-    getSetupFieldValue("lemonSliceImageUrl") !== setupFormBaseline.lemonSliceImageUrl ||
-    getSetupFieldValue("livekitUrl") !== setupFormBaseline.livekitUrl;
+  const urlsDirty = getSetupFieldValue("livekitUrl") !== setupFormBaseline.livekitUrl;
   const voiceIdDirty =
     getSetupFieldValue("elevenLabsVoiceId") !== setupFormBaseline.elevenLabsVoiceId;
 
@@ -3164,16 +3251,33 @@ function shouldPreserveStoredSecret(name, value) {
   return Boolean(storedValue) && normalizedValue === storedValue;
 }
 
+function getSetupMissingForUi(setup) {
+  if (!Array.isArray(setup?.missing)) {
+    return [];
+  }
+  return setup.missing.filter((path) => typeof path === "string");
+}
+
+function isSetupConfiguredForUi(setup) {
+  if (!setup || typeof setup !== "object") {
+    return false;
+  }
+  if (setup.configured) {
+    return true;
+  }
+  return getSetupMissingForUi(setup).length === 0;
+}
+
 function updateKeysHealthFromSetup(setup) {
   if (!setup || typeof setup !== "object") {
     setKeysHealthStatus("warn", "Unknown");
     return;
   }
-  if (setup.configured) {
+  if (isSetupConfiguredForUi(setup)) {
     setKeysHealthStatus("ok", "OK");
     return;
   }
-  const missingCount = Array.isArray(setup.missing) ? setup.missing.length : 0;
+  const missingCount = getSetupMissingForUi(setup).length;
   setKeysHealthStatus("warn", missingCount > 0 ? `Missing ${missingCount}` : "Missing");
 }
 
@@ -4206,6 +4310,7 @@ function syncAvatarDocumentPictureInPictureButtons() {
   if (!avatarDocumentPictureInPictureElements) {
     return;
   }
+  const reconnectVisible = hasReconnectableSession();
   const buttonPairs = [
     [reconnectRoomButton, avatarDocumentPictureInPictureElements.reconnectButton],
     [toggleMicButton, avatarDocumentPictureInPictureElements.micButton],
@@ -4217,6 +4322,10 @@ function syncAvatarDocumentPictureInPictureButtons() {
     }
     targetButton.className = sourceButton.className;
     targetButton.disabled = sourceButton.disabled;
+    const shouldHide = sourceButton === reconnectRoomButton ? !reconnectVisible : false;
+    targetButton.hidden = shouldHide;
+    targetButton.style.display = shouldHide ? "none" : "";
+    targetButton.setAttribute("aria-hidden", shouldHide ? "true" : "false");
     targetButton.setAttribute("aria-label", sourceButton.getAttribute("aria-label") || "");
     targetButton.setAttribute("title", sourceButton.getAttribute("title") || "");
     targetButton.setAttribute("aria-pressed", sourceButton.getAttribute("aria-pressed") || "false");
@@ -4226,7 +4335,10 @@ function syncAvatarDocumentPictureInPictureButtons() {
   if (endSessionButton) {
     const hasSession = Boolean(activeSession);
     const hasRoom = Boolean(activeRoom);
-    endSessionButton.disabled = !hasSession && !hasRoom;
+    const canEndSession = hasSession || hasRoom;
+    endSessionButton.hidden = !canEndSession;
+    endSessionButton.disabled = !canEndSession;
+    endSessionButton.setAttribute("aria-hidden", canEndSession ? "false" : "true");
   }
 }
 
@@ -4318,9 +4430,7 @@ function syncAvatarDocumentPictureInPictureChatComposer() {
   const pipAttachments = getChatComposerDraft("pip").attachments;
   const hasDraft = hasChatComposerDraftValue(pipChatInput.value, pipAttachments);
   pipChatInput.disabled = !hasSession;
-  pipChatInput.placeholder = hasSession
-    ? "Message the active session. Press Enter to send, Shift+Enter for a new line."
-    : "Start a session to message";
+  pipChatInput.placeholder = CHAT_INPUT_PLACEHOLDER_TEXT;
   pipChatInput.title = disabledTitle;
   pipChatSendButton.disabled = !hasSession;
   pipChatSendButton.hidden = !hasDraft;
@@ -4430,6 +4540,8 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
   const micButton = cloneAvatarControlButton(toggleMicButton, pictureInPictureDocument);
   const speakerButton = cloneAvatarControlButton(toggleSpeakerButton, pictureInPictureDocument);
   const endSessionButton = createAvatarDocumentPictureInPictureEndCallButton(pictureInPictureDocument);
+  endSessionButton.hidden = true;
+  endSessionButton.setAttribute("aria-hidden", "true");
 
   reconnectButton.addEventListener("click", () => {
     void reconnectAvatarSession().catch((error) => {
@@ -4471,7 +4583,7 @@ function buildAvatarDocumentPictureInPictureView(pictureInPictureDocument) {
 
   const chatInputEl = pictureInPictureDocument.createElement("textarea");
   chatInputEl.rows = 1;
-  chatInputEl.placeholder = "Message the active session. Press Enter to send, Shift+Enter for a new line.";
+  chatInputEl.placeholder = CHAT_INPUT_PLACEHOLDER_TEXT;
   chatInputEl.autocomplete = "off";
   chatInputEl.spellcheck = true;
   chatInputEl.setAttribute("aria-label", "Message");
@@ -6885,6 +6997,7 @@ function markAvatarConnected() {
   setAvatarConnectionState("connected");
   updateRoomStatusState();
   updateRoomButtons();
+  maybeSendAvatarAutoHello();
 }
 
 function markAvatarDisconnected() {
@@ -7152,11 +7265,15 @@ async function connectToRoomAndEnsureAvatar(options = {}) {
 function updateRoomButtons() {
   const hasSession = Boolean(activeSession);
   const hasRoom = Boolean(activeRoom);
+  const canReconnect = hasReconnectableSession();
   if (connectRoomButton) {
     connectRoomButton.disabled = !hasSession || hasRoom;
   }
   if (reconnectRoomButton) {
-    reconnectRoomButton.disabled = !hasReconnectableSession();
+    reconnectRoomButton.hidden = !canReconnect;
+    reconnectRoomButton.disabled = !canReconnect;
+    reconnectRoomButton.style.display = canReconnect ? "" : "none";
+    reconnectRoomButton.setAttribute("aria-hidden", canReconnect ? "false" : "true");
   }
   if (leaveRoomButton) {
     leaveRoomButton.disabled = !hasRoom;
@@ -7511,12 +7628,21 @@ async function reconnectAvatarSession(options = {}) {
 
   const priorSessionKey = activeSession.sessionKey;
   const priorRoomName = activeSession.roomName;
+  const priorSessionImageUrl = resolveSessionImageUrlValue(
+    activeSessionImageUrl || sessionImageUrlInput?.value,
+  );
+  const priorAvatarJoinTimeoutMs = Number.isFinite(activeSessionAvatarJoinTimeoutMs)
+    ? activeSessionAvatarJoinTimeoutMs
+    : resolveSessionAvatarJoinTimeoutMs(avatarTimeoutSecondsInput?.value);
   const keepDocumentPictureInPicture = isAvatarDocumentPictureInPictureActive();
 
   setAvatarConnectionState("connecting");
   setAvatarLoadingState(true, AVATAR_RECONNECTING_STATUS);
   updateRoomButtons();
   try {
+    await validateSessionImageUrl(priorSessionImageUrl);
+    activeSessionImageUrl = priorSessionImageUrl;
+    activeSessionAvatarJoinTimeoutMs = priorAvatarJoinTimeoutMs;
     disconnectRoom({
       keepDocumentPictureInPicture,
     });
@@ -7532,7 +7658,12 @@ async function reconnectAvatarSession(options = {}) {
     }
     const payload = await requestJson("/plugins/video-chat/api/session", {
       method: "POST",
-      body: JSON.stringify(buildSessionCreatePayload(priorSessionKey)),
+      body: JSON.stringify(
+        buildSessionCreatePayload(priorSessionKey, {
+          avatarImageUrl: priorSessionImageUrl,
+          avatarTimeoutSeconds: Math.round(priorAvatarJoinTimeoutMs / 1000),
+        }),
+      ),
     });
     activeSession = payload.session;
     resetVoiceTranscriptDeduplication();
@@ -7560,6 +7691,7 @@ async function reconnectAvatarSession(options = {}) {
         loadingMessage: AVATAR_RECONNECTING_STATUS,
         allowAutoRecovery: options.allowAutoRecovery,
         autoRecoveryAttemptsRemaining: options.autoRecoveryAttemptsRemaining,
+        avatarJoinTimeoutMs: priorAvatarJoinTimeoutMs,
       });
     } finally {
       avatarSessionAutoRecovering = restoreAutoRecovering;
@@ -7575,8 +7707,15 @@ async function reconnectAvatarSession(options = {}) {
 
 async function stopActiveSession() {
   const session = activeSession;
+  const activeChatSessionKey = resolveChatSessionKey();
+  if (activeChatSessionKey) {
+    avatarAutoHelloSentSessionKeys.delete(activeChatSessionKey);
+    avatarAutoHelloPendingSessionKeys.delete(activeChatSessionKey);
+  }
   disconnectRoom();
   activeSession = null;
+  activeSessionImageUrl = "";
+  activeSessionAvatarJoinTimeoutMs = SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS * 1000;
   resetVoiceTranscriptDeduplication();
   setAvatarConnectionState("idle");
   updateAvatarUiState();
@@ -7654,10 +7793,11 @@ function setupStatusLabel(setup) {
   if (!setup) {
     return "Setup status unavailable";
   }
-  if (setup.configured) {
+  if (isSetupConfiguredForUi(setup)) {
     return "Configured: all required keys are set.";
   }
-  return `Missing: ${setup.missing.join(", ")}`;
+  const missing = getSetupMissingForUi(setup);
+  return missing.length > 0 ? `Missing: ${missing.join(", ")}` : "Configured: all required keys are set.";
 }
 
 function populateSetupFormFromSetupStatus(setup) {
@@ -7672,13 +7812,9 @@ function populateSetupFormFromSetupStatus(setup) {
     field.value = getStoredSetupSecretValue(setup, name);
   }
   const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
-  const imageUrlField = setupForm.elements.namedItem("lemonSliceImageUrl");
   const elevenLabsVoiceIdField = setupForm.elements.namedItem("elevenLabsVoiceId");
   if (livekitUrlField && typeof livekitUrlField.value === "string") {
     livekitUrlField.value = normalizeOptionalInputValue(setup?.livekit?.url);
-  }
-  if (imageUrlField && typeof imageUrlField.value === "string") {
-    imageUrlField.value = normalizeOptionalInputValue(setup?.lemonSlice?.imageUrl);
   }
   if (elevenLabsVoiceIdField && typeof elevenLabsVoiceIdField.value === "string") {
     elevenLabsVoiceIdField.value = normalizeOptionalInputValue(setup?.tts?.elevenLabsVoiceId);
@@ -7707,6 +7843,7 @@ async function saveSetupPayload(body) {
   latestSetupStatus = sanitizedSetup;
   setGatewayHealthStatus("ok", "OK");
   updateKeysHealthFromSetup(sanitizedSetup);
+  syncSessionInputsFromSetupStatus(sanitizedSetup);
   populateSetupFormFromSetupStatus(sanitizedSetup);
   secretVisibilityState.clear();
   syncSetupEditorsFromCurrentForm();
@@ -7745,6 +7882,7 @@ async function refreshSetupStatus() {
     }
     setGatewayHealthStatus("ok", "OK");
     updateKeysHealthFromSetup(sanitizedSetup);
+    syncSessionInputsFromSetupStatus(sanitizedSetup);
     populateSetupFormFromSetupStatus(sanitizedSetup);
     syncSetupEditorsFromCurrentForm();
   } catch (error) {
@@ -7872,11 +8010,37 @@ if (configModeButtons.length) {
 }
 
 if (sessionForm) {
+  if (avatarTimeoutSecondsInput && typeof avatarTimeoutSecondsInput.value === "string") {
+    avatarTimeoutSecondsInput.value = String(
+      parseSessionAvatarTimeoutSeconds(avatarTimeoutSecondsInput.value),
+    );
+  }
+
+  sessionForm.addEventListener("input", () => {
+    persistStringPreference(
+      SESSION_IMAGE_URL_STORAGE_KEY,
+      resolveSessionImageUrlValue(sessionImageUrlInput?.value),
+    );
+    persistStringPreference(
+      SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY,
+      String(parseSessionAvatarTimeoutSeconds(avatarTimeoutSecondsInput?.value)),
+    );
+    updateSessionStartButtonState();
+  });
+
+  loadSessionFormPreferences();
+
   sessionForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const autoPictureInPictureOpened = await maybeStartAvatarPictureInPicture();
     const formData = new FormData(sessionForm);
     const sessionKey = String(formData.get("sessionKey") || "").trim();
+    const avatarImageUrl = resolveSessionImageUrlValue(formData.get("avatarImageUrl"));
+    const avatarJoinTimeoutMs = resolveSessionAvatarJoinTimeoutMs(
+      formData.get("avatarTimeoutSeconds"),
+    );
+    activeSessionImageUrl = avatarImageUrl;
+    activeSessionAvatarJoinTimeoutMs = avatarJoinTimeoutMs;
     roomConnectionState = "disconnected";
     setAvatarConnectionState("connecting");
     clearRemoteTiles({
@@ -7884,11 +8048,17 @@ if (sessionForm) {
     });
     setAvatarLoadingState(true, SESSION_STARTING_STATUS);
     try {
+      await validateSessionImageUrl(avatarImageUrl);
       setAvatarLoadingState(true, "Restarting Claw Cast worker...");
       await restartVideoChatSidecar();
       const payload = await requestJson("/plugins/video-chat/api/session", {
         method: "POST",
-        body: JSON.stringify(buildSessionCreatePayload(sessionKey)),
+        body: JSON.stringify(
+          buildSessionCreatePayload(sessionKey, {
+            avatarImageUrl,
+            avatarTimeoutSeconds: formData.get("avatarTimeoutSeconds"),
+          }),
+        ),
       });
       activeSession = payload.session;
       resetVoiceTranscriptDeduplication();
@@ -7906,9 +8076,12 @@ if (sessionForm) {
       }
       await connectToRoomAndEnsureAvatar({
         loadingMessage: SESSION_STARTING_STATUS,
+        avatarJoinTimeoutMs,
       });
     } catch (error) {
       setAvatarLoadingState(false);
+      setAvatarConnectionState(activeSession ? "disconnected" : "idle");
+      updateRoomButtons();
       if (autoPictureInPictureOpened) {
         await exitAvatarPictureInPicture().catch(() => {});
       }
@@ -7979,9 +8152,13 @@ async function handlePictureInPictureToggle() {
 if (connectRoomButton) {
   connectRoomButton.addEventListener("click", async () => {
     const autoPictureInPictureOpened = await maybeStartAvatarPictureInPicture();
+    const avatarJoinTimeoutMs = Number.isFinite(activeSessionAvatarJoinTimeoutMs)
+      ? activeSessionAvatarJoinTimeoutMs
+      : resolveSessionAvatarJoinTimeoutMs(avatarTimeoutSecondsInput?.value);
     try {
       await connectToRoomAndEnsureAvatar({
         loadingMessage: SESSION_STARTING_STATUS,
+        avatarJoinTimeoutMs,
       });
       setOutput({ action: "room-connected", roomName: activeSession?.roomName ?? null });
     } catch (error) {
@@ -8038,7 +8215,10 @@ async function submitChatMessage(rawMessage, options = {}) {
   const sourceComposer = normalizeChatComposerKey(options.sourceComposer);
   const composerDraft = getChatComposerDraft(sourceComposer);
   const sourceAttachmentsContainer = getChatComposerAttachmentsContainer(sourceComposer);
-  const attachments = composerDraft.attachments.map((attachment) => ({ ...attachment }));
+  const useDraftAttachments = options.useDraftAttachments !== false;
+  const attachments = useDraftAttachments
+    ? composerDraft.attachments.map((attachment) => ({ ...attachment }))
+    : [];
   const hasAttachments = attachments.length > 0;
   if (!message && attachments.length === 0) {
     return false;
@@ -8074,7 +8254,9 @@ async function submitChatMessage(rawMessage, options = {}) {
     sourceAttachmentsContainer: hasAttachments ? sourceAttachmentsContainer : null,
   });
   setChatComposerInputValue(sourceInput, "");
-  clearChatComposerAttachments(sourceComposer);
+  if (useDraftAttachments) {
+    clearChatComposerAttachments(sourceComposer);
+  }
   syncAvatarDocumentPictureInPictureChatComposer();
   setChatStatus("Sending message...");
 
@@ -8109,6 +8291,31 @@ async function submitChatMessage(rawMessage, options = {}) {
     setChatStatus("Chat send failed.");
     return false;
   }
+}
+
+function maybeSendAvatarAutoHello() {
+  const sessionKey = resolveChatSessionKey();
+  if (!sessionKey) {
+    return;
+  }
+  if (avatarAutoHelloSentSessionKeys.has(sessionKey) || avatarAutoHelloPendingSessionKeys.has(sessionKey)) {
+    return;
+  }
+
+  avatarAutoHelloPendingSessionKeys.add(sessionKey);
+  void submitChatMessage(AVATAR_AUTO_HELLO_MESSAGE, {
+    sourceComposer: "main",
+    useDraftAttachments: false,
+  })
+    .then((sent) => {
+      if (sent) {
+        avatarAutoHelloSentSessionKeys.add(sessionKey);
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      avatarAutoHelloPendingSessionKeys.delete(sessionKey);
+    });
 }
 
 if (isTextAreaElement(chatInput)) {

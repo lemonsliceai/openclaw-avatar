@@ -63,14 +63,15 @@ You will also need accounts with the following service providers:
 - **ElevenLabs** — powers plugin-owned speech-to-text (STT) and text-to-speech (TTS).
   Sign up at https://elevenlabs.io
   **The ElevenLabs API key must have both text-to-speech (TTS) and speech-to-text (STT) access enabled.**
+  Sample voice ID: `pg7Nd5b8Y3tnfSndq5lh`
 
 - **LiveKit** — provides the real-time video/audio room infrastructure.
   Sign up at https://livekit.io
 
 - **Publicly Accessible Image URL** - The source image for the avatar.
-  UploadThing is a convenient way to store images with publicly accessible URLs. https://uploadthing.com/
+  Sample image URL: `https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtNkoagYf5CBjh3ZkFEumULAJYeQriWT8tg79y`
 
-Once you have accounts, retrieve API keys from each service and supply them during plugin setup.
+Once you have accounts, retrieve API keys from each service and supply them during plugin setup. Enter the avatar image URL on the main session page when you start a session.
 
 <a id="install"></a>
 ## Install
@@ -144,6 +145,11 @@ Plugin documentation is also available in the web UI at:
 http://127.0.0.1:18789/plugins/video-chat/readme
 ```
 If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
+
+Session form fields:
+
+- **Avatar image URL** - required for each session start.
+- **Avatar timeout (seconds)** - defaults to `60`.
 
 Session key tips:
 

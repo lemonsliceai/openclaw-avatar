@@ -706,6 +706,8 @@ describe("video-chat plugin", () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.create", {
       sessionKey: "agent:main/main",
+      avatarImageUrl: "https://example.com/browser-avatar.png",
+      avatarTimeoutSeconds: 75,
       interruptReplyOnNewMessage: true,
     });
 
@@ -741,7 +743,8 @@ describe("video-chat plugin", () => {
     expect(parseDispatchMetadata(0)).toEqual(
       expect.objectContaining({
         sessionKey: "agent:main/main",
-        imageUrl: "https://example.com/avatar.png",
+        imageUrl: "https://example.com/browser-avatar.png",
+        avatarTimeoutSeconds: 75,
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -749,7 +752,9 @@ describe("video-chat plugin", () => {
 
   it("returns canonical chat session key for default main session", async () => {
     const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.create", {});
+    const respond = await invoke(methods, "videoChat.session.create", {
+      avatarImageUrl: "https://example.com/default-avatar.png",
+    });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
@@ -777,7 +782,8 @@ describe("video-chat plugin", () => {
     expect(parseDispatchMetadata(0)).toEqual(
       expect.objectContaining({
         sessionKey: "agent:main:main",
-        imageUrl: "https://example.com/avatar.png",
+        imageUrl: "https://example.com/default-avatar.png",
+        avatarTimeoutSeconds: 60,
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -787,6 +793,7 @@ describe("video-chat plugin", () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.create", {
       sessionKey: "agent:main/main",
+      avatarImageUrl: "https://example.com/avatar.png",
       interruptReplyOnNewMessage: false,
     });
 
@@ -1751,7 +1758,6 @@ describe("video-chat plugin", () => {
     const { methods, runtime } = setup();
     const respond = await invoke(methods, "videoChat.setup.save", {
       lemonSliceApiKey: "",
-      lemonSliceImageUrl: "https://example.com/new-avatar.png",
       livekitUrl: "wss://new.livekit.cloud",
       livekitApiKey: "",
       livekitApiSecret: "",
@@ -1781,7 +1787,7 @@ describe("video-chat plugin", () => {
       | undefined;
     const pluginConfig = savedConfig?.plugins?.entries?.["video-chat"]?.config;
     expect(pluginConfig?.videoChat?.lemonSlice?.apiKey).toBe("ls-key");
-    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe("https://example.com/new-avatar.png");
+    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe("https://example.com/avatar.png");
     expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
@@ -1829,7 +1835,6 @@ describe("video-chat plugin", () => {
 
     const respond = await invoke(methods, "videoChat.setup.save", {
       gatewayToken: "",
-      lemonSliceImageUrl: "https://example.com/new-avatar.png",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -1852,7 +1857,6 @@ describe("video-chat plugin", () => {
     const { methods, runtime } = setup();
     const respond = await invoke(methods, "videoChat.setup.save", {
       lemonSliceApiKey: "_REDACTED_",
-      lemonSliceImageUrl: "https://example.com/new-avatar.png",
       livekitUrl: "wss://new.livekit.cloud",
       livekitApiKey: "__OPENCLAW_REDACTED__",
       livekitApiSecret: "_REDACTED_",
@@ -1882,7 +1886,7 @@ describe("video-chat plugin", () => {
       | undefined;
     const pluginConfig = savedConfig?.plugins?.entries?.["video-chat"]?.config;
     expect(pluginConfig?.videoChat?.lemonSlice?.apiKey).toBe("ls-key");
-    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe("https://example.com/new-avatar.png");
+    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe("https://example.com/avatar.png");
     expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
@@ -1901,10 +1905,10 @@ describe("video-chat plugin", () => {
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
   });
 
-  it("rejects setup save when LemonSlice image URL is not a direct URL", async () => {
+  it("rejects session create when the avatar image URL is not direct", async () => {
     const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      lemonSliceImageUrl: "https://e9riw81orx.ufs.sh/f/",
+    const respond = await invoke(methods, "videoChat.session.create", {
+      avatarImageUrl: "https://e9riw81orx.ufs.sh/f/",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
