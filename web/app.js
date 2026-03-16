@@ -5821,7 +5821,9 @@ function finalizeStreamingAssistantMessage(textOrMessage, options = {}) {
   const existing = findLatestStreamingAssistantMessage(runId);
   if (existing) {
     if (content.text || content.images.length > 0) {
-      existing.text = content.text;
+      if (content.text) {
+        existing.text = content.text;
+      }
       existing.images = content.images;
       existing.timestamp = resolveChatTimestamp(options.timestamp) ?? existing.timestamp ?? Date.now();
       existing.rawMessage =
@@ -6381,6 +6383,7 @@ async function ensureGatewaySocketConnected() {
       gatewaySocketReady = false;
       gatewayConnectRequestId = null;
       chatAwaitingReply = false;
+      updateChatControls();
       clearStreamingAssistantMessages();
       clearGatewayPendingRequests(new Error("Gateway websocket closed."));
       renderChatLog({ scrollToBottom: false });

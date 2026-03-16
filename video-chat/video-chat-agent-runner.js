@@ -809,12 +809,14 @@ async function runVideoChatAgentEntry(ctx) {
     if (!normalizedText && !close) {
       return;
     }
-    const reply = await startGatewaySpeech(runId);
+    let reply = await startGatewaySpeech(runId);
     const deltaText = computeStreamingTextDelta(normalizedText, reply.streamedText);
     if (deltaText === null) {
       console.warn(
         `[video-chat-agent] gateway reply delta reset recovered${reply.runId ? ` run=${reply.runId}` : ""}`,
       );
+      await stopGatewaySpeech(reply.runId);
+      reply = await startGatewaySpeech(reply.runId);
       reply.streamedText = "";
       reply.flushedTextLength = 0;
       if (normalizedText) {
@@ -872,9 +874,7 @@ async function runVideoChatAgentEntry(ctx) {
       try {
         reply.ttsStream.endInput();
       } catch {}
-      if (reply.runId) {
-        spokenRuns.add(reply.runId);
-      }
+      spokenRuns.add(reply.runKey);
     }
   };
 
@@ -1019,7 +1019,8 @@ async function runVideoChatAgentEntry(ctx) {
         const payloadSessionKey =
           typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
         const payloadState = typeof payload?.state === "string" ? payload.state.trim() : "";
-        const runId = typeof payload?.runId === "string" ? payload.runId : "";
+        const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
+        const normalizedRunKey = normalizeGatewayRunKey(runId);
         if (payloadState) {
           console.log(
             `[video-chat-agent] received gateway chat event state=${payloadState}${runId ? ` run=${runId}` : ""}`,
@@ -1036,14 +1037,14 @@ async function runVideoChatAgentEntry(ctx) {
         }
         const text = extractTextFromMessage(payload.message);
         if (payloadState === "delta") {
-          if (!text || (runId && spokenRuns.has(runId))) {
+          if (!text || spokenRuns.has(normalizedRunKey)) {
             return;
           }
           await pushGatewaySpeechUpdate(runId, text);
           return;
         }
         if (payloadState === "final") {
-          if (runId && spokenRuns.has(runId) && activeGatewaySpeech?.runKey !== normalizeGatewayRunKey(runId)) {
+          if (spokenRuns.has(normalizedRunKey) && activeGatewaySpeech?.runKey !== normalizedRunKey) {
             return;
           }
           await pushGatewaySpeechUpdate(runId, text, { close: true });
