@@ -110,6 +110,7 @@ const AVATAR_JOIN_TIMEOUT_MS = 12_000;
 const AVATAR_JOIN_PROGRESS_GRACE_MS = 12_000;
 const AVATAR_JOIN_MAX_TIMEOUT_MS = 45_000;
 const AVATAR_STATUS_POLL_MS = 1_000;
+const AVATAR_STATUS_REQUEST_TIMEOUT_MS = 4_000;
 const AVATAR_AUTO_RECOVERY_MAX_ATTEMPTS = 3;
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
@@ -1320,6 +1321,16 @@ function setChatStatus(text) {
   chatStatusEl.title = text;
 }
 
+async function handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey) {
+  if (liveUpdatesReady) {
+    setChatStatus("Awaiting agent reply...");
+    return true;
+  }
+  const replyReceived = await refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey);
+  setChatStatus(replyReceived ? "Reply received." : "Message sent. Reconnecting chat updates...");
+  return replyReceived;
+}
+
 async function submitVoiceTranscript(rawTranscript) {
   const transcript = typeof rawTranscript === "string" ? rawTranscript.trim() : "";
   if (!transcript) {
@@ -1378,12 +1389,7 @@ async function submitVoiceTranscript(rawTranscript) {
       idempotencyKey,
       response,
     });
-    if (liveUpdatesReady) {
-      setChatStatus("Awaiting agent reply...");
-    } else {
-      const replyReceived = await refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey);
-      setChatStatus(replyReceived ? "Reply received." : "Message sent. Reconnecting chat updates...");
-    }
+    await handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey);
     return true;
   } catch (error) {
     appendChatLine("system", error instanceof Error ? error.message : "Voice chat send failed.", {
@@ -5792,8 +5798,29 @@ async function refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKe
       action: "chat-history-refresh-failed",
       error: error instanceof Error ? error.message : String(error),
     });
-    setChatAwaitingReply(false);
     return false;
+  }
+}
+
+function isAbortError(error) {
+  return (
+    (typeof DOMException === "function" && error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+async function requestJsonWithTimeout(path, options = {}, timeoutMs = AVATAR_STATUS_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await requestJson(path, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -6106,16 +6133,26 @@ function describeAvatarSessionProgress(status) {
   return "";
 }
 
-async function fetchAvatarSessionStatus(roomName) {
+async function fetchAvatarSessionStatus(roomName, options = {}) {
   if (typeof roomName !== "string" || !roomName.trim()) {
     return null;
   }
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : AVATAR_STATUS_REQUEST_TIMEOUT_MS;
   try {
-    const payload = await requestJson(
+    const payload = await requestJsonWithTimeout(
       `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName.trim())}`,
+      {},
+      timeoutMs,
     );
     return payload?.status && typeof payload.status === "object" ? payload.status : null;
   } catch (error) {
+    if (isAbortError(error)) {
+      debugLog("avatar-status:fetch-timeout", {
+        roomName,
+        timeoutMs,
+      });
+      return null;
+    }
     debugLog("avatar-status:fetch-failed", {
       roomName,
       error: error instanceof Error ? error.message : String(error),
@@ -6133,6 +6170,9 @@ async function waitForAvatarParticipant(room, options = {}) {
     ? options.maxTimeoutMs
     : AVATAR_JOIN_MAX_TIMEOUT_MS;
   const statusPollMs = Number.isFinite(options.statusPollMs) ? options.statusPollMs : AVATAR_STATUS_POLL_MS;
+  const statusRequestTimeoutMs = Number.isFinite(options.statusRequestTimeoutMs)
+    ? options.statusRequestTimeoutMs
+    : AVATAR_STATUS_REQUEST_TIMEOUT_MS;
   const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 200;
   const roomName =
     (typeof options.roomName === "string" && options.roomName.trim()) ||
@@ -6165,7 +6205,10 @@ async function waitForAvatarParticipant(room, options = {}) {
     const now = Date.now();
     if (roomName && now - lastStatusPollAt >= statusPollMs) {
       lastStatusPollAt = now;
-      const status = await fetchAvatarSessionStatus(roomName);
+      const remainingPollBudgetMs = Math.max(250, deadlineAt - now);
+      const status = await fetchAvatarSessionStatus(roomName, {
+        timeoutMs: Math.min(statusRequestTimeoutMs, remainingPollBudgetMs),
+      });
       if (status) {
         lastObservedStatus = status;
         if (status.speechFailedAt) {
@@ -7258,12 +7301,7 @@ async function submitChatMessage(rawMessage, options = {}) {
     });
     const response = payload?.response ?? {};
     setOutput({ action: "chat-sent", sessionKey, response });
-    if (liveUpdatesReady) {
-      setChatStatus("Awaiting agent reply...");
-    } else {
-      const replyReceived = await refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey);
-      setChatStatus(replyReceived ? "Reply received." : "Message sent. Reconnecting chat updates...");
-    }
+    await handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey);
     return true;
   } catch (error) {
     setChatComposerInputValue(sourceInput, message);

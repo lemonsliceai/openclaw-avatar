@@ -113,7 +113,9 @@ type VideoChatSessionStopResult = {
   roomName: string;
 };
 
-type VideoChatLogger = Pick<OpenClawPluginApi["logger"], "info" | "warn" | "error">;
+type VideoChatLogger = Pick<OpenClawPluginApi["logger"], "info" | "warn" | "error"> & {
+  debug?: (message: string) => void;
+};
 
 type SidecarCredentials = {
   lemonSliceApiKey: string;
@@ -256,6 +258,25 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function summarizeIdempotencyKeyForLog(value: unknown): {
+  idempotencyKeyPresent: boolean;
+  idempotencyKeyDigest?: string;
+} {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return {
+      idempotencyKeyPresent: false,
+    };
+  }
+  return {
+    idempotencyKeyPresent: true,
+    idempotencyKeyDigest: createHmac("sha256", VIDEO_CHAT_PLUGIN_ID)
+      .update(normalized)
+      .digest("hex")
+      .slice(0, 12),
+  };
+}
+
 function cloneConfigSnapshot(config: OpenClawConfig): OpenClawConfig {
   if (typeof structuredClone === "function") {
     return structuredClone(config);
@@ -296,13 +317,20 @@ function formatLogFields(fields: Record<string, unknown>): string {
 }
 
 function logVideoChatEvent(
-  logger: Pick<OpenClawPluginApi["logger"], "info" | "warn" | "error">,
-  level: "info" | "warn" | "error",
+  logger: VideoChatLogger,
+  level: "debug" | "info" | "warn" | "error",
   event: string,
   fields: Record<string, unknown> = {},
 ): void {
   const suffix = formatLogFields(fields);
-  logger[level](`[video-chat] ${event}${suffix ? ` ${suffix}` : ""}`);
+  const message = `[video-chat] ${event}${suffix ? ` ${suffix}` : ""}`;
+  if (level === "debug") {
+    if (typeof logger.debug === "function") {
+      logger.debug(message);
+    }
+    return;
+  }
+  logger[level](message);
 }
 
 function parseVideoChatDebugFieldValue(rawValue: string): unknown {
@@ -2445,14 +2473,14 @@ function registerVideoChatHttpRoutes(
             sessionKey: params.sessionKey,
             messageChars: params.message.length,
             attachmentCount: params.attachments?.length ?? 0,
-            idempotencyKey: params.idempotencyKey ?? "",
+            ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
           });
           const result = await handlers.sendMessage(params);
           logVideoChatEvent(api.logger, "info", "http.chat.send.completed", {
             sessionKey: params.sessionKey,
             messageChars: params.message.length,
             attachmentCount: params.attachments?.length ?? 0,
-            idempotencyKey: params.idempotencyKey ?? "",
+            ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
           });
           sendHttpResponse(
             res,
@@ -3206,6 +3234,11 @@ async function observeVideoChatSessionState(params: {
           typeof job?.state?.startedAt === "bigint" ? job.state.startedAt.toString() : undefined,
         endedAt: typeof job?.state?.endedAt === "bigint" ? job.state.endedAt.toString() : undefined,
       }));
+      const dispatchJobStatusSummary = dispatchJobStatuses.reduce<Record<string, number>>((summary, job) => {
+        const statusKey = job.status === undefined ? "unknown" : String(job.status);
+        summary[statusKey] = (summary[statusKey] ?? 0) + 1;
+        return summary;
+      }, {});
       const deletedAt =
         typeof dispatch?.state?.deletedAt === "bigint" ? dispatch.state.deletedAt.toString() : undefined;
 
@@ -3214,14 +3247,12 @@ async function observeVideoChatSessionState(params: {
         roomName: params.roomName,
         roomExists: rooms.some((room) => room?.name === params.roomName),
         participantCount: participantIdentities.length,
-        participantIdentities,
-        browserParticipantIdentity: params.participantIdentity,
         browserParticipantJoined,
         dispatchId: params.dispatchId,
         dispatchExists: Boolean(dispatch),
         dispatchJobCount: dispatchJobIds.length,
-        dispatchJobIds,
-        dispatchJobStatuses,
+        dispatchJobStatusSummary:
+          Object.keys(dispatchJobStatusSummary).length > 0 ? dispatchJobStatusSummary : undefined,
         dispatchDeletedAt: deletedAt,
         roomError:
           roomsResult.status === "rejected"
@@ -3241,6 +3272,15 @@ async function observeVideoChatSessionState(params: {
               ? dispatchResult.reason.message
               : String(dispatchResult.reason)
             : undefined,
+      });
+      logVideoChatEvent(params.logger, "debug", "livekit.session.observe.detail", {
+        attempt,
+        roomName: params.roomName,
+        dispatchId: params.dispatchId,
+        participantIdentities,
+        browserParticipantIdentity: params.participantIdentity,
+        dispatchJobIds,
+        dispatchJobStatuses,
       });
 
       if (browserParticipantJoined && dispatchJobIds.length > 0) {
@@ -4518,7 +4558,7 @@ const videoChatPlugin = {
         sessionKey: params.sessionKey,
         messageChars: params.message.length,
         attachmentCount: params.attachments?.length ?? 0,
-        idempotencyKey: params.idempotencyKey ?? "",
+        ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
       });
       const subagentRuntime = getVideoChatSubagentRuntime(api);
       // The gateway agent schema accepts attachments even though the current runtime typings
@@ -4538,7 +4578,7 @@ const videoChatPlugin = {
           sessionKey: params.sessionKey,
           messageChars: params.message.length,
           attachmentCount: params.attachments?.length ?? 0,
-          idempotencyKey: params.idempotencyKey ?? "",
+          ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
         });
         return result;
       } catch (error) {
@@ -4546,7 +4586,7 @@ const videoChatPlugin = {
           sessionKey: params.sessionKey,
           messageChars: params.message.length,
           attachmentCount: params.attachments?.length ?? 0,
-          idempotencyKey: params.idempotencyKey ?? "",
+          ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
