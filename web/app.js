@@ -1353,6 +1353,12 @@ function assertValidSessionImageUrl(imageUrl) {
   if (!isAllowedSessionImageUrlProtocol(parsedUrl.protocol)) {
     throw new Error("Invalid avatar image URL or unsupported protocol.");
   }
+  if (
+    parsedUrl.protocol === "data:" &&
+    !/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(normalizedImageUrl)
+  ) {
+    throw new Error("Invalid avatar image URL or unsupported protocol.");
+  }
   return normalizedImageUrl;
 }
 
@@ -3300,7 +3306,7 @@ function isSetupConfiguredForUi(setup) {
   if (!setup || typeof setup !== "object") {
     return false;
   }
-  if (setup.configured) {
+  if (setup.configured === true) {
     return true;
   }
   return getSetupMissingForUi(setup).length === 0;
@@ -7671,8 +7677,6 @@ async function reconnectAvatarSession(options = {}) {
   updateRoomButtons();
   try {
     await validateSessionImageUrl(priorSessionImageUrl);
-    activeSessionImageUrl = priorSessionImageUrl;
-    activeSessionAvatarJoinTimeoutMs = priorAvatarJoinTimeoutMs;
     disconnectRoom({
       keepDocumentPictureInPicture,
     });
@@ -7696,6 +7700,8 @@ async function reconnectAvatarSession(options = {}) {
       ),
     });
     activeSession = payload.session;
+    activeSessionImageUrl = priorSessionImageUrl;
+    activeSessionAvatarJoinTimeoutMs = priorAvatarJoinTimeoutMs;
     resetVoiceTranscriptDeduplication();
     setChatPaneOpen(true);
     updateRoomButtons();
@@ -8069,8 +8075,6 @@ if (sessionForm) {
     const avatarJoinTimeoutMs = resolveSessionAvatarJoinTimeoutMs(
       formData.get("avatarTimeoutSeconds"),
     );
-    activeSessionImageUrl = avatarImageUrl;
-    activeSessionAvatarJoinTimeoutMs = avatarJoinTimeoutMs;
     roomConnectionState = "disconnected";
     setAvatarConnectionState("connecting");
     clearRemoteTiles({
@@ -8091,6 +8095,8 @@ if (sessionForm) {
         ),
       });
       activeSession = payload.session;
+      activeSessionImageUrl = avatarImageUrl;
+      activeSessionAvatarJoinTimeoutMs = avatarJoinTimeoutMs;
       resetVoiceTranscriptDeduplication();
       setChatPaneOpen(true);
       setOutput({ action: "session-started", session: activeSession });

@@ -240,7 +240,7 @@ function normalizeAvatarTimeoutSeconds(avatarTimeoutSeconds?: number): number {
   if (!Number.isFinite(avatarTimeoutSeconds)) {
     return VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS;
   }
-  const normalized = Math.floor(avatarTimeoutSeconds ?? VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS);
+  const normalized = Math.floor(avatarTimeoutSeconds);
   return Math.min(
     VIDEO_CHAT_AVATAR_TIMEOUT_MAX_SECONDS,
     Math.max(VIDEO_CHAT_AVATAR_TIMEOUT_MIN_SECONDS, normalized),
@@ -473,6 +473,19 @@ function isPrivateOrLoopbackIpv4(address: string): boolean {
   return octets[0] === 192 && octets[1] === 168;
 }
 
+function resolveLeadingIpv6Hextet(address: string): number | null {
+  const [head] = address.split("::", 1);
+  const firstSegment = (head.split(":", 1)[0] ?? "").trim();
+  if (firstSegment.length === 0) {
+    return 0;
+  }
+  if (!/^[0-9a-f]{1,4}$/i.test(firstSegment)) {
+    return null;
+  }
+  const parsed = Number.parseInt(firstSegment, 16);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
 function isPrivateOrLoopbackIpAddress(address: string): boolean {
   const normalized = normalizeIpAddress(address);
   const family = isIP(normalized);
@@ -485,6 +498,13 @@ function isPrivateOrLoopbackIpAddress(address: string): boolean {
     }
     if (normalized.startsWith("::ffff:")) {
       return isPrivateOrLoopbackIpv4(normalized.slice("::ffff:".length));
+    }
+    const leadingHextet = resolveLeadingIpv6Hextet(normalized);
+    if (leadingHextet !== null) {
+      // fc00::/7 (ULA) and fe80::/10 (link-local)
+      if ((leadingHextet & 0xfe00) === 0xfc00 || (leadingHextet & 0xffc0) === 0xfe80) {
+        return true;
+      }
     }
   }
   return false;
