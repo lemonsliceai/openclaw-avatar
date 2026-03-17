@@ -1360,7 +1360,12 @@ function updateSessionStartButtonState() {
   if (!startSessionButton) {
     return;
   }
-  startSessionButton.disabled = !resolveSessionImageUrlValue(sessionImageUrlInput?.value);
+  try {
+    assertValidSessionImageUrl(sessionImageUrlInput?.value);
+    startSessionButton.disabled = false;
+  } catch {
+    startSessionButton.disabled = true;
+  }
 }
 
 async function validateSessionImageUrl(imageUrl) {
@@ -1369,12 +1374,13 @@ async function validateSessionImageUrl(imageUrl) {
 
 function syncSessionInputsFromSetupStatus(setup) {
   const storedImageUrl = getStoredStringPreference(SESSION_IMAGE_URL_STORAGE_KEY, "");
+  const normalizedStoredImageUrl = storedImageUrl?.trim();
   const setupImageUrl = resolveSessionImageUrlValue(setup?.lemonSlice?.imageUrl);
   if (
     sessionImageUrlInput &&
     typeof sessionImageUrlInput.value === "string" &&
     !resolveSessionImageUrlValue(sessionImageUrlInput.value) &&
-    !storedImageUrl &&
+    !normalizedStoredImageUrl &&
     setupImageUrl
   ) {
     sessionImageUrlInput.value = setupImageUrl;

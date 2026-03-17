@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
+import { promises as dns } from "node:dns";
 import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -446,7 +448,49 @@ function normalizeOptionalSetupSecretString(value: unknown): string | undefined 
   return REDACTED_SECRET_VALUES.has(trimmed) ? undefined : trimmed;
 }
 
-function validateAvatarImageUrl(value: string): string | null {
+function normalizeIpAddress(address: string): string {
+  const trimmed = address.trim().toLowerCase();
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function isPrivateOrLoopbackIpv4(address: string): boolean {
+  const octets = address.split(".").map((octet) => Number.parseInt(octet, 10));
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return false;
+  }
+  if (octets[0] === 127) {
+    return true;
+  }
+  if (octets[0] === 10) {
+    return true;
+  }
+  if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) {
+    return true;
+  }
+  return octets[0] === 192 && octets[1] === 168;
+}
+
+function isPrivateOrLoopbackIpAddress(address: string): boolean {
+  const normalized = normalizeIpAddress(address);
+  const family = isIP(normalized);
+  if (family === 4) {
+    return isPrivateOrLoopbackIpv4(normalized);
+  }
+  if (family === 6) {
+    if (normalized === "::1") {
+      return true;
+    }
+    if (normalized.startsWith("::ffff:")) {
+      return isPrivateOrLoopbackIpv4(normalized.slice("::ffff:".length));
+    }
+  }
+  return false;
+}
+
+async function validateAvatarImageUrl(value: string): Promise<string | null> {
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -466,6 +510,24 @@ function validateAvatarImageUrl(value: string): string | null {
   const lastPathSegment = trimmedPath.split("/").at(-1) ?? "";
   if (!lastPathSegment || lastPathSegment === "f") {
     return "avatarImageUrl must include an image path after the host";
+  }
+
+  const normalizedHostname = parsed.hostname.trim().toLowerCase().replace(/\.+$/g, "");
+  if (normalizedHostname === "localhost") {
+    return "avatarImageUrl must not resolve to localhost or private network";
+  }
+  if (isPrivateOrLoopbackIpAddress(normalizedHostname)) {
+    return "avatarImageUrl must not resolve to localhost or private network";
+  }
+  if (isIP(normalizedHostname) === 0) {
+    try {
+      const resolvedAddresses = await dns.lookup(normalizedHostname, { all: true, verbatim: true });
+      if (resolvedAddresses.some((record) => isPrivateOrLoopbackIpAddress(record.address))) {
+        return "avatarImageUrl must not resolve to localhost or private network";
+      }
+    } catch {
+      // Keep URL validation non-blocking for transient DNS failures.
+    }
   }
 
   return null;
@@ -2954,7 +3016,7 @@ async function createVideoChatSession(params: {
   if (!livekitUrl || !apiKey || !apiSecret || !elevenLabsApiKey) {
     throw new Error("Claw Cast session creation is unavailable: missing LiveKit or ElevenLabs credentials");
   }
-  const imageUrlValidationError = validateAvatarImageUrl(avatarImageUrl);
+  const imageUrlValidationError = await validateAvatarImageUrl(avatarImageUrl);
   if (imageUrlValidationError) {
     throw new Error(`invalid videoChat.session.create params: ${imageUrlValidationError}`);
   }
@@ -3364,7 +3426,7 @@ async function createVideoChatAgentDispatch(params: {
     throw new Error("Claw Cast agent dispatch is unavailable: missing LiveKit credentials");
   }
   if (!params.session.avatarImageUrl) {
-    throw new Error("Claw Cast agent dispatch is unavailable: missing LemonSlice image URL");
+    throw new Error("Claw Cast agent dispatch is unavailable: missing avatar image URL");
   }
   const metadata = buildVideoChatDispatchMetadata({
     sessionKey: params.session.chatSessionKey,

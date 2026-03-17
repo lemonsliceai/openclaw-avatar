@@ -313,6 +313,12 @@ async function invoke(
   return respond;
 }
 
+async function createTestSession(methods: Map<string, unknown>) {
+  return invoke(methods, "videoChat.session.create", {
+    avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
+  });
+}
+
 describe("video-chat plugin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -697,7 +703,7 @@ describe("video-chat plugin", () => {
       config: {
         configured: true,
         lemonSlice: {
-          imageUrl: "https://example.com/avatar.png",
+          imageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
         },
       },
     });
@@ -825,7 +831,7 @@ describe("video-chat plugin", () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.create", {
       sessionKey: "agent:main/main",
-      avatarImageUrl: "https://example.com/avatar.png",
+      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
       interruptReplyOnNewMessage: false,
     });
 
@@ -847,7 +853,7 @@ describe("video-chat plugin", () => {
     expect(parseDispatchMetadata(0)).toEqual(
       expect.objectContaining({
         sessionKey: "agent:main/main",
-        imageUrl: "https://example.com/avatar.png",
+        imageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
         interruptReplyOnNewMessage: false,
       }),
     );
@@ -863,9 +869,7 @@ describe("video-chat plugin", () => {
       },
     });
 
-    const respond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const respond = await createTestSession(methods);
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(false);
@@ -877,9 +881,7 @@ describe("video-chat plugin", () => {
 
   it("stops a session", async () => {
     const { methods } = setup();
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
     const respond = await invoke(methods, "videoChat.session.stop", {
@@ -897,9 +899,7 @@ describe("video-chat plugin", () => {
   it("deletes the explicit LiveKit dispatch during session stop", async () => {
     const { methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
 
@@ -917,9 +917,7 @@ describe("video-chat plugin", () => {
   it("treats missing LiveKit rooms as already deleted during session stop", async () => {
     const { methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
     mockRoomServiceDeleteRoom.mockRejectedValueOnce(
@@ -944,9 +942,7 @@ describe("video-chat plugin", () => {
   it("bubbles unexpected LiveKit room delete failures during session stop", async () => {
     const { methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
     mockRoomServiceDeleteRoom.mockRejectedValueOnce(new Error("delete failed"));
@@ -963,9 +959,7 @@ describe("video-chat plugin", () => {
   it("preserves managed room tracking when remote room deletion fails", async () => {
     const { methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
     mockRoomServiceDeleteRoom
@@ -994,9 +988,7 @@ describe("video-chat plugin", () => {
   it("preserves managed room tracking when dispatch deletion fails", async () => {
     const { methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
     mockAgentDispatchDeleteDispatch
@@ -1027,9 +1019,7 @@ describe("video-chat plugin", () => {
   it("treats missing LiveKit dispatches as already deleted during session stop", async () => {
     const { methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
     mockAgentDispatchDeleteDispatch.mockRejectedValueOnce(
@@ -1055,9 +1045,7 @@ describe("video-chat plugin", () => {
   it("uses the room's stored LiveKit snapshot during session stop", async () => {
     const { methods, runtime } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
 
@@ -1094,9 +1082,7 @@ describe("video-chat plugin", () => {
   it("cleans stale wrapper jobs during session stop", async () => {
     const { methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
     await invoke(methods, "videoChat.session.stop", {
@@ -1146,9 +1132,7 @@ describe("video-chat plugin", () => {
   it("waits for an in-flight sidecar reset before creating the next session", async () => {
     const { methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
 
@@ -1167,9 +1151,7 @@ describe("video-chat plugin", () => {
     });
 
     let createFinished = false;
-    const createPromise = invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    }).then((respond) => {
+    const createPromise = createTestSession(methods).then((respond) => {
       createFinished = true;
       return respond;
     });
@@ -1200,16 +1182,12 @@ describe("video-chat plugin", () => {
       .mockImplementationOnce(() => firstChild)
       .mockImplementationOnce(() => secondChild);
 
-    await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    await createTestSession(methods);
     await flushMicrotasks();
 
     firstChild.emit("exit", 0, null);
 
-    const respond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const respond = await createTestSession(methods);
 
     expect(mockSpawn).toHaveBeenCalledTimes(2);
     expect((respond.mock.calls[0] as RespondCall | undefined)?.[0]).toBe(true);
@@ -1230,9 +1208,7 @@ describe("video-chat plugin", () => {
       .mockImplementationOnce(() => firstChild)
       .mockImplementationOnce(() => secondChild);
 
-    await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    await createTestSession(methods);
 
     const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/sidecar/restart",
@@ -1259,9 +1235,7 @@ describe("video-chat plugin", () => {
       agentName,
     }));
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as
       | {
           agentName?: string;
@@ -1291,9 +1265,7 @@ describe("video-chat plugin", () => {
       agentName,
     }));
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
 
@@ -1317,9 +1289,7 @@ describe("video-chat plugin", () => {
   it("uses a new sidecar-specific agent name after restart", async () => {
     const { methods } = setup();
 
-    const firstCreateRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const firstCreateRespond = await createTestSession(methods);
     const firstCreatePayload = firstCreateRespond.mock.calls[0]?.[1] as
       | {
           agentName?: string;
@@ -1331,9 +1301,7 @@ describe("video-chat plugin", () => {
 
     await invoke(methods, "videoChat.sidecar.restart", {});
 
-    const secondCreateRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const secondCreateRespond = await createTestSession(methods);
     const secondCreatePayload = secondCreateRespond.mock.calls[0]?.[1] as
       | {
           agentName?: string;
@@ -1352,9 +1320,7 @@ describe("video-chat plugin", () => {
   it("recycles the sidecar when the LiveKit credential fingerprint changes", async () => {
     const { methods, runtime } = setup();
 
-    await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    await createTestSession(methods);
     await flushMicrotasks();
 
     vi.mocked(runtime.config.loadConfig).mockReturnValue({
@@ -1369,9 +1335,7 @@ describe("video-chat plugin", () => {
       },
     } as never);
 
-    const respond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const respond = await createTestSession(methods);
 
     expect((respond.mock.calls[0] as RespondCall | undefined)?.[0]).toBe(true);
     expect(mockSpawn).toHaveBeenCalledTimes(2);
@@ -1381,9 +1345,7 @@ describe("video-chat plugin", () => {
   it("skips redispatch when the replacement sidecar does not start", async () => {
     const { methods, runtime } = setup();
 
-    await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    await createTestSession(methods);
 
     vi.mocked(runtime.config.loadConfig).mockReturnValue({
       ...baseConfig,
@@ -1409,9 +1371,7 @@ describe("video-chat plugin", () => {
   it("skips redispatch when the room snapshot fingerprint no longer matches the active sidecar", async () => {
     const { methods, runtime } = setup();
 
-    await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    await createTestSession(methods);
 
     vi.mocked(runtime.config.loadConfig).mockReturnValue({
       ...baseConfig,
@@ -1440,9 +1400,7 @@ describe("video-chat plugin", () => {
   it("stops the sidecar through the HTTP API", async () => {
     const { httpRoutes, methods } = setup();
 
-    await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    await createTestSession(methods);
 
     const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/sidecar/stop",
@@ -1463,9 +1421,7 @@ describe("video-chat plugin", () => {
     mockSpawn.mockImplementationOnce(() => child);
     const { httpRoutes, methods } = setup();
 
-    const createRespond = await invoke(methods, "videoChat.session.create", {
-      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
-    });
+    const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
 
@@ -1869,7 +1825,7 @@ describe("video-chat plugin", () => {
       | undefined;
     const pluginConfig = savedConfig?.plugins?.entries?.["video-chat"]?.config;
     expect(pluginConfig?.videoChat?.lemonSlice?.apiKey).toBe("ls-key");
-    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe("https://example.com/avatar.png");
+    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe(DEFAULT_TEST_AVATAR_IMAGE_URL);
     expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
@@ -1968,7 +1924,7 @@ describe("video-chat plugin", () => {
       | undefined;
     const pluginConfig = savedConfig?.plugins?.entries?.["video-chat"]?.config;
     expect(pluginConfig?.videoChat?.lemonSlice?.apiKey).toBe("ls-key");
-    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe("https://example.com/avatar.png");
+    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe(DEFAULT_TEST_AVATAR_IMAGE_URL);
     expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
