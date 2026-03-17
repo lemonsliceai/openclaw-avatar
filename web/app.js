@@ -269,6 +269,22 @@ const setupSectionErrorEls = new Map([
   ["livekit", liveKitErrorEl],
   ["elevenlabs", elevenLabsErrorEl],
 ]);
+const STRUCTURED_SETUP_ERROR_SECTION_MAP = new Map([
+  ["GATEWAY_UNAUTHORIZED", "gateway-token"],
+  ["GATEWAY_TOKEN", "gateway-token"],
+  ["LEMONSLICE", "lemonslice"],
+  ["LIVEKIT", "livekit"],
+  ["ELEVENLABS", "elevenlabs"],
+]);
+const STRUCTURED_SETUP_ERROR_FIELD_MAP = new Map([
+  ["gatewayToken", "gateway-token"],
+  ["lemonSliceApiKey", "lemonslice"],
+  ["livekitUrl", "livekit"],
+  ["livekitApiKey", "livekit"],
+  ["livekitApiSecret", "livekit"],
+  ["elevenLabsApiKey", "elevenlabs"],
+  ["elevenLabsVoiceId", "elevenlabs"],
+]);
 let activeSessionImageUrl = "";
 let activeSessionAvatarJoinTimeoutMs = SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS * 1000;
 const renderedVoiceUserRuns = new Set();
@@ -1028,30 +1044,14 @@ function classifySetupErrorSection(message) {
   const structuredCode = readStructuredSetupErrorValue(message, "code").toUpperCase();
   const structuredField = readStructuredSetupErrorValue(message, "field");
   const structuredType = readStructuredSetupErrorValue(message, "type").toUpperCase();
-  const structuredSectionMap = new Map([
-    ["GATEWAY_UNAUTHORIZED", "gateway-token"],
-    ["GATEWAY_TOKEN", "gateway-token"],
-    ["LEMONSLICE", "lemonslice"],
-    ["LIVEKIT", "livekit"],
-    ["ELEVENLABS", "elevenlabs"],
-  ]);
-  const structuredFieldMap = new Map([
-    ["gatewayToken", "gateway-token"],
-    ["lemonSliceApiKey", "lemonslice"],
-    ["livekitUrl", "livekit"],
-    ["livekitApiKey", "livekit"],
-    ["livekitApiSecret", "livekit"],
-    ["elevenLabsApiKey", "elevenlabs"],
-    ["elevenLabsVoiceId", "elevenlabs"],
-  ]);
-  if (structuredSectionMap.has(structuredCode)) {
-    return structuredSectionMap.get(structuredCode);
+  if (STRUCTURED_SETUP_ERROR_SECTION_MAP.has(structuredCode)) {
+    return STRUCTURED_SETUP_ERROR_SECTION_MAP.get(structuredCode);
   }
-  if (structuredSectionMap.has(structuredType)) {
-    return structuredSectionMap.get(structuredType);
+  if (STRUCTURED_SETUP_ERROR_SECTION_MAP.has(structuredType)) {
+    return STRUCTURED_SETUP_ERROR_SECTION_MAP.get(structuredType);
   }
-  if (structuredFieldMap.has(structuredField)) {
-    return structuredFieldMap.get(structuredField);
+  if (STRUCTURED_SETUP_ERROR_FIELD_MAP.has(structuredField)) {
+    return STRUCTURED_SETUP_ERROR_FIELD_MAP.get(structuredField);
   }
   const normalized =
     typeof message === "string"
