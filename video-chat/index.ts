@@ -1206,6 +1206,21 @@ function extractErrorStatus(error: unknown): number | null {
 function classifySetupVerificationError(message: string, error: unknown): VideoChatRequestError {
   const status = extractErrorStatus(error);
   const normalizedMessage = message.trim();
+  const normalizedErrorCode =
+    typeof (error as { code?: unknown })?.code === "string"
+      ? (error as { code: string }).code.trim().toUpperCase()
+      : "";
+  if (
+    !status &&
+    (
+      /fetch failed|enotfound|econnreset|econnrefused|getaddrinfo|socket hang up|network error/i.test(
+        normalizedMessage,
+      ) ||
+      /^(ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ETIMEDOUT)$/i.test(normalizedErrorCode)
+    )
+  ) {
+    return new VideoChatRequestError("UNAVAILABLE", normalizedMessage);
+  }
   if (
     status === 429 ||
     (typeof status === "number" && status >= 500) ||
@@ -1261,6 +1276,7 @@ async function verifyElevenLabsSetupConfig(params: {
   logger: VideoChatLogger;
   elevenLabsApiKey: string;
   elevenLabsVoiceId?: string;
+  elevenLabsModelId?: string;
 }): Promise<void> {
   logVideoChatEvent(params.logger, "info", "setup.verify.elevenlabs.begin", {
     voiceId: params.elevenLabsVoiceId,
@@ -1342,6 +1358,8 @@ async function verifyElevenLabsSetupConfig(params: {
 
   const ttsVoiceId =
     normalizeOptionalString(params.elevenLabsVoiceId) ?? ELEVENLABS_TEXT_TO_SPEECH_VERIFY_VOICE_ID;
+  const ttsModelId =
+    normalizeOptionalString(params.elevenLabsModelId) ?? ELEVENLABS_TEXT_TO_SPEECH_VERIFY_MODEL_ID;
   const ttsController = new AbortController();
   const ttsTimeoutId = setTimeout(() => {
     ttsController.abort();
@@ -1350,7 +1368,7 @@ async function verifyElevenLabsSetupConfig(params: {
     const ttsUrl = new URL(
       `${ELEVENLABS_TEXT_TO_SPEECH_API_BASE_URL}/${encodeURIComponent(ttsVoiceId)}/stream`,
     );
-    ttsUrl.searchParams.set("model_id", ELEVENLABS_TEXT_TO_SPEECH_VERIFY_MODEL_ID);
+    ttsUrl.searchParams.set("model_id", ttsModelId);
     ttsUrl.searchParams.set("output_format", ELEVENLABS_TEXT_TO_SPEECH_VERIFY_OUTPUT_FORMAT);
     const ttsResponse = await fetch(ttsUrl, {
       method: "POST",
@@ -1360,7 +1378,7 @@ async function verifyElevenLabsSetupConfig(params: {
       },
       body: JSON.stringify({
         text: ELEVENLABS_TEXT_TO_SPEECH_VERIFY_TEXT,
-        model_id: ELEVENLABS_TEXT_TO_SPEECH_VERIFY_MODEL_ID,
+        model_id: ttsModelId,
       }),
       signal: ttsController.signal,
     });
@@ -1573,6 +1591,7 @@ async function verifyVideoChatSetupConfig(params: {
       })
     : undefined;
   const elevenLabsVoiceId = normalizeOptionalString(effective.messages?.tts?.elevenlabs?.voiceId);
+  const elevenLabsModelId = normalizeOptionalString(effective.messages?.tts?.elevenlabs?.modelId);
 
   const checks: Promise<void>[] = [];
   if (livekitUrl && livekitApiKey && livekitApiSecret) {
@@ -1591,6 +1610,7 @@ async function verifyVideoChatSetupConfig(params: {
         logger: params.logger,
         elevenLabsApiKey,
         elevenLabsVoiceId,
+        elevenLabsModelId,
       }),
     );
   }

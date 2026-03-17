@@ -1006,8 +1006,59 @@ function clearAllSetupSectionErrors() {
   }
 }
 
+function readStructuredSetupErrorValue(message, key) {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const direct = message[key];
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  const nestedMessage = message.message;
+  if (nestedMessage && typeof nestedMessage === "object") {
+    const nested = nestedMessage[key];
+    if (typeof nested === "string" && nested.trim()) {
+      return nested.trim();
+    }
+  }
+  return "";
+}
+
 function classifySetupErrorSection(message) {
-  const normalized = typeof message === "string" ? message.trim().toLowerCase() : "";
+  const structuredCode = readStructuredSetupErrorValue(message, "code").toUpperCase();
+  const structuredField = readStructuredSetupErrorValue(message, "field");
+  const structuredType = readStructuredSetupErrorValue(message, "type").toUpperCase();
+  const structuredSectionMap = new Map([
+    ["GATEWAY_UNAUTHORIZED", "gateway-token"],
+    ["GATEWAY_TOKEN", "gateway-token"],
+    ["LEMONSLICE", "lemonslice"],
+    ["LIVEKIT", "livekit"],
+    ["ELEVENLABS", "elevenlabs"],
+  ]);
+  const structuredFieldMap = new Map([
+    ["gatewayToken", "gateway-token"],
+    ["lemonSliceApiKey", "lemonslice"],
+    ["livekitUrl", "livekit"],
+    ["livekitApiKey", "livekit"],
+    ["livekitApiSecret", "livekit"],
+    ["elevenLabsApiKey", "elevenlabs"],
+    ["elevenLabsVoiceId", "elevenlabs"],
+  ]);
+  if (structuredSectionMap.has(structuredCode)) {
+    return structuredSectionMap.get(structuredCode);
+  }
+  if (structuredSectionMap.has(structuredType)) {
+    return structuredSectionMap.get(structuredType);
+  }
+  if (structuredFieldMap.has(structuredField)) {
+    return structuredFieldMap.get(structuredField);
+  }
+  const normalized =
+    typeof message === "string"
+      ? message.trim().toLowerCase()
+      : typeof message?.message === "string"
+        ? message.message.trim().toLowerCase()
+        : "";
   if (!normalized) {
     return null;
   }
@@ -1044,6 +1095,45 @@ function classifySetupErrorSection(message) {
   return null;
 }
 
+function extractRawSetupErrorMessage(message) {
+  if (typeof message === "string" && message.trim()) {
+    return message.trim();
+  }
+  if (message && typeof message === "object" && typeof message.message === "string" && message.message.trim()) {
+    return message.message.trim();
+  }
+  return "An unexpected error occurred.";
+}
+
+function sanitizeSetupErrorMessage(message, sectionKey) {
+  const rawMessage = extractRawSetupErrorMessage(message);
+  const normalized = rawMessage.toLowerCase();
+  if (sectionKey === "gateway-token") {
+    return normalized.includes("unauthorized") || readStructuredSetupErrorValue(message, "code") === "GATEWAY_UNAUTHORIZED"
+      ? "Gateway token is invalid or expired. Enter a valid token and try again."
+      : "Gateway token could not be verified. Check the token and try again.";
+  }
+  if (sectionKey === "lemonslice") {
+    return "LemonSlice settings could not be verified. Check the API key and try again.";
+  }
+  if (sectionKey === "livekit") {
+    return "LiveKit settings could not be verified. Check the URL, API key, and API secret, then try again.";
+  }
+  if (sectionKey === "elevenlabs") {
+    if (normalized.includes("speech-to-text")) {
+      return "ElevenLabs speech-to-text access could not be verified. Check the API key permissions and try again.";
+    }
+    if (normalized.includes("text-to-speech voice") || normalized.includes("voice")) {
+      return "ElevenLabs voice settings could not be verified. Check the voice ID and model, then try again.";
+    }
+    if (normalized.includes("text-to-speech")) {
+      return "ElevenLabs text-to-speech access could not be verified. Check the API key, voice ID, and model, then try again.";
+    }
+    return "ElevenLabs settings could not be verified. Check the API key, voice ID, and permissions, then try again.";
+  }
+  return "An unexpected error occurred while checking config. Try again.";
+}
+
 function revealSetupErrorSection(sectionKey) {
   if (!sectionKey) {
     return;
@@ -1058,19 +1148,30 @@ function revealSetupErrorSection(sectionKey) {
 
 function presentRelevantSetupError(message, options = {}) {
   const sectionKey = classifySetupErrorSection(message);
+  const safeMessage = sanitizeSetupErrorMessage(message, sectionKey);
   clearAllSetupSectionErrors();
   if (!sectionKey) {
-    setConfigStatusMessage(message, options.tone || "danger");
+    setConfigStatusMessage(safeMessage, options.tone || "danger");
     return false;
   }
-  setSetupSectionError(sectionKey, message);
+  setSetupSectionError(sectionKey, safeMessage);
   revealSetupErrorSection(sectionKey);
   const summary =
     typeof options.summary === "string" && options.summary.trim()
       ? options.summary.trim()
       : "Config issue detected. See the highlighted section.";
-  setConfigStatusMessage(summary, "info");
+  setConfigStatusMessage(summary, options?.tone || "info");
   return true;
+}
+
+function reportSetupUiError(context, error) {
+  console.error("[video-chat-ui]", context, error);
+  const sectionKey = classifySetupErrorSection(error);
+  const safeMessage = sanitizeSetupErrorMessage(error, sectionKey);
+  return {
+    sectionKey,
+    safeMessage,
+  };
 }
 
 function debugLog(event, details = {}) {
@@ -7925,10 +8026,18 @@ async function requestJson(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     if (response.status === 401) {
-      throw new Error("Unauthorized: enter a valid gateway token.");
+      const error = new Error("Unauthorized: enter a valid gateway token.");
+      error.code = "GATEWAY_UNAUTHORIZED";
+      error.status = response.status;
+      throw error;
     }
     const message = payload?.error?.message || `Request failed (${response.status})`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.code = payload?.error?.code;
+    error.field = payload?.error?.field ?? payload?.error?.details?.field;
+    error.type = payload?.error?.type ?? payload?.error?.details?.type;
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
@@ -8035,15 +8144,12 @@ async function refreshSetupStatus() {
     storedSetupSecretValues.clear();
     secretVisibilityState.clear();
     syncSetupEditorsFromCurrentForm();
-    const message = error instanceof Error ? error.message : "Failed to load status";
-    if (
-      !presentRelevantSetupError(message, {
-        tone: "danger",
-        summary: "Config status check failed. See the highlighted section.",
-      })
-    ) {
-      setConfigStatusMessage(message, "danger");
-    }
+    reportSetupUiError("config-status-check-failed", error);
+    presentRelevantSetupError(error, {
+      tone: "danger",
+      summary: "Config status check failed. See the highlighted section.",
+    });
+    const message = extractRawSetupErrorMessage(error);
     if (message.toLowerCase().includes("unauthorized")) {
       setGatewayHealthStatus("warn", "Unauthorized");
       setKeysHealthStatus("warn", "Needs Auth");
@@ -8118,14 +8224,14 @@ if (setupForm) {
     try {
       await saveSetupPayload(body);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      presentRelevantSetupError(message, {
+      const { safeMessage } = reportSetupUiError("config-save-failed", error);
+      presentRelevantSetupError(error, {
         tone: "danger",
         summary: "Config save failed. See the highlighted section.",
       });
       setGatewayHealthStatus("danger", "Error");
       setKeysHealthStatus("danger", "Error");
-      setOutput({ action: "setup-save-failed", error: message });
+      setOutput({ action: "setup-save-failed", error: safeMessage });
     }
   });
 
@@ -8152,13 +8258,13 @@ if (setupRawForm) {
     } catch (error) {
       setGatewayHealthStatus("danger", "Error");
       setKeysHealthStatus("danger", "Error");
-      const message = error instanceof Error ? error.message : String(error);
-      presentRelevantSetupError(message, {
+      const { safeMessage } = reportSetupUiError("config-save-failed-raw", error);
+      presentRelevantSetupError(error, {
         tone: "danger",
         summary: "Config save failed. See the highlighted section.",
       });
-      setSetupRawError(message);
-      setOutput({ action: "setup-save-failed", error: message });
+      setSetupRawError(safeMessage);
+      setOutput({ action: "setup-save-failed", error: safeMessage });
     }
   });
 }
