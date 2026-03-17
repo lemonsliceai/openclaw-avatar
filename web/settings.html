@@ -228,6 +228,7 @@
                   <p class="card-sub">This page will auto-load the configured gateway token when available, or you can enter one manually.</p>
                 </header>
                 <div class="config-section-card__content">
+                  <p id="gateway-token-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                   <form id="token-form" class="video-chat-form">
                     <label class="field full">
                       <span>Gateway token</span>
@@ -275,6 +276,7 @@
                     <p class="card-sub">Configure LemonSlice credentials.</p>
                   </header>
                   <div class="config-section-card__content">
+                    <p id="lemonslice-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                     <div class="provider-group" id="lemonslice">
                       <h3>LemonSlice</h3>
                       <div class="video-chat-grid cols-2">
@@ -327,6 +329,7 @@
                     <p class="card-sub">Configure LiveKit URL and API credentials.</p>
                   </header>
                   <div class="config-section-card__content">
+                    <p id="livekit-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                     <div class="provider-group" id="livekit">
                       <h3>LiveKit</h3>
                       <div class="video-chat-grid cols-2">
@@ -421,6 +424,7 @@
                     <p class="card-sub">Configure ElevenLabs voice settings for avatar speech.</p>
                   </header>
                   <div class="config-section-card__content">
+                    <p id="elevenlabs-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                     <div class="provider-group" id="elevenlabs">
                       <h3>11Labs</h3>
                       <div class="video-chat-grid cols-2">
@@ -483,7 +487,7 @@
                       <span>JSON body</span>
                       <textarea id="setup-raw-input" spellcheck="false" autocomplete="off"></textarea>
                     </label>
-                    <p id="setup-raw-error" class="callout danger is-mode-hidden"></p>
+                    <p id="setup-raw-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                     <p class="setup-raw-help">
                       Supported keys: lemonSliceApiKey, livekitUrl, livekitApiKey,
                       livekitApiSecret, elevenLabsApiKey, elevenLabsVoiceId. Use <code>_REDACTED_</code> for secret keys to keep

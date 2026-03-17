@@ -4,6 +4,10 @@ const setupForm = document.getElementById("setup-form");
 const setupRawForm = document.getElementById("setup-raw-form");
 const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
+const gatewayTokenErrorEl = document.getElementById("gateway-token-error");
+const lemonSliceErrorEl = document.getElementById("lemonslice-error");
+const liveKitErrorEl = document.getElementById("livekit-error");
+const elevenLabsErrorEl = document.getElementById("elevenlabs-error");
 const sessionForm = document.getElementById("session-form");
 const startSessionButton = document.getElementById("start-session");
 const sessionImageUrlInput = document.getElementById("session-image-url");
@@ -258,6 +262,29 @@ let setupFormBaseline = {
   elevenLabsApiKey: "",
 };
 let setupRawBaseline = "";
+
+const setupSectionErrorEls = new Map([
+  ["gateway-token", gatewayTokenErrorEl],
+  ["lemonslice", lemonSliceErrorEl],
+  ["livekit", liveKitErrorEl],
+  ["elevenlabs", elevenLabsErrorEl],
+]);
+const STRUCTURED_SETUP_ERROR_SECTION_MAP = new Map([
+  ["GATEWAY_UNAUTHORIZED", "gateway-token"],
+  ["GATEWAY_TOKEN", "gateway-token"],
+  ["LEMONSLICE", "lemonslice"],
+  ["LIVEKIT", "livekit"],
+  ["ELEVENLABS", "elevenlabs"],
+]);
+const STRUCTURED_SETUP_ERROR_FIELD_MAP = new Map([
+  ["gatewayToken", "gateway-token"],
+  ["lemonSliceApiKey", "lemonslice"],
+  ["livekitUrl", "livekit"],
+  ["livekitApiKey", "livekit"],
+  ["livekitApiSecret", "livekit"],
+  ["elevenLabsApiKey", "elevenlabs"],
+  ["elevenLabsVoiceId", "elevenlabs"],
+]);
 let activeSessionImageUrl = "";
 let activeSessionAvatarJoinTimeoutMs = SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS * 1000;
 const renderedVoiceUserRuns = new Set();
@@ -963,6 +990,340 @@ function setOutput(value) {
     return;
   }
   outputEl.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function setConfigStatusMessage(message, tone = "info") {
+  if (!statusEl) {
+    return;
+  }
+  statusEl.textContent = message;
+  statusEl.classList.remove("info", "danger", "success");
+  statusEl.classList.add(tone);
+}
+
+function setSetupSectionError(sectionKey, message) {
+  const errorEl = setupSectionErrorEls.get(sectionKey);
+  if (!errorEl) {
+    return;
+  }
+  const next = typeof message === "string" ? message.trim() : "";
+  if (!next) {
+    errorEl.textContent = "";
+    errorEl.classList.add("is-mode-hidden");
+    return;
+  }
+  errorEl.textContent = next;
+  errorEl.classList.remove("is-mode-hidden");
+}
+
+function clearAllSetupSectionErrors() {
+  for (const sectionKey of setupSectionErrorEls.keys()) {
+    setSetupSectionError(sectionKey, "");
+  }
+}
+
+function clearSetupSectionErrors(sectionKeyOrElement) {
+  const sectionKey =
+    typeof sectionKeyOrElement === "string"
+      ? sectionKeyOrElement.trim()
+      : typeof sectionKeyOrElement?.getAttribute === "function"
+        ? (sectionKeyOrElement.getAttribute("data-config-section") || "").trim()
+        : "";
+  if (!sectionKey) {
+    return false;
+  }
+  setSetupSectionError(sectionKey, "");
+  return true;
+}
+
+function clearSectionErrorsForField(field) {
+  if (!(field instanceof Element)) {
+    return false;
+  }
+  const sectionElement = field.closest("[data-config-section]");
+  if (clearSetupSectionErrors(sectionElement)) {
+    return true;
+  }
+  const fieldName = (field.getAttribute("name") || "").trim();
+  if (!fieldName || !STRUCTURED_SETUP_ERROR_FIELD_MAP.has(fieldName)) {
+    return false;
+  }
+  return clearSetupSectionErrors(STRUCTURED_SETUP_ERROR_FIELD_MAP.get(fieldName));
+}
+
+function readStructuredSetupErrorValue(message, key) {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const direct = message[key];
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  const nestedMessage = message.message;
+  if (nestedMessage && typeof nestedMessage === "object") {
+    const nested = nestedMessage[key];
+    if (typeof nested === "string" && nested.trim()) {
+      return nested.trim();
+    }
+  }
+  return "";
+}
+
+function classifySetupErrorSection(message) {
+  const structuredCode = readStructuredSetupErrorValue(message, "code").toUpperCase();
+  const structuredField = readStructuredSetupErrorValue(message, "field");
+  const structuredType = readStructuredSetupErrorValue(message, "type").toUpperCase();
+  if (STRUCTURED_SETUP_ERROR_SECTION_MAP.has(structuredCode)) {
+    return STRUCTURED_SETUP_ERROR_SECTION_MAP.get(structuredCode);
+  }
+  if (STRUCTURED_SETUP_ERROR_SECTION_MAP.has(structuredType)) {
+    return STRUCTURED_SETUP_ERROR_SECTION_MAP.get(structuredType);
+  }
+  if (STRUCTURED_SETUP_ERROR_FIELD_MAP.has(structuredField)) {
+    return STRUCTURED_SETUP_ERROR_FIELD_MAP.get(structuredField);
+  }
+  const normalized =
+    typeof message === "string"
+      ? message.trim().toLowerCase()
+      : typeof message?.message === "string"
+        ? message.message.trim().toLowerCase()
+        : "";
+  if (!normalized) {
+    return null;
+  }
+  if (
+    normalized.includes("gateway token") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("needs auth")
+  ) {
+    return "gateway-token";
+  }
+  if (
+    normalized.includes("lemonslice") ||
+    normalized.includes("lemon slice") ||
+    normalized.includes("lemonsliceapikey")
+  ) {
+    return "lemonslice";
+  }
+  if (
+    normalized.includes("livekit") ||
+    normalized.includes("livekiturl") ||
+    normalized.includes("livekitapikey") ||
+    normalized.includes("livekitapisecret")
+  ) {
+    return "livekit";
+  }
+  if (
+    normalized.includes("elevenlabs") ||
+    normalized.includes("11labs") ||
+    normalized.includes("elevenlabsapikey") ||
+    normalized.includes("elevenlabsvoiceid")
+  ) {
+    return "elevenlabs";
+  }
+  return null;
+}
+
+function extractRawSetupErrorMessage(message) {
+  if (typeof message === "string" && message.trim()) {
+    return message.trim();
+  }
+  if (message && typeof message === "object" && typeof message.message === "string" && message.message.trim()) {
+    return message.message.trim();
+  }
+  return "An unexpected error occurred.";
+}
+
+function sanitizeSetupErrorMessage(message, sectionKey) {
+  const rawMessage = extractRawSetupErrorMessage(message);
+  const normalized = rawMessage.toLowerCase();
+  const structuredCode = readStructuredSetupErrorValue(message, "code").toUpperCase();
+  if (sectionKey === "gateway-token") {
+    return normalized.includes("unauthorized") || structuredCode === "GATEWAY_UNAUTHORIZED"
+      ? "Gateway token is invalid or expired. Enter a valid token and try again."
+      : "Gateway token could not be verified. Check the token and try again.";
+  }
+  if (sectionKey === "lemonslice") {
+    return "LemonSlice settings could not be verified. Check the API key and try again.";
+  }
+  if (sectionKey === "livekit") {
+    return "LiveKit settings could not be verified. Check the URL, API key, and API secret, then try again.";
+  }
+  if (sectionKey === "elevenlabs") {
+    if (normalized.includes("speech-to-text")) {
+      return "ElevenLabs speech-to-text access could not be verified. Check the API key permissions and try again.";
+    }
+    if (normalized.includes("text-to-speech voice") || normalized.includes("voice")) {
+      return "ElevenLabs voice settings could not be verified. Check the voice ID and model, then try again.";
+    }
+    if (normalized.includes("text-to-speech")) {
+      return "ElevenLabs text-to-speech access could not be verified. Check the API key, voice ID, and model, then try again.";
+    }
+    return "ElevenLabs settings could not be verified. Check the API key, voice ID, and permissions, then try again.";
+  }
+  return "An unexpected error occurred while checking config. Try again.";
+}
+
+function revealSetupErrorSection(sectionKey) {
+  if (!sectionKey) {
+    return;
+  }
+  if (activeConfigMode !== "form") {
+    setConfigMode("form");
+  }
+  if (activeConfigSectionFilter !== "all" && activeConfigSectionFilter !== sectionKey) {
+    applyConfigSectionFilter(sectionKey);
+  }
+}
+
+function presentRelevantSetupError(message, options = {}) {
+  const sectionKey = classifySetupErrorSection(message);
+  const safeMessage = sanitizeSetupErrorMessage(message, sectionKey);
+  clearAllSetupSectionErrors();
+  if (!sectionKey) {
+    setConfigStatusMessage(safeMessage, options.tone || "danger");
+    return false;
+  }
+  setSetupSectionError(sectionKey, safeMessage);
+  revealSetupErrorSection(sectionKey);
+  const summary =
+    typeof options.summary === "string" && options.summary.trim()
+      ? options.summary.trim()
+      : "Config issue detected. See the highlighted section.";
+  setConfigStatusMessage(summary, options?.tone || "info");
+  return true;
+}
+
+function reportSetupUiError(context, error) {
+  console.error("[video-chat-ui]", context, error);
+  const sectionKey = classifySetupErrorSection(error);
+  const safeMessage = sanitizeSetupErrorMessage(error, sectionKey);
+  return {
+    sectionKey,
+    safeMessage,
+  };
+}
+
+function readSetupErrorStatusCode(error) {
+  const candidates = [
+    error?.status,
+    error?.statusCode,
+    error?.response?.status,
+    error?.response?.statusCode,
+    error?.cause?.status,
+    error?.cause?.statusCode,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function readSetupErrorType(error) {
+  const structuredType = readStructuredSetupErrorValue(error, "type");
+  if (structuredType) {
+    return structuredType.trim().toLowerCase();
+  }
+  const candidates = [error?.type, error?.response?.type, error?.cause?.type];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim().toLowerCase();
+    }
+  }
+  return "";
+}
+
+function isSetupTransportErrorCode(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return false;
+  }
+  const normalized = value.trim().toUpperCase();
+  return (
+    normalized === "FETCH_ERROR" ||
+    normalized === "NETWORK_ERROR" ||
+    normalized === "ETIMEDOUT" ||
+    normalized === "ECONNABORTED" ||
+    normalized === "ECONNRESET" ||
+    normalized === "ECONNREFUSED" ||
+    normalized === "EHOSTUNREACH" ||
+    normalized === "ENETUNREACH" ||
+    normalized === "ENOTFOUND" ||
+    normalized === "EPIPE" ||
+    normalized === "UND_ERR_CONNECT_TIMEOUT"
+  );
+}
+
+function isSetupAuthError(error) {
+  if (!error) {
+    return false;
+  }
+  if (error?.isAuth === true) {
+    return true;
+  }
+  const status = readSetupErrorStatusCode(error);
+  const type = readSetupErrorType(error);
+  const code = typeof error?.code === "string" ? error.code.trim().toUpperCase() : "";
+  if (
+    status === 401 ||
+    status === 403 ||
+    type === "auth" ||
+    type === "forbidden" ||
+    code === "GATEWAY_UNAUTHORIZED"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isSetupTransportError(error) {
+  if (!error || isSetupRawPayloadError(error)) {
+    return false;
+  }
+  if (error?.isTransport === true) {
+    return true;
+  }
+  const status = readSetupErrorStatusCode(error);
+  const type = readSetupErrorType(error);
+  if (status !== null && status >= 500) {
+    return true;
+  }
+  if (type === "transport" || type === "network") {
+    return true;
+  }
+  if (typeof error?.name === "string" && error.name.trim() === "FetchError") {
+    return true;
+  }
+  if (typeof error?.cause?.name === "string" && error.cause.name.trim() === "FetchError") {
+    return true;
+  }
+  if (
+    isSetupTransportErrorCode(error?.errno) ||
+    isSetupTransportErrorCode(error?.code) ||
+    isSetupTransportErrorCode(error?.cause?.errno) ||
+    isSetupTransportErrorCode(error?.cause?.code)
+  ) {
+    return true;
+  }
+  if ("response" in Object(error) && error.response == null) {
+    return true;
+  }
+  return error instanceof TypeError && status === null;
+}
+
+function updateSetupHealthStatusForError(error, options = {}) {
+  if (isSetupAuthError(error)) {
+    setGatewayHealthStatus("warn", "Unauthorized");
+    setKeysHealthStatus("warn", "Needs Auth");
+    return true;
+  }
+  if (isSetupTransportError(error)) {
+    setGatewayHealthStatus("danger", options.gatewayText || "Error");
+    setKeysHealthStatus("danger", options.keysText || "Error");
+    return true;
+  }
+  return false;
 }
 
 function debugLog(event, details = {}) {
@@ -3048,6 +3409,30 @@ function buildSetupPayloadFromForm() {
   return payload;
 }
 
+function clearSetupSecretInputs() {
+  if (!setupForm) {
+    return;
+  }
+  for (const name of setupSecretFieldNames) {
+    const field = setupForm.elements.namedItem(name);
+    if (!field || typeof field.value !== "string") {
+      continue;
+    }
+    field.value = "";
+  }
+}
+
+function resetSetupSecretState(options = {}) {
+  latestSetupStatus = null;
+  storedSetupSecretValues.clear();
+  secretVisibilityState.clear();
+  clearSetupSecretInputs();
+  if (options.clearTokenField && tokenInput && typeof tokenInput.value === "string") {
+    tokenInput.value = "";
+  }
+  syncSetupEditorsFromCurrentForm();
+}
+
 function applySetupPayloadToForm(payload) {
   if (!setupForm || !payload || typeof payload !== "object") {
     return;
@@ -3083,11 +3468,11 @@ function parseSetupPayloadFromRaw(rawText) {
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    throw new Error("Raw payload must be valid JSON.");
+    throw new SetupRawPayloadError("Raw payload must be valid JSON.");
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Raw payload must be a JSON object.");
+    throw new SetupRawPayloadError("Raw payload must be a JSON object.");
   }
 
   const payload = {};
@@ -3097,7 +3482,7 @@ function parseSetupPayloadFromRaw(rawText) {
     }
     const value = parsed[name];
     if (typeof value !== "string") {
-      throw new Error(`"${name}" must be a string.`);
+      throw new SetupRawPayloadError(`"${name}" must be a string.`);
     }
     if (isSetupSecretFieldName(name) && isRedactedSecretValue(value)) {
       continue;
@@ -3105,6 +3490,17 @@ function parseSetupPayloadFromRaw(rawText) {
     payload[name] = value;
   }
   return payload;
+}
+
+class SetupRawPayloadError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SetupRawPayloadError";
+  }
+}
+
+function isSetupRawPayloadError(error) {
+  return error instanceof SetupRawPayloadError;
 }
 
 function serializeSetupPayload(payload) {
@@ -7817,10 +8213,18 @@ async function requestJson(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     if (response.status === 401) {
-      throw new Error("Unauthorized: enter a valid gateway token.");
+      const error = new Error("Unauthorized: enter a valid gateway token.");
+      error.code = "GATEWAY_UNAUTHORIZED";
+      error.status = response.status;
+      throw error;
     }
     const message = payload?.error?.message || `Request failed (${response.status})`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.code = payload?.error?.code;
+    error.field = payload?.error?.field ?? payload?.error?.details?.field;
+    error.type = payload?.error?.type ?? payload?.error?.details?.type;
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
@@ -7871,11 +8275,13 @@ async function saveSetupPayload(body) {
     method: "POST",
     body: JSON.stringify(body),
   });
+  clearAllSetupSectionErrors();
   cacheSetupSecretValues(payload.setup);
   const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
-  if (statusEl) {
-    statusEl.textContent = setupStatusLabel(sanitizedSetup);
-  }
+  setConfigStatusMessage(
+    setupStatusLabel(sanitizedSetup),
+    isSetupConfiguredForUi(sanitizedSetup) ? "success" : "info",
+  );
   latestSetupStatus = sanitizedSetup;
   setGatewayHealthStatus("ok", "OK");
   updateKeysHealthFromSetup(sanitizedSetup);
@@ -7889,20 +8295,14 @@ async function saveSetupPayload(body) {
 
 async function refreshSetupStatus() {
   if (!hasGatewayToken()) {
-    latestSetupStatus = null;
-    storedSetupSecretValues.clear();
-    secretVisibilityState.clear();
-    syncSetupEditorsFromCurrentForm();
-    if (statusEl) {
-      statusEl.textContent = "Enter a gateway token above, then click Use Token.";
-    }
+    clearAllSetupSectionErrors();
+    resetSetupSecretState();
+    setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
     setGatewayHealthStatus("warn", "Token Missing");
     setKeysHealthStatus("warn", "Needs Token");
     return;
   }
-  if (statusEl) {
-    statusEl.textContent = "Loading setup status...";
-  }
+  setConfigStatusMessage("Loading setup status...", "info");
   setGatewayHealthStatus("warn", "Checking");
   setKeysHealthStatus("warn", "Checking");
   try {
@@ -7910,30 +8310,27 @@ async function refreshSetupStatus() {
       requestJson("/plugins/video-chat/api/setup"),
       refreshOpenClawCompatibility(),
     ]);
+    clearAllSetupSectionErrors();
     cacheSetupSecretValues(payload.setup);
     const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
     latestSetupStatus = sanitizedSetup;
-    if (statusEl) {
-      statusEl.textContent = setupStatusLabel(sanitizedSetup);
-    }
+    setConfigStatusMessage(
+      setupStatusLabel(sanitizedSetup),
+      isSetupConfiguredForUi(sanitizedSetup) ? "success" : "info",
+    );
     setGatewayHealthStatus("ok", "OK");
     updateKeysHealthFromSetup(sanitizedSetup);
     syncSessionInputsFromSetupStatus(sanitizedSetup);
     populateSetupFormFromSetupStatus(sanitizedSetup);
     syncSetupEditorsFromCurrentForm();
   } catch (error) {
-    latestSetupStatus = null;
-    storedSetupSecretValues.clear();
-    secretVisibilityState.clear();
-    syncSetupEditorsFromCurrentForm();
-    const message = error instanceof Error ? error.message : "Failed to load status";
-    if (statusEl) {
-      statusEl.textContent = message;
-    }
-    if (message.toLowerCase().includes("unauthorized")) {
-      setGatewayHealthStatus("warn", "Unauthorized");
-      setKeysHealthStatus("warn", "Needs Auth");
-    } else {
+    resetSetupSecretState();
+    reportSetupUiError("config-status-check-failed", error);
+    presentRelevantSetupError(error, {
+      tone: "danger",
+      summary: "Config status check failed. See the highlighted section.",
+    });
+    if (!updateSetupHealthStatusForError(error, { gatewayText: "Error", keysText: "Unknown" })) {
       setGatewayHealthStatus("danger", "Error");
       setKeysHealthStatus("danger", "Unknown");
     }
@@ -7941,10 +8338,12 @@ async function refreshSetupStatus() {
 }
 
 if (setupForm) {
-  setupForm.addEventListener("input", () => {
+  setupForm.addEventListener("input", (event) => {
+    clearSectionErrorsForField(event.target);
     updateSetupSaveButtonState();
   });
-  setupForm.addEventListener("change", () => {
+  setupForm.addEventListener("change", (event) => {
+    clearSectionErrorsForField(event.target);
     updateSetupSaveButtonState();
   });
 
@@ -8002,8 +8401,13 @@ if (setupForm) {
     try {
       await saveSetupPayload(body);
     } catch (error) {
-      setGatewayHealthStatus("danger", "Error");
-      setOutput({ action: "setup-save-failed", error: String(error) });
+      const { safeMessage } = reportSetupUiError("config-save-failed", error);
+      presentRelevantSetupError(error, {
+        tone: "danger",
+        summary: "Config save failed. See the highlighted section.",
+      });
+      updateSetupHealthStatusForError(error);
+      setOutput({ action: "setup-save-failed", error: safeMessage });
     }
   });
 
@@ -8016,6 +8420,7 @@ if (setupForm) {
 if (setupRawInput) {
   setupRawInput.addEventListener("input", () => {
     setSetupRawError("");
+    clearAllSetupSectionErrors();
     updateSetupSaveButtonState();
   });
 }
@@ -8027,10 +8432,21 @@ if (setupRawForm) {
       const body = parseSetupPayloadFromRaw(setupRawInput?.value ?? "");
       await saveSetupPayload(body);
     } catch (error) {
-      setGatewayHealthStatus("danger", "Error");
-      const message = error instanceof Error ? error.message : String(error);
-      setSetupRawError(message);
-      setOutput({ action: "setup-save-failed", error: message });
+      const { safeMessage } = reportSetupUiError("config-save-failed-raw", error);
+      const uiMessage =
+        isSetupRawPayloadError(error) && error.message.trim() ? error.message.trim() : safeMessage;
+      updateSetupHealthStatusForError(error);
+      if (isSetupRawPayloadError(error)) {
+        clearAllSetupSectionErrors();
+        setSetupRawError(uiMessage);
+      } else {
+        presentRelevantSetupError(error, {
+          tone: "danger",
+          summary: "Config save failed. See the highlighted section.",
+        });
+        setSetupRawError("");
+      }
+      setOutput({ action: "setup-save-failed", error: uiMessage });
     }
   });
 }
@@ -8461,6 +8877,7 @@ window.addEventListener("focus", () => {
 
 if (configCancelButton) {
   configCancelButton.addEventListener("click", () => {
+    clearAllSetupSectionErrors();
     tokenVisible = false;
     if (tokenInput) {
       tokenInput.value = getGatewayToken();
@@ -8496,6 +8913,7 @@ if (tokenForm) {
 
 if (tokenInput) {
   tokenInput.addEventListener("input", () => {
+    setSetupSectionError("gateway-token", "");
     updateTokenFieldMasking();
   });
 }
@@ -8523,12 +8941,11 @@ if (toggleTokenVisibilityButton) {
 
 if (clearTokenButton) {
   clearTokenButton.addEventListener("click", async () => {
+    clearAllSetupSectionErrors();
     await stopActiveSession();
     closeGatewaySocket("Gateway token cleared.");
     clearGatewayToken();
-    if (tokenInput) {
-      tokenInput.value = "";
-    }
+    resetSetupSecretState({ clearTokenField: true });
     tokenVisible = false;
     updateTokenFieldMasking();
     updateRoomButtons();
@@ -8537,9 +8954,7 @@ if (clearTokenButton) {
     setChatStatus("Enter a gateway token to use text chat.");
     setGatewayHealthStatus("warn", "Token Missing");
     setKeysHealthStatus("warn", "Needs Token");
-    if (statusEl) {
-      statusEl.textContent = "Gateway token cleared. Enter a token to continue.";
-    }
+    setConfigStatusMessage("Gateway token cleared. Enter a token to continue.", "info");
     setOutput({ action: "gateway-token-cleared" });
   });
 }
@@ -8571,9 +8986,8 @@ async function initializeGatewaySetupState() {
     refreshSetupStatus().catch(() => {});
     setChatStatus("Start a session to use text chat.");
   } else {
-    if (statusEl) {
-      statusEl.textContent = "Enter a gateway token above, then click Use Token.";
-    }
+    clearAllSetupSectionErrors();
+    setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
     setGatewayHealthStatus("warn", "Token Missing");
     setKeysHealthStatus("warn", "Needs Token");
     setChatStatus("Enter a gateway token to use text chat.");
