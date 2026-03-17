@@ -1310,6 +1310,12 @@ function loadSessionFormPreferences() {
 }
 
 function parseSessionAvatarTimeoutSeconds(rawValue) {
+  if (rawValue === null || rawValue === undefined) {
+    return SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS;
+  }
+  if (typeof rawValue === "string" && !rawValue.trim()) {
+    return SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS;
+  }
   const parsed = Number(rawValue);
   if (!Number.isFinite(parsed)) {
     return SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS;
@@ -1329,6 +1335,27 @@ function resolveSessionImageUrlValue(rawValue) {
   return normalizeOptionalInputValue(rawValue);
 }
 
+function isAllowedSessionImageUrlProtocol(protocol) {
+  return protocol === "https:" || protocol === "http:" || protocol === "data:";
+}
+
+function assertValidSessionImageUrl(imageUrl) {
+  const normalizedImageUrl = resolveSessionImageUrlValue(imageUrl);
+  if (!normalizedImageUrl) {
+    throw new Error("Avatar image URL is required.");
+  }
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(normalizedImageUrl);
+  } catch {
+    throw new Error("Invalid avatar image URL or unsupported protocol.");
+  }
+  if (!isAllowedSessionImageUrlProtocol(parsedUrl.protocol)) {
+    throw new Error("Invalid avatar image URL or unsupported protocol.");
+  }
+  return normalizedImageUrl;
+}
+
 function updateSessionStartButtonState() {
   if (!startSessionButton) {
     return;
@@ -1337,21 +1364,26 @@ function updateSessionStartButtonState() {
 }
 
 async function validateSessionImageUrl(imageUrl) {
-  const normalizedImageUrl = resolveSessionImageUrlValue(imageUrl);
-  if (!normalizedImageUrl) {
-    throw new Error("Avatar image URL is required.");
-  }
+  assertValidSessionImageUrl(imageUrl);
 }
 
-function syncSessionInputsFromSetupStatus() {
-  updateSessionStartButtonState();
+function syncSessionInputsFromSetupStatus(setup) {
+  const storedImageUrl = getStoredStringPreference(SESSION_IMAGE_URL_STORAGE_KEY, "");
+  const setupImageUrl = resolveSessionImageUrlValue(setup?.lemonSlice?.imageUrl);
+  if (
+    sessionImageUrlInput &&
+    typeof sessionImageUrlInput.value === "string" &&
+    !resolveSessionImageUrlValue(sessionImageUrlInput.value) &&
+    !storedImageUrl &&
+    setupImageUrl
+  ) {
+    sessionImageUrlInput.value = setupImageUrl;
+  }
+  updateSessionStartButtonState(setup);
 }
 
 function buildSessionCreatePayload(sessionKey, options = {}) {
-  const avatarImageUrl = resolveSessionImageUrlValue(options.avatarImageUrl);
-  if (!avatarImageUrl) {
-    throw new Error("Avatar image URL is required.");
-  }
+  const avatarImageUrl = assertValidSessionImageUrl(options.avatarImageUrl);
   return {
     sessionKey,
     avatarImageUrl,

@@ -95,7 +95,7 @@ function parseJobMetadata(raw) {
   const imageUrl = typeof parsed.imageUrl === "string" ? parsed.imageUrl.trim() : "";
   const avatarTimeoutSeconds =
     typeof parsed.avatarTimeoutSeconds === "number" && Number.isFinite(parsed.avatarTimeoutSeconds)
-      ? Math.max(1, Math.floor(parsed.avatarTimeoutSeconds))
+      ? Math.min(600, Math.max(1, Math.floor(parsed.avatarTimeoutSeconds)))
       : 60;
   const interruptReplyOnNewMessage = parsed.interruptReplyOnNewMessage === true;
   if (!sessionKey || !imageUrl) {

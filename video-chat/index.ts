@@ -446,26 +446,26 @@ function normalizeOptionalSetupSecretString(value: unknown): string | undefined 
   return REDACTED_SECRET_VALUES.has(trimmed) ? undefined : trimmed;
 }
 
-function validateLemonSliceImageUrl(value: string): string | null {
+function validateAvatarImageUrl(value: string): string | null {
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    return "videoChat.lemonSlice.imageUrl must be a valid URL";
+    return "avatarImageUrl must be a valid URL";
   }
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return "videoChat.lemonSlice.imageUrl must use http or https";
+    return "avatarImageUrl must use http or https";
   }
 
   const trimmedPath = parsed.pathname.replace(/\/+$/g, "");
   if (!trimmedPath || trimmedPath === "/") {
-    return "videoChat.lemonSlice.imageUrl must be a direct image URL, not a directory";
+    return "avatarImageUrl must be a direct image URL, not a directory";
   }
 
   const lastPathSegment = trimmedPath.split("/").at(-1) ?? "";
   if (!lastPathSegment || lastPathSegment === "f") {
-    return "videoChat.lemonSlice.imageUrl must include an image path after the host";
+    return "avatarImageUrl must include an image path after the host";
   }
 
   return null;
@@ -2930,15 +2930,12 @@ async function createVideoChatSession(params: {
     throw new Error(`Claw Cast is not configured: missing ${status.missing.join(", ")}`);
   }
 
-  const lemonSlice = effectiveConfig.videoChat?.lemonSlice;
   const livekit = effectiveConfig.videoChat?.livekit;
   const elevenLabsApiKey = normalizeResolvedSecretInputString({
     value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
     path: "messages.tts.elevenlabs.apiKey",
   });
-  const avatarImageUrl =
-    normalizeOptionalString(params.avatarImageUrl) ??
-    normalizeOptionalString(lemonSlice?.imageUrl);
+  const avatarImageUrl = normalizeOptionalString(params.avatarImageUrl);
   const avatarTimeoutSeconds = normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds);
   const livekitUrl = normalizeOptionalString(livekit?.url);
   const apiKey = normalizeResolvedSecretInputString({
@@ -2949,12 +2946,15 @@ async function createVideoChatSession(params: {
     value: livekit?.apiSecret,
     path: "videoChat.livekit.apiSecret",
   });
-  if (!avatarImageUrl || !livekitUrl || !apiKey || !apiSecret || !elevenLabsApiKey) {
+  if (!avatarImageUrl) {
     throw new Error(
-      "Claw Cast session creation is unavailable: missing avatar image URL, LemonSlice, LiveKit, or ElevenLabs credentials",
+      "invalid videoChat.session.create params: avatarImageUrl is required",
     );
   }
-  const imageUrlValidationError = validateLemonSliceImageUrl(avatarImageUrl);
+  if (!livekitUrl || !apiKey || !apiSecret || !elevenLabsApiKey) {
+    throw new Error("Claw Cast session creation is unavailable: missing LiveKit or ElevenLabs credentials");
+  }
+  const imageUrlValidationError = validateAvatarImageUrl(avatarImageUrl);
   if (imageUrlValidationError) {
     throw new Error(`invalid videoChat.session.create params: ${imageUrlValidationError}`);
   }

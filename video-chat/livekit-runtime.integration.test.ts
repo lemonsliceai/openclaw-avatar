@@ -220,11 +220,13 @@ describeRuntime("video-chat LiveKit runtime integration", () => {
                   participantToken?: string;
                   participantIdentity?: string;
                   agentName?: string;
+                  avatarImageUrl?: string;
                 }
               | undefined;
             roomName = session?.roomName ?? "";
             expect(roomName).toContain(`openclaw-runtime-${attempt}-`);
             expect(session?.participantToken).toBeTruthy();
+            expect(session?.avatarImageUrl).toBe("https://example.com/runtime-avatar.png");
 
             room = new Room();
             await room.connect(session?.livekitUrl ?? runtimeEnv.livekitUrl, session?.participantToken ?? "");
