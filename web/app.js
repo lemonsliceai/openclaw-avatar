@@ -1175,6 +1175,56 @@ function reportSetupUiError(context, error) {
   };
 }
 
+function isSetupAuthError(error) {
+  if (!error) {
+    return false;
+  }
+  if (error?.isAuth === true) {
+    return true;
+  }
+  const status = typeof error?.status === "number" ? error.status : null;
+  const code = typeof error?.code === "string" ? error.code.trim().toUpperCase() : "";
+  if (status === 401 || status === 403 || code === "GATEWAY_UNAUTHORIZED") {
+    return true;
+  }
+  const message = extractRawSetupErrorMessage(error).toLowerCase();
+  return /unauthorized|invalid token|needs auth|401|403|forbidden/.test(message);
+}
+
+function isSetupTransportError(error) {
+  if (!error || isSetupRawPayloadError(error)) {
+    return false;
+  }
+  if (error?.isTransport === true) {
+    return true;
+  }
+  const status = typeof error?.status === "number" ? error.status : null;
+  if (status !== null && status >= 500) {
+    return true;
+  }
+  const message = extractRawSetupErrorMessage(error).toLowerCase();
+  if (error instanceof TypeError && (message.includes("fetch") || message.includes("network"))) {
+    return true;
+  }
+  return /failed to fetch|network|transport|timed out|timeout|connection reset|connection refused|socket hung up|econn|offline/.test(
+    message,
+  );
+}
+
+function updateSetupHealthStatusForError(error, options = {}) {
+  if (isSetupAuthError(error)) {
+    setGatewayHealthStatus("warn", "Unauthorized");
+    setKeysHealthStatus("warn", "Needs Auth");
+    return true;
+  }
+  if (isSetupTransportError(error)) {
+    setGatewayHealthStatus("danger", options.gatewayText || "Error");
+    setKeysHealthStatus("danger", options.keysText || "Error");
+    return true;
+  }
+  return false;
+}
+
 function debugLog(event, details = {}) {
   if (!isVideoChatDebugLoggingEnabled()) {
     return;
@@ -3256,6 +3306,30 @@ function buildSetupPayloadFromForm() {
     payload[name] = value;
   }
   return payload;
+}
+
+function clearSetupSecretInputs() {
+  if (!setupForm) {
+    return;
+  }
+  for (const name of setupSecretFieldNames) {
+    const field = setupForm.elements.namedItem(name);
+    if (!field || typeof field.value !== "string") {
+      continue;
+    }
+    field.value = "";
+  }
+}
+
+function resetSetupSecretState(options = {}) {
+  latestSetupStatus = null;
+  storedSetupSecretValues.clear();
+  secretVisibilityState.clear();
+  clearSetupSecretInputs();
+  if (options.clearTokenField && tokenInput && typeof tokenInput.value === "string") {
+    tokenInput.value = "";
+  }
+  syncSetupEditorsFromCurrentForm();
 }
 
 function applySetupPayloadToForm(payload) {
@@ -8120,11 +8194,8 @@ async function saveSetupPayload(body) {
 
 async function refreshSetupStatus() {
   if (!hasGatewayToken()) {
-    latestSetupStatus = null;
-    storedSetupSecretValues.clear();
-    secretVisibilityState.clear();
     clearAllSetupSectionErrors();
-    syncSetupEditorsFromCurrentForm();
+    resetSetupSecretState();
     setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
     setGatewayHealthStatus("warn", "Token Missing");
     setKeysHealthStatus("warn", "Needs Token");
@@ -8152,10 +8223,7 @@ async function refreshSetupStatus() {
     populateSetupFormFromSetupStatus(sanitizedSetup);
     syncSetupEditorsFromCurrentForm();
   } catch (error) {
-    latestSetupStatus = null;
-    storedSetupSecretValues.clear();
-    secretVisibilityState.clear();
-    syncSetupEditorsFromCurrentForm();
+    resetSetupSecretState();
     reportSetupUiError("config-status-check-failed", error);
     presentRelevantSetupError(error, {
       tone: "danger",
@@ -8241,8 +8309,7 @@ if (setupForm) {
         tone: "danger",
         summary: "Config save failed. See the highlighted section.",
       });
-      setGatewayHealthStatus("danger", "Error");
-      setKeysHealthStatus("danger", "Error");
+      updateSetupHealthStatusForError(error);
       setOutput({ action: "setup-save-failed", error: safeMessage });
     }
   });
@@ -8268,16 +8335,20 @@ if (setupRawForm) {
       const body = parseSetupPayloadFromRaw(setupRawInput?.value ?? "");
       await saveSetupPayload(body);
     } catch (error) {
-      setGatewayHealthStatus("danger", "Error");
-      setKeysHealthStatus("danger", "Error");
       const { safeMessage } = reportSetupUiError("config-save-failed-raw", error);
       const uiMessage =
         isSetupRawPayloadError(error) && error.message.trim() ? error.message.trim() : safeMessage;
-      presentRelevantSetupError(error, {
-        tone: "danger",
-        summary: "Config save failed. See the highlighted section.",
-      });
-      setSetupRawError(uiMessage);
+      updateSetupHealthStatusForError(error);
+      if (isSetupRawPayloadError(error)) {
+        clearAllSetupSectionErrors();
+        setSetupRawError(uiMessage);
+      } else {
+        presentRelevantSetupError(error, {
+          tone: "danger",
+          summary: "Config save failed. See the highlighted section.",
+        });
+        setSetupRawError("");
+      }
       setOutput({ action: "setup-save-failed", error: uiMessage });
     }
   });
@@ -8777,9 +8848,7 @@ if (clearTokenButton) {
     await stopActiveSession();
     closeGatewaySocket("Gateway token cleared.");
     clearGatewayToken();
-    if (tokenInput) {
-      tokenInput.value = "";
-    }
+    resetSetupSecretState({ clearTokenField: true });
     tokenVisible = false;
     updateTokenFieldMasking();
     updateRoomButtons();
