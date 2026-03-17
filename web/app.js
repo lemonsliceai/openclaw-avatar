@@ -4,6 +4,10 @@ const setupForm = document.getElementById("setup-form");
 const setupRawForm = document.getElementById("setup-raw-form");
 const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
+const gatewayTokenErrorEl = document.getElementById("gateway-token-error");
+const lemonSliceErrorEl = document.getElementById("lemonslice-error");
+const liveKitErrorEl = document.getElementById("livekit-error");
+const elevenLabsErrorEl = document.getElementById("elevenlabs-error");
 const sessionForm = document.getElementById("session-form");
 const startSessionButton = document.getElementById("start-session");
 const sessionImageUrlInput = document.getElementById("session-image-url");
@@ -258,6 +262,13 @@ let setupFormBaseline = {
   elevenLabsApiKey: "",
 };
 let setupRawBaseline = "";
+
+const setupSectionErrorEls = new Map([
+  ["gateway-token", gatewayTokenErrorEl],
+  ["lemonslice", lemonSliceErrorEl],
+  ["livekit", liveKitErrorEl],
+  ["elevenlabs", elevenLabsErrorEl],
+]);
 let activeSessionImageUrl = "";
 let activeSessionAvatarJoinTimeoutMs = SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS * 1000;
 const renderedVoiceUserRuns = new Set();
@@ -963,6 +974,103 @@ function setOutput(value) {
     return;
   }
   outputEl.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function setConfigStatusMessage(message, tone = "info") {
+  if (!statusEl) {
+    return;
+  }
+  statusEl.textContent = message;
+  statusEl.classList.remove("info", "danger", "success");
+  statusEl.classList.add(tone);
+}
+
+function setSetupSectionError(sectionKey, message) {
+  const errorEl = setupSectionErrorEls.get(sectionKey);
+  if (!errorEl) {
+    return;
+  }
+  const next = typeof message === "string" ? message.trim() : "";
+  if (!next) {
+    errorEl.textContent = "";
+    errorEl.classList.add("is-mode-hidden");
+    return;
+  }
+  errorEl.textContent = next;
+  errorEl.classList.remove("is-mode-hidden");
+}
+
+function clearAllSetupSectionErrors() {
+  for (const sectionKey of setupSectionErrorEls.keys()) {
+    setSetupSectionError(sectionKey, "");
+  }
+}
+
+function classifySetupErrorSection(message) {
+  const normalized = typeof message === "string" ? message.trim().toLowerCase() : "";
+  if (!normalized) {
+    return null;
+  }
+  if (
+    normalized.includes("gateway token") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("needs auth")
+  ) {
+    return "gateway-token";
+  }
+  if (
+    normalized.includes("lemonslice") ||
+    normalized.includes("lemon slice") ||
+    normalized.includes("lemonsliceapikey")
+  ) {
+    return "lemonslice";
+  }
+  if (
+    normalized.includes("livekit") ||
+    normalized.includes("livekiturl") ||
+    normalized.includes("livekitapikey") ||
+    normalized.includes("livekitapisecret")
+  ) {
+    return "livekit";
+  }
+  if (
+    normalized.includes("elevenlabs") ||
+    normalized.includes("11labs") ||
+    normalized.includes("elevenlabsapikey") ||
+    normalized.includes("elevenlabsvoiceid")
+  ) {
+    return "elevenlabs";
+  }
+  return null;
+}
+
+function revealSetupErrorSection(sectionKey) {
+  if (!sectionKey) {
+    return;
+  }
+  if (activeConfigMode !== "form") {
+    setConfigMode("form");
+  }
+  if (activeConfigSectionFilter !== "all" && activeConfigSectionFilter !== sectionKey) {
+    applyConfigSectionFilter(sectionKey);
+  }
+}
+
+function presentRelevantSetupError(message, options = {}) {
+  const sectionKey = classifySetupErrorSection(message);
+  clearAllSetupSectionErrors();
+  if (!sectionKey) {
+    setConfigStatusMessage(message, options.tone || "danger");
+    return false;
+  }
+  setSetupSectionError(sectionKey, message);
+  revealSetupErrorSection(sectionKey);
+  const summary =
+    typeof options.summary === "string" && options.summary.trim()
+      ? options.summary.trim()
+      : "Config issue detected. See the highlighted section.";
+  setConfigStatusMessage(summary, "info");
+  return true;
 }
 
 function debugLog(event, details = {}) {
@@ -7871,11 +7979,13 @@ async function saveSetupPayload(body) {
     method: "POST",
     body: JSON.stringify(body),
   });
+  clearAllSetupSectionErrors();
   cacheSetupSecretValues(payload.setup);
   const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
-  if (statusEl) {
-    statusEl.textContent = setupStatusLabel(sanitizedSetup);
-  }
+  setConfigStatusMessage(
+    setupStatusLabel(sanitizedSetup),
+    isSetupConfiguredForUi(sanitizedSetup) ? "success" : "info",
+  );
   latestSetupStatus = sanitizedSetup;
   setGatewayHealthStatus("ok", "OK");
   updateKeysHealthFromSetup(sanitizedSetup);
@@ -7892,17 +8002,14 @@ async function refreshSetupStatus() {
     latestSetupStatus = null;
     storedSetupSecretValues.clear();
     secretVisibilityState.clear();
+    clearAllSetupSectionErrors();
     syncSetupEditorsFromCurrentForm();
-    if (statusEl) {
-      statusEl.textContent = "Enter a gateway token above, then click Use Token.";
-    }
+    setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
     setGatewayHealthStatus("warn", "Token Missing");
     setKeysHealthStatus("warn", "Needs Token");
     return;
   }
-  if (statusEl) {
-    statusEl.textContent = "Loading setup status...";
-  }
+  setConfigStatusMessage("Loading setup status...", "info");
   setGatewayHealthStatus("warn", "Checking");
   setKeysHealthStatus("warn", "Checking");
   try {
@@ -7910,12 +8017,14 @@ async function refreshSetupStatus() {
       requestJson("/plugins/video-chat/api/setup"),
       refreshOpenClawCompatibility(),
     ]);
+    clearAllSetupSectionErrors();
     cacheSetupSecretValues(payload.setup);
     const sanitizedSetup = sanitizeSetupStatusForClient(payload.setup);
     latestSetupStatus = sanitizedSetup;
-    if (statusEl) {
-      statusEl.textContent = setupStatusLabel(sanitizedSetup);
-    }
+    setConfigStatusMessage(
+      setupStatusLabel(sanitizedSetup),
+      isSetupConfiguredForUi(sanitizedSetup) ? "success" : "info",
+    );
     setGatewayHealthStatus("ok", "OK");
     updateKeysHealthFromSetup(sanitizedSetup);
     syncSessionInputsFromSetupStatus(sanitizedSetup);
@@ -7927,8 +8036,13 @@ async function refreshSetupStatus() {
     secretVisibilityState.clear();
     syncSetupEditorsFromCurrentForm();
     const message = error instanceof Error ? error.message : "Failed to load status";
-    if (statusEl) {
-      statusEl.textContent = message;
+    if (
+      !presentRelevantSetupError(message, {
+        tone: "danger",
+        summary: "Config status check failed. See the highlighted section.",
+      })
+    ) {
+      setConfigStatusMessage(message, "danger");
     }
     if (message.toLowerCase().includes("unauthorized")) {
       setGatewayHealthStatus("warn", "Unauthorized");
@@ -7942,9 +8056,11 @@ async function refreshSetupStatus() {
 
 if (setupForm) {
   setupForm.addEventListener("input", () => {
+    clearAllSetupSectionErrors();
     updateSetupSaveButtonState();
   });
   setupForm.addEventListener("change", () => {
+    clearAllSetupSectionErrors();
     updateSetupSaveButtonState();
   });
 
@@ -8002,8 +8118,14 @@ if (setupForm) {
     try {
       await saveSetupPayload(body);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      presentRelevantSetupError(message, {
+        tone: "danger",
+        summary: "Config save failed. See the highlighted section.",
+      });
       setGatewayHealthStatus("danger", "Error");
-      setOutput({ action: "setup-save-failed", error: String(error) });
+      setKeysHealthStatus("danger", "Error");
+      setOutput({ action: "setup-save-failed", error: message });
     }
   });
 
@@ -8016,6 +8138,7 @@ if (setupForm) {
 if (setupRawInput) {
   setupRawInput.addEventListener("input", () => {
     setSetupRawError("");
+    clearAllSetupSectionErrors();
     updateSetupSaveButtonState();
   });
 }
@@ -8028,7 +8151,12 @@ if (setupRawForm) {
       await saveSetupPayload(body);
     } catch (error) {
       setGatewayHealthStatus("danger", "Error");
+      setKeysHealthStatus("danger", "Error");
       const message = error instanceof Error ? error.message : String(error);
+      presentRelevantSetupError(message, {
+        tone: "danger",
+        summary: "Config save failed. See the highlighted section.",
+      });
       setSetupRawError(message);
       setOutput({ action: "setup-save-failed", error: message });
     }
@@ -8461,6 +8589,7 @@ window.addEventListener("focus", () => {
 
 if (configCancelButton) {
   configCancelButton.addEventListener("click", () => {
+    clearAllSetupSectionErrors();
     tokenVisible = false;
     if (tokenInput) {
       tokenInput.value = getGatewayToken();
@@ -8496,6 +8625,7 @@ if (tokenForm) {
 
 if (tokenInput) {
   tokenInput.addEventListener("input", () => {
+    setSetupSectionError("gateway-token", "");
     updateTokenFieldMasking();
   });
 }
@@ -8523,6 +8653,7 @@ if (toggleTokenVisibilityButton) {
 
 if (clearTokenButton) {
   clearTokenButton.addEventListener("click", async () => {
+    clearAllSetupSectionErrors();
     await stopActiveSession();
     closeGatewaySocket("Gateway token cleared.");
     clearGatewayToken();
@@ -8537,9 +8668,7 @@ if (clearTokenButton) {
     setChatStatus("Enter a gateway token to use text chat.");
     setGatewayHealthStatus("warn", "Token Missing");
     setKeysHealthStatus("warn", "Needs Token");
-    if (statusEl) {
-      statusEl.textContent = "Gateway token cleared. Enter a token to continue.";
-    }
+    setConfigStatusMessage("Gateway token cleared. Enter a token to continue.", "info");
     setOutput({ action: "gateway-token-cleared" });
   });
 }
@@ -8571,9 +8700,8 @@ async function initializeGatewaySetupState() {
     refreshSetupStatus().catch(() => {});
     setChatStatus("Start a session to use text chat.");
   } else {
-    if (statusEl) {
-      statusEl.textContent = "Enter a gateway token above, then click Use Token.";
-    }
+    clearAllSetupSectionErrors();
+    setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
     setGatewayHealthStatus("warn", "Token Missing");
     setKeysHealthStatus("warn", "Needs Token");
     setChatStatus("Enter a gateway token to use text chat.");
