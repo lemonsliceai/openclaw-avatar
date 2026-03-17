@@ -1558,6 +1558,30 @@ function applyVideoChatSetupToConfig(
   };
 }
 
+function buildVideoChatProviderConfigSnapshot(config: OpenClawConfig): string {
+  const effective = resolveEffectiveVideoChatConfig(config);
+  return JSON.stringify({
+    provider: effective.videoChat?.provider ?? null,
+    lemonSliceApiKey: effective.videoChat?.lemonSlice?.apiKey ?? null,
+    livekitUrl: effective.videoChat?.livekit?.url ?? null,
+    livekitApiKey: effective.videoChat?.livekit?.apiKey ?? null,
+    livekitApiSecret: effective.videoChat?.livekit?.apiSecret ?? null,
+    elevenLabsApiKey: effective.messages?.tts?.elevenlabs?.apiKey ?? null,
+    elevenLabsVoiceId: effective.messages?.tts?.elevenlabs?.voiceId ?? null,
+    elevenLabsModelId: effective.messages?.tts?.elevenlabs?.modelId ?? null,
+  });
+}
+
+function shouldVerifyVideoChatSetupConfig(
+  currentConfig: OpenClawConfig,
+  nextConfig: OpenClawConfig,
+): boolean {
+  return (
+    buildVideoChatProviderConfigSnapshot(currentConfig) !==
+    buildVideoChatProviderConfigSnapshot(nextConfig)
+  );
+}
+
 async function writeConfigFile(api: OpenClawPluginApi, config: OpenClawConfig): Promise<void> {
   const writer = (api.runtime.config as { writeConfigFile?: unknown }).writeConfigFile;
   if (typeof writer !== "function") {
@@ -1900,7 +1924,9 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
   }
 
   const nextConfig = applyVideoChatSetupToConfig(currentConfig, setupInput);
-  await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+  if (shouldVerifyVideoChatSetupConfig(currentConfig, nextConfig)) {
+    await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+  }
   await writeConfigFile(api, nextConfig);
   const status = buildVideoChatConfigResponse(nextConfig);
   api.logger.info(
@@ -2760,7 +2786,9 @@ function registerVideoChatHttpRoutes(
             const setupInput = parseVideoChatSetupInput(params, "videoChat.setup.save");
             const currentConfig = api.runtime.config.loadConfig();
             const nextConfig = applyVideoChatSetupToConfig(currentConfig, setupInput);
-            await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+            if (shouldVerifyVideoChatSetupConfig(currentConfig, nextConfig)) {
+              await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+            }
             await writeConfigFile(api, nextConfig);
             sendHttpResponse(
               res,
@@ -5192,7 +5220,9 @@ const videoChatPlugin = {
           const setupInput = parseVideoChatSetupInput(params, "videoChat.setup.save");
           const currentConfig = api.runtime.config.loadConfig();
           const nextConfig = applyVideoChatSetupToConfig(currentConfig, setupInput);
-          await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+          if (shouldVerifyVideoChatSetupConfig(currentConfig, nextConfig)) {
+            await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+          }
           await writeConfigFile(api, nextConfig);
           respond(true, { setup: buildVideoChatConfigResponse(nextConfig) });
         } catch (error) {

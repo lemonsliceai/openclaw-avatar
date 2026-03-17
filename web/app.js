@@ -1108,8 +1108,9 @@ function extractRawSetupErrorMessage(message) {
 function sanitizeSetupErrorMessage(message, sectionKey) {
   const rawMessage = extractRawSetupErrorMessage(message);
   const normalized = rawMessage.toLowerCase();
+  const structuredCode = readStructuredSetupErrorValue(message, "code").toUpperCase();
   if (sectionKey === "gateway-token") {
-    return normalized.includes("unauthorized") || readStructuredSetupErrorValue(message, "code") === "GATEWAY_UNAUTHORIZED"
+    return normalized.includes("unauthorized") || structuredCode === "GATEWAY_UNAUTHORIZED"
       ? "Gateway token is invalid or expired. Enter a valid token and try again."
       : "Gateway token could not be verified. Check the token and try again.";
   }
@@ -3292,11 +3293,11 @@ function parseSetupPayloadFromRaw(rawText) {
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    throw new Error("Raw payload must be valid JSON.");
+    throw new SetupRawPayloadError("Raw payload must be valid JSON.");
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Raw payload must be a JSON object.");
+    throw new SetupRawPayloadError("Raw payload must be a JSON object.");
   }
 
   const payload = {};
@@ -3306,7 +3307,7 @@ function parseSetupPayloadFromRaw(rawText) {
     }
     const value = parsed[name];
     if (typeof value !== "string") {
-      throw new Error(`"${name}" must be a string.`);
+      throw new SetupRawPayloadError(`"${name}" must be a string.`);
     }
     if (isSetupSecretFieldName(name) && isRedactedSecretValue(value)) {
       continue;
@@ -3314,6 +3315,17 @@ function parseSetupPayloadFromRaw(rawText) {
     payload[name] = value;
   }
   return payload;
+}
+
+class SetupRawPayloadError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SetupRawPayloadError";
+  }
+}
+
+function isSetupRawPayloadError(error) {
+  return error instanceof SetupRawPayloadError;
 }
 
 function serializeSetupPayload(payload) {
@@ -8259,12 +8271,14 @@ if (setupRawForm) {
       setGatewayHealthStatus("danger", "Error");
       setKeysHealthStatus("danger", "Error");
       const { safeMessage } = reportSetupUiError("config-save-failed-raw", error);
+      const uiMessage =
+        isSetupRawPayloadError(error) && error.message.trim() ? error.message.trim() : safeMessage;
       presentRelevantSetupError(error, {
         tone: "danger",
         summary: "Config save failed. See the highlighted section.",
       });
-      setSetupRawError(safeMessage);
-      setOutput({ action: "setup-save-failed", error: safeMessage });
+      setSetupRawError(uiMessage);
+      setOutput({ action: "setup-save-failed", error: uiMessage });
     }
   });
 }
