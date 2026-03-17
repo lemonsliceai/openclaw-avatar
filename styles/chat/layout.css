@@ -519,6 +519,11 @@
   box-shadow: 0 0 10px color-mix(in srgb, var(--ok) 30%, transparent);
 }
 
+.agent-chat__badge--inactive::before {
+  background: var(--danger);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
 .agent-chat__hint {
   font-size: 13px;
   color: var(--muted);

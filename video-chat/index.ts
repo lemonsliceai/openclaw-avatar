@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
+import { promises as dns } from "node:dns";
 import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -52,6 +54,9 @@ const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS = 8;
 const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.9;
 const INVALID_CHAT_HISTORY_PARAMS_ERROR = "invalid videoChat.chat.history params";
 const INVALID_CHAT_SEND_PARAMS_ERROR = "invalid videoChat.chat.send params";
+const VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS = 60;
+const VIDEO_CHAT_AVATAR_TIMEOUT_MIN_SECONDS = 1;
+const VIDEO_CHAT_AVATAR_TIMEOUT_MAX_SECONDS = 600;
 
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
@@ -85,6 +90,8 @@ type VideoChatSessionResult = {
   participantIdentity: string;
   participantToken: string;
   agentName: string;
+  avatarImageUrl: string;
+  avatarTimeoutSeconds: number;
   interruptReplyOnNewMessage: boolean;
 };
 
@@ -171,7 +178,6 @@ type GatewayErrorShape = {
 type VideoChatSetupInput = {
   gatewayToken?: string;
   lemonSliceApiKey?: string;
-  lemonSliceImageUrl?: string;
   livekitUrl?: string;
   livekitApiKey?: string;
   livekitApiSecret?: string;
@@ -189,6 +195,8 @@ type VideoChatSessionHandlers = {
   createSession: (params: {
     config: OpenClawConfig;
     sessionKey: string;
+    avatarImageUrl?: string;
+    avatarTimeoutSeconds?: number;
     interruptReplyOnNewMessage?: boolean;
   }) => Promise<VideoChatSessionResult>;
   stopSession: (params: { roomName: string }) => Promise<VideoChatSessionStopResult>;
@@ -226,6 +234,17 @@ type ParsedVideoChatSendParams = {
 
 function normalizeInterruptReplyOnNewMessage(interruptReplyOnNewMessage?: boolean): boolean {
   return interruptReplyOnNewMessage ?? true;
+}
+
+function normalizeAvatarTimeoutSeconds(avatarTimeoutSeconds?: number): number {
+  if (!Number.isFinite(avatarTimeoutSeconds)) {
+    return VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS;
+  }
+  const normalized = Math.floor(avatarTimeoutSeconds);
+  return Math.min(
+    VIDEO_CHAT_AVATAR_TIMEOUT_MAX_SECONDS,
+    Math.max(VIDEO_CHAT_AVATAR_TIMEOUT_MIN_SECONDS, normalized),
+  );
 }
 
 type VideoChatSubagentRunParams = {
@@ -429,26 +448,106 @@ function normalizeOptionalSetupSecretString(value: unknown): string | undefined 
   return REDACTED_SECRET_VALUES.has(trimmed) ? undefined : trimmed;
 }
 
-function validateLemonSliceImageUrl(value: string): string | null {
+function normalizeIpAddress(address: string): string {
+  const trimmed = address.trim().toLowerCase();
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function isPrivateOrLoopbackIpv4(address: string): boolean {
+  const octets = address.split(".").map((octet) => Number.parseInt(octet, 10));
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return false;
+  }
+  if (octets[0] === 127) {
+    return true;
+  }
+  if (octets[0] === 10) {
+    return true;
+  }
+  if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) {
+    return true;
+  }
+  return octets[0] === 192 && octets[1] === 168;
+}
+
+function resolveLeadingIpv6Hextet(address: string): number | null {
+  const [head] = address.split("::", 1);
+  const firstSegment = (head.split(":", 1)[0] ?? "").trim();
+  if (firstSegment.length === 0) {
+    return 0;
+  }
+  if (!/^[0-9a-f]{1,4}$/i.test(firstSegment)) {
+    return null;
+  }
+  const parsed = Number.parseInt(firstSegment, 16);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function isPrivateOrLoopbackIpAddress(address: string): boolean {
+  const normalized = normalizeIpAddress(address);
+  const family = isIP(normalized);
+  if (family === 4) {
+    return isPrivateOrLoopbackIpv4(normalized);
+  }
+  if (family === 6) {
+    if (normalized === "::1") {
+      return true;
+    }
+    if (normalized.startsWith("::ffff:")) {
+      return isPrivateOrLoopbackIpv4(normalized.slice("::ffff:".length));
+    }
+    const leadingHextet = resolveLeadingIpv6Hextet(normalized);
+    if (leadingHextet !== null) {
+      // fc00::/7 (ULA) and fe80::/10 (link-local)
+      if ((leadingHextet & 0xfe00) === 0xfc00 || (leadingHextet & 0xffc0) === 0xfe80) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function validateAvatarImageUrl(value: string): Promise<string | null> {
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    return "videoChat.lemonSlice.imageUrl must be a valid URL";
+    return "avatarImageUrl must be a valid URL";
   }
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return "videoChat.lemonSlice.imageUrl must use http or https";
+    return "avatarImageUrl must use http or https";
   }
 
   const trimmedPath = parsed.pathname.replace(/\/+$/g, "");
   if (!trimmedPath || trimmedPath === "/") {
-    return "videoChat.lemonSlice.imageUrl must be a direct image URL, not a directory";
+    return "avatarImageUrl must be a direct image URL, not a directory";
   }
 
   const lastPathSegment = trimmedPath.split("/").at(-1) ?? "";
   if (!lastPathSegment || lastPathSegment === "f") {
-    return "videoChat.lemonSlice.imageUrl must include an image path after the host";
+    return "avatarImageUrl must include an image path after the host";
+  }
+
+  const normalizedHostname = parsed.hostname.trim().toLowerCase().replace(/\.+$/g, "");
+  if (normalizedHostname === "localhost") {
+    return "avatarImageUrl must not resolve to localhost or private network";
+  }
+  if (isPrivateOrLoopbackIpAddress(normalizedHostname)) {
+    return "avatarImageUrl must not resolve to localhost or private network";
+  }
+  if (isIP(normalizedHostname) === 0) {
+    try {
+      const resolvedAddresses = await dns.lookup(normalizedHostname, { all: true, verbatim: true });
+      if (resolvedAddresses.some((record) => isPrivateOrLoopbackIpAddress(record.address))) {
+        return "avatarImageUrl must not resolve to localhost or private network";
+      }
+    } catch {
+      // Keep URL validation non-blocking for transient DNS failures.
+    }
   }
 
   return null;
@@ -893,11 +992,13 @@ function parseElevenLabsTranscript(payload: Record<string, unknown>): {
 function buildVideoChatDispatchMetadata(params: {
   sessionKey: string;
   imageUrl: string;
+  avatarTimeoutSeconds?: number;
   interruptReplyOnNewMessage?: boolean;
 }): string {
   return JSON.stringify({
     sessionKey: params.sessionKey,
     imageUrl: params.imageUrl,
+    avatarTimeoutSeconds: normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds),
     interruptReplyOnNewMessage: normalizeInterruptReplyOnNewMessage(params.interruptReplyOnNewMessage),
   });
 }
@@ -969,9 +1070,6 @@ function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigRe
   if (!hasConfiguredSecretInput(lemonSlice?.apiKey)) {
     missing.push("videoChat.lemonSlice.apiKey");
   }
-  if (!normalizeOptionalString(lemonSlice?.imageUrl)) {
-    missing.push("videoChat.lemonSlice.imageUrl");
-  }
   if (!normalizeOptionalString(livekit?.url)) {
     missing.push("videoChat.livekit.url");
   }
@@ -1027,21 +1125,12 @@ function parseVideoChatSetupInput(
   const parsed: VideoChatSetupInput = {
     gatewayToken: readInput("gatewayToken"),
     lemonSliceApiKey: readInput("lemonSliceApiKey"),
-    lemonSliceImageUrl: readInput("lemonSliceImageUrl"),
     livekitUrl: readInput("livekitUrl"),
     livekitApiKey: readInput("livekitApiKey"),
     livekitApiSecret: readInput("livekitApiSecret"),
     elevenLabsApiKey: readInput("elevenLabsApiKey"),
     elevenLabsVoiceId: readInput("elevenLabsVoiceId"),
   };
-
-  const lemonSliceImageUrl = normalizeOptionalString(parsed.lemonSliceImageUrl);
-  if (lemonSliceImageUrl) {
-    const validationError = validateLemonSliceImageUrl(lemonSliceImageUrl);
-    if (validationError) {
-      throw new Error(`invalid ${method} params: ${validationError}`);
-    }
-  }
 
   return parsed;
 }
@@ -1057,9 +1146,6 @@ function applyVideoChatSetupToConfig(
   const lemonSliceApiKey =
     normalizeOptionalSetupSecretString(setupInput.lemonSliceApiKey) ??
     effective.videoChat?.lemonSlice?.apiKey;
-  const lemonSliceImageUrl =
-    normalizeOptionalString(setupInput.lemonSliceImageUrl) ??
-    effective.videoChat?.lemonSlice?.imageUrl;
   const livekitUrl =
     normalizeOptionalString(setupInput.livekitUrl) ?? effective.videoChat?.livekit?.url;
   const livekitApiKey =
@@ -1115,7 +1201,6 @@ function applyVideoChatSetupToConfig(
               lemonSlice: {
                 ...lemonSliceRecord,
                 apiKey: lemonSliceApiKey,
-                imageUrl: lemonSliceImageUrl,
               },
               livekit: {
                 ...livekitRecord,
@@ -1378,10 +1463,6 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
       readCliOption(options, "lemonsliceApiKey") ??
       readCliOption(options, "lemonSliceApiKey") ??
       process.env.VIDEO_CHAT_LEMONSLICE_API_KEY,
-    lemonSliceImageUrl:
-      readCliOption(options, "lemonsliceImageUrl") ??
-      readCliOption(options, "lemonSliceImageUrl") ??
-      process.env.VIDEO_CHAT_LEMONSLICE_IMAGE_URL,
     livekitUrl: readCliOption(options, "livekitUrl") ?? process.env.VIDEO_CHAT_LIVEKIT_URL,
     livekitApiKey:
       readCliOption(options, "livekitApiKey") ?? process.env.VIDEO_CHAT_LIVEKIT_API_KEY,
@@ -1407,13 +1488,6 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
       setupInput = {
         gatewayToken: await promptTerminalField({ rl, label: "Gateway token" }),
         lemonSliceApiKey: await promptTerminalField({ rl, label: "LemonSlice API key" }),
-        lemonSliceImageUrl: await promptTerminalField({
-          rl,
-          label: "LemonSlice image URL",
-          defaultValue: normalizeOptionalString(
-            effectiveCurrentConfig.videoChat?.lemonSlice?.imageUrl,
-          ),
-        }),
         livekitUrl: await promptTerminalField({
           rl,
           label: "LiveKit URL",
@@ -1457,7 +1531,6 @@ function registerVideoChatSetupCli(api: OpenClawPluginApi): void {
         .description("Configure OpenClaw gateway auth and Claw Cast provider credentials")
         .option("--gateway-token <token>", "OpenClaw gateway token")
         .option("--lemonslice-api-key <key>", "LemonSlice API key")
-        .option("--lemonslice-image-url <url>", "LemonSlice image URL")
         .option("--livekit-url <url>", "LiveKit URL")
         .option("--livekit-api-key <key>", "LiveKit API key")
         .option("--livekit-api-secret <secret>", "LiveKit API secret")
@@ -2332,6 +2405,16 @@ function registerVideoChatHttpRoutes(
             if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
               throw new Error("invalid videoChat.session.create params");
             }
+            if (params.avatarImageUrl !== undefined && typeof params.avatarImageUrl !== "string") {
+              throw new Error("invalid videoChat.session.create params");
+            }
+            if (
+              params.avatarTimeoutSeconds !== undefined &&
+              (typeof params.avatarTimeoutSeconds !== "number" ||
+                !Number.isFinite(params.avatarTimeoutSeconds))
+            ) {
+              throw new Error("invalid videoChat.session.create params");
+            }
             if (
               params.interruptReplyOnNewMessage !== undefined &&
               typeof params.interruptReplyOnNewMessage !== "boolean"
@@ -2346,13 +2429,23 @@ function registerVideoChatHttpRoutes(
             const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
               params.interruptReplyOnNewMessage,
             );
+            const avatarImageUrl =
+              typeof params.avatarImageUrl === "string" ? params.avatarImageUrl.trim() : undefined;
+            const avatarTimeoutSeconds =
+              typeof params.avatarTimeoutSeconds === "number"
+                ? normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds)
+                : undefined;
             logVideoChatEvent(api.logger, "info", "http.session.create.requested", {
               sessionKey,
+              avatarImageUrlProvided: Boolean(avatarImageUrl),
+              avatarTimeoutSeconds: avatarTimeoutSeconds ?? VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS,
               interruptReplyOnNewMessage,
             });
             const session = await handlers.createSession({
               config: cfg,
               sessionKey,
+              avatarImageUrl,
+              avatarTimeoutSeconds,
               interruptReplyOnNewMessage,
             });
             logVideoChatEvent(api.logger, "info", "http.session.create.completed", {
@@ -2907,6 +3000,8 @@ async function resolveSidecarLaunchCommand(
 async function createVideoChatSession(params: {
   config: OpenClawConfig;
   sessionKey: string;
+  avatarImageUrl?: string;
+  avatarTimeoutSeconds?: number;
   interruptReplyOnNewMessage?: boolean;
   agentName?: string;
   nowMs?: number;
@@ -2917,13 +3012,13 @@ async function createVideoChatSession(params: {
     throw new Error(`Claw Cast is not configured: missing ${status.missing.join(", ")}`);
   }
 
-  const lemonSlice = effectiveConfig.videoChat?.lemonSlice;
   const livekit = effectiveConfig.videoChat?.livekit;
   const elevenLabsApiKey = normalizeResolvedSecretInputString({
     value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
     path: "messages.tts.elevenlabs.apiKey",
   });
-  const lemonSliceImageUrl = normalizeOptionalString(lemonSlice?.imageUrl);
+  const avatarImageUrl = normalizeOptionalString(params.avatarImageUrl);
+  const avatarTimeoutSeconds = normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds);
   const livekitUrl = normalizeOptionalString(livekit?.url);
   const apiKey = normalizeResolvedSecretInputString({
     value: livekit?.apiKey,
@@ -2933,14 +3028,17 @@ async function createVideoChatSession(params: {
     value: livekit?.apiSecret,
     path: "videoChat.livekit.apiSecret",
   });
-  if (!lemonSliceImageUrl || !livekitUrl || !apiKey || !apiSecret || !elevenLabsApiKey) {
+  if (!avatarImageUrl) {
     throw new Error(
-      "Claw Cast is not configured: missing LemonSlice, LiveKit, or ElevenLabs credentials",
+      "invalid videoChat.session.create params: avatarImageUrl is required",
     );
   }
-  const imageUrlValidationError = validateLemonSliceImageUrl(lemonSliceImageUrl);
+  if (!livekitUrl || !apiKey || !apiSecret || !elevenLabsApiKey) {
+    throw new Error("Claw Cast session creation is unavailable: missing LiveKit or ElevenLabs credentials");
+  }
+  const imageUrlValidationError = await validateAvatarImageUrl(avatarImageUrl);
   if (imageUrlValidationError) {
-    throw new Error(`Claw Cast is not configured: ${imageUrlValidationError}`);
+    throw new Error(`invalid videoChat.session.create params: ${imageUrlValidationError}`);
   }
 
   const roomName = `${VIDEO_CHAT_ROOM_PREFIX}-${sanitizeVideoChatRoomPart(params.sessionKey)}-${randomUUID().slice(0, 8)}`;
@@ -2973,6 +3071,8 @@ async function createVideoChatSession(params: {
     participantIdentity,
     participantToken,
     agentName: normalizeOptionalString(params.agentName) ?? VIDEO_CHAT_AGENT_NAME,
+    avatarImageUrl,
+    avatarTimeoutSeconds,
     interruptReplyOnNewMessage,
   };
 }
@@ -3345,14 +3445,13 @@ async function createVideoChatAgentDispatch(params: {
   if (!credentials) {
     throw new Error("Claw Cast agent dispatch is unavailable: missing LiveKit credentials");
   }
-  const effectiveConfig = resolveEffectiveVideoChatConfig(params.config);
-  const imageUrl = normalizeOptionalString(effectiveConfig.videoChat?.lemonSlice?.imageUrl);
-  if (!imageUrl) {
-    throw new Error("Claw Cast agent dispatch is unavailable: missing LemonSlice image URL");
+  if (!params.session.avatarImageUrl) {
+    throw new Error("Claw Cast agent dispatch is unavailable: missing avatar image URL");
   }
   const metadata = buildVideoChatDispatchMetadata({
     sessionKey: params.session.chatSessionKey,
-    imageUrl,
+    imageUrl: params.session.avatarImageUrl,
+    avatarTimeoutSeconds: params.session.avatarTimeoutSeconds,
     interruptReplyOnNewMessage: params.session.interruptReplyOnNewMessage,
   });
   logVideoChatEvent(params.logger, "info", "agent-dispatch.create.begin", {
@@ -4476,13 +4575,18 @@ const videoChatPlugin = {
     const createManagedSession = async (params: {
       config: OpenClawConfig;
       sessionKey: string;
+      avatarImageUrl?: string;
+      avatarTimeoutSeconds?: number;
       interruptReplyOnNewMessage?: boolean;
     }): Promise<VideoChatSessionResult> => {
       const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
         params.interruptReplyOnNewMessage,
       );
+      const avatarTimeoutSeconds = normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds);
       logVideoChatEvent(api.logger, "info", "session.create.begin", {
         sessionKey: params.sessionKey,
+        avatarImageUrlProvided: Boolean(normalizeOptionalString(params.avatarImageUrl)),
+        avatarTimeoutSeconds,
         interruptReplyOnNewMessage,
       });
       let session: VideoChatSessionResult | null = null;
@@ -4516,6 +4620,7 @@ const videoChatPlugin = {
           participantIdentity: session.participantIdentity,
           agentName: session.agentName,
           dispatchId: dispatch.id,
+          avatarTimeoutSeconds: session.avatarTimeoutSeconds,
           interruptReplyOnNewMessage: session.interruptReplyOnNewMessage,
         });
         return session;
@@ -4531,6 +4636,8 @@ const videoChatPlugin = {
         }
         logVideoChatEvent(api.logger, "error", "session.create.failed", {
           sessionKey: params.sessionKey,
+          avatarImageUrlProvided: Boolean(normalizeOptionalString(params.avatarImageUrl)),
+          avatarTimeoutSeconds,
           interruptReplyOnNewMessage,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -4729,6 +4836,26 @@ const videoChatPlugin = {
             );
             return;
           }
+          if (params.avatarImageUrl !== undefined && typeof params.avatarImageUrl !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.session.create params",
+            );
+            return;
+          }
+          if (
+            params.avatarTimeoutSeconds !== undefined &&
+            (typeof params.avatarTimeoutSeconds !== "number" ||
+              !Number.isFinite(params.avatarTimeoutSeconds))
+          ) {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.session.create params",
+            );
+            return;
+          }
           if (
             params.interruptReplyOnNewMessage !== undefined &&
             typeof params.interruptReplyOnNewMessage !== "boolean"
@@ -4748,10 +4875,18 @@ const videoChatPlugin = {
           const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
             params.interruptReplyOnNewMessage,
           );
+          const avatarImageUrl =
+            typeof params.avatarImageUrl === "string" ? params.avatarImageUrl.trim() : undefined;
+          const avatarTimeoutSeconds =
+            typeof params.avatarTimeoutSeconds === "number"
+              ? normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds)
+              : undefined;
 
           const payload = await createManagedSession({
             config: cfg,
             sessionKey,
+            avatarImageUrl,
+            avatarTimeoutSeconds,
             interruptReplyOnNewMessage,
           });
           respond(true, payload);

@@ -303,31 +303,96 @@
       }
 
       .session-key-help {
-        display: grid;
-        gap: 8px;
-        padding: 12px 14px;
+        margin-top: 8px;
         border-radius: var(--radius-md);
         border: 1px solid var(--border);
         background: var(--secondary);
         color: var(--muted);
         font-size: 12px;
         line-height: 1.55;
+        overflow: hidden;
       }
 
-      .session-key-help p,
-      .session-key-help ul {
+      .session-key-help summary {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }
+
+      .session-key-help summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .session-key-help__icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--info) 14%, transparent);
+        color: var(--info);
+        font-size: 11px;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+
+      .session-key-help__label {
+        color: var(--text-strong);
+        font-weight: 600;
+        flex: 1;
+      }
+
+      .session-key-help__chevron {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        color: var(--text-strong);
+        transition: transform var(--duration-normal) var(--ease-out);
+        flex-shrink: 0;
+      }
+
+      .session-key-help__chevron svg {
+        width: 20px;
+        height: 20px;
+        stroke: currentColor;
+        stroke-width: 2.75;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .session-key-help[open] .session-key-help__chevron {
+        transform: rotate(180deg);
+      }
+
+      .session-key-help__content {
+        display: grid;
+        gap: 8px;
+        padding: 0 12px 12px;
+        border-radius: var(--radius-md);
+      }
+
+      .session-key-help__content p,
+      .session-key-help__content ul {
         margin: 0;
       }
 
-      .session-key-help ul {
+      .session-key-help__content ul {
         padding-left: 18px;
       }
 
-      .session-key-help strong {
+      .session-key-help__content strong {
         color: var(--text-strong);
       }
 
-      .session-key-help code {
+      .session-key-help__content code {
         font-size: 0.95em;
       }
 
@@ -913,8 +978,15 @@
         }
 
         .session-key-help {
-          padding: 10px 12px;
           font-size: 11px;
+        }
+
+        .session-key-help summary {
+          padding: 9px 10px;
+        }
+
+        .session-key-help__content {
+          padding: 0 10px 10px;
         }
 
         .avatar-card {
@@ -1036,18 +1108,68 @@
             <form id="session-form" class="video-chat-form">
               <label class="field full">
                 <span>Session key</span>
-                <input type="text" name="sessionKey" placeholder="main" />
+                <input type="text" name="sessionKey" placeholder="main" aria-describedby="session-key-help" />
               </label>
-              <div class="session-key-help">
-                <p><strong>How to pick a key:</strong> leave this blank or enter <code>main</code> to use the default OpenClaw session (<code>session.mainKey</code>, which falls back to <code>main</code>).</p>
-                <ul>
-                  <li>Enter a plain key like <code>research</code> if that is the session name you started in OpenClaw.</li>
-                  <li>For the default OpenClaw main agent, the fully qualified form is <code>agent:main:&lt;sessionKey&gt;</code>, for example <code>agent:main:main</code>.</li>
-                  <li>If OpenClaw already shows a full agent session key, paste it exactly as-is.</li>
-                </ul>
-              </div>
+              <details class="session-key-help" id="session-key-help">
+                <summary>
+                  <span class="session-key-help__icon" aria-hidden="true">i</span>
+                  <span class="session-key-help__label">How to pick a key</span>
+                  <span class="session-key-help__chevron" aria-hidden="true">
+                    <svg viewBox="0 0 20 20" focusable="false">
+                      <path d="M5 7.5 10 12.5 15 7.5"></path>
+                    </svg>
+                  </span>
+                </summary>
+                <div class="session-key-help__content">
+                  <p><strong>Quick guide:</strong> leave this blank or enter <code>main</code> to use the default OpenClaw session from <code>session.mainKey</code>, which falls back to <code>main</code>.</p>
+                  <ul>
+                    <li>Enter a plain key like <code>research</code> if that is the session name you started in OpenClaw.</li>
+                    <li>For the default OpenClaw main agent, the fully qualified <code>videoChat.session.create</code> input form is <code>agent:main/&lt;sessionKey&gt;</code>, for example <code>agent:main/main</code>.</li>
+                    <li>If OpenClaw already shows a full agent session key, paste it exactly as-is because this value is submitted verbatim.</li>
+                  </ul>
+                </div>
+              </details>
+              <label class="field full" for="session-image-url">
+                <span>Avatar image URL</span>
+                <input
+                  type="url"
+                  id="session-image-url"
+                  name="avatarImageUrl"
+                  placeholder="https://example.com/avatar.png"
+                  required
+                />
+              </label>
+              <details class="session-key-help">
+                <summary>
+                  <span class="session-key-help__icon" aria-hidden="true">i</span>
+                  <span class="session-key-help__label">How to pick an image URL</span>
+                  <span class="session-key-help__chevron" aria-hidden="true">
+                    <svg viewBox="0 0 20 20" focusable="false">
+                      <path d="M5 7.5 10 12.5 15 7.5"></path>
+                    </svg>
+                  </span>
+                </summary>
+                <div class="session-key-help__content">
+                  <p><strong>Use a public image link:</strong> this should be a direct URL to an image file that is publicly accessible on the internet.</p>
+                  <p>If the image is private, local to your computer, or requires a login to view, the avatar may not load correctly.</p>
+                  <p><strong>Example:</strong> <code>https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtNkoagYf5CBjh3ZkFEumULAJYeQriWT8tg79y</code></p>
+                </div>
+              </details>
+              <label class="field full">
+                <span>Avatar timeout (seconds)</span>
+                <input
+                  type="number"
+                  id="avatar-timeout-seconds"
+                  name="avatarTimeoutSeconds"
+                  min="1"
+                  max="600"
+                  step="1"
+                  value="60"
+                  inputmode="numeric"
+                />
+              </label>
               <div class="row">
-                <button class="btn primary" type="submit">Start Session</button>
+                <button class="btn primary" type="submit" id="start-session">Start Session</button>
                 <button class="btn danger" type="button" id="stop-session">Stop Session</button>
               </div>
               <div class="session-form__toggles">
@@ -1219,7 +1341,7 @@
                 <textarea
                   id="chat-input"
                   rows="1"
-                  placeholder="Message the active session. Press Enter to send, Shift+Enter for a new line."
+                  placeholder="Type a message"
                 ></textarea>
                 <div class="agent-chat__toolbar">
                   <div class="agent-chat__toolbar-left">

@@ -93,11 +93,15 @@ function parseJobMetadata(raw) {
   const parsed = JSON.parse(raw);
   const sessionKey = typeof parsed.sessionKey === "string" ? parsed.sessionKey.trim() : "";
   const imageUrl = typeof parsed.imageUrl === "string" ? parsed.imageUrl.trim() : "";
+  const avatarTimeoutSeconds =
+    typeof parsed.avatarTimeoutSeconds === "number" && Number.isFinite(parsed.avatarTimeoutSeconds)
+      ? Math.min(600, Math.max(1, Math.floor(parsed.avatarTimeoutSeconds)))
+      : 60;
   const interruptReplyOnNewMessage = parsed.interruptReplyOnNewMessage === true;
   if (!sessionKey || !imageUrl) {
     throw new Error("LiveKit Claw Cast job metadata is incomplete");
   }
-  return { sessionKey, imageUrl, interruptReplyOnNewMessage };
+  return { sessionKey, imageUrl, avatarTimeoutSeconds, interruptReplyOnNewMessage };
 }
 
 function extractTextFromMessage(message) {
@@ -1174,6 +1178,7 @@ async function runVideoChatAgentEntry(ctx) {
     const avatar = new deps.lemonslice.AvatarSession({
       apiKey: lemonSliceApiKey,
       agentImageUrl: metadata.imageUrl,
+      idleTimeout: metadata.avatarTimeoutSeconds,
     });
     console.log("[video-chat-agent] starting lemonslice avatar session");
     emitParentDebug("avatar.start.begin", {
