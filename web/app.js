@@ -1022,6 +1022,35 @@ function clearAllSetupSectionErrors() {
   }
 }
 
+function clearSetupSectionErrors(sectionKeyOrElement) {
+  const sectionKey =
+    typeof sectionKeyOrElement === "string"
+      ? sectionKeyOrElement.trim()
+      : typeof sectionKeyOrElement?.getAttribute === "function"
+        ? (sectionKeyOrElement.getAttribute("data-config-section") || "").trim()
+        : "";
+  if (!sectionKey) {
+    return false;
+  }
+  setSetupSectionError(sectionKey, "");
+  return true;
+}
+
+function clearSectionErrorsForField(field) {
+  if (!(field instanceof Element)) {
+    return false;
+  }
+  const sectionElement = field.closest("[data-config-section]");
+  if (clearSetupSectionErrors(sectionElement)) {
+    return true;
+  }
+  const fieldName = (field.getAttribute("name") || "").trim();
+  if (!fieldName || !STRUCTURED_SETUP_ERROR_FIELD_MAP.has(fieldName)) {
+    return false;
+  }
+  return clearSetupSectionErrors(STRUCTURED_SETUP_ERROR_FIELD_MAP.get(fieldName));
+}
+
 function readStructuredSetupErrorValue(message, key) {
   if (!message || typeof message !== "object") {
     return "";
@@ -1175,6 +1204,57 @@ function reportSetupUiError(context, error) {
   };
 }
 
+function readSetupErrorStatusCode(error) {
+  const candidates = [
+    error?.status,
+    error?.statusCode,
+    error?.response?.status,
+    error?.response?.statusCode,
+    error?.cause?.status,
+    error?.cause?.statusCode,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function readSetupErrorType(error) {
+  const structuredType = readStructuredSetupErrorValue(error, "type");
+  if (structuredType) {
+    return structuredType.trim().toLowerCase();
+  }
+  const candidates = [error?.type, error?.response?.type, error?.cause?.type];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim().toLowerCase();
+    }
+  }
+  return "";
+}
+
+function isSetupTransportErrorCode(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return false;
+  }
+  const normalized = value.trim().toUpperCase();
+  return (
+    normalized === "FETCH_ERROR" ||
+    normalized === "NETWORK_ERROR" ||
+    normalized === "ETIMEDOUT" ||
+    normalized === "ECONNABORTED" ||
+    normalized === "ECONNRESET" ||
+    normalized === "ECONNREFUSED" ||
+    normalized === "EHOSTUNREACH" ||
+    normalized === "ENETUNREACH" ||
+    normalized === "ENOTFOUND" ||
+    normalized === "EPIPE" ||
+    normalized === "UND_ERR_CONNECT_TIMEOUT"
+  );
+}
+
 function isSetupAuthError(error) {
   if (!error) {
     return false;
@@ -1182,13 +1262,19 @@ function isSetupAuthError(error) {
   if (error?.isAuth === true) {
     return true;
   }
-  const status = typeof error?.status === "number" ? error.status : null;
+  const status = readSetupErrorStatusCode(error);
+  const type = readSetupErrorType(error);
   const code = typeof error?.code === "string" ? error.code.trim().toUpperCase() : "";
-  if (status === 401 || status === 403 || code === "GATEWAY_UNAUTHORIZED") {
+  if (
+    status === 401 ||
+    status === 403 ||
+    type === "auth" ||
+    type === "forbidden" ||
+    code === "GATEWAY_UNAUTHORIZED"
+  ) {
     return true;
   }
-  const message = extractRawSetupErrorMessage(error).toLowerCase();
-  return /unauthorized|invalid token|needs auth|401|403|forbidden/.test(message);
+  return false;
 }
 
 function isSetupTransportError(error) {
@@ -1198,17 +1284,32 @@ function isSetupTransportError(error) {
   if (error?.isTransport === true) {
     return true;
   }
-  const status = typeof error?.status === "number" ? error.status : null;
+  const status = readSetupErrorStatusCode(error);
+  const type = readSetupErrorType(error);
   if (status !== null && status >= 500) {
     return true;
   }
-  const message = extractRawSetupErrorMessage(error).toLowerCase();
-  if (error instanceof TypeError && (message.includes("fetch") || message.includes("network"))) {
+  if (type === "transport" || type === "network") {
     return true;
   }
-  return /failed to fetch|network|transport|timed out|timeout|connection reset|connection refused|socket hung up|econn|offline/.test(
-    message,
-  );
+  if (typeof error?.name === "string" && error.name.trim() === "FetchError") {
+    return true;
+  }
+  if (typeof error?.cause?.name === "string" && error.cause.name.trim() === "FetchError") {
+    return true;
+  }
+  if (
+    isSetupTransportErrorCode(error?.errno) ||
+    isSetupTransportErrorCode(error?.code) ||
+    isSetupTransportErrorCode(error?.cause?.errno) ||
+    isSetupTransportErrorCode(error?.cause?.code)
+  ) {
+    return true;
+  }
+  if ("response" in Object(error) && error.response == null) {
+    return true;
+  }
+  return error instanceof TypeError && status === null;
 }
 
 function updateSetupHealthStatusForError(error, options = {}) {
@@ -8229,11 +8330,7 @@ async function refreshSetupStatus() {
       tone: "danger",
       summary: "Config status check failed. See the highlighted section.",
     });
-    const message = extractRawSetupErrorMessage(error);
-    if (message.toLowerCase().includes("unauthorized")) {
-      setGatewayHealthStatus("warn", "Unauthorized");
-      setKeysHealthStatus("warn", "Needs Auth");
-    } else {
+    if (!updateSetupHealthStatusForError(error, { gatewayText: "Error", keysText: "Unknown" })) {
       setGatewayHealthStatus("danger", "Error");
       setKeysHealthStatus("danger", "Unknown");
     }
@@ -8241,12 +8338,12 @@ async function refreshSetupStatus() {
 }
 
 if (setupForm) {
-  setupForm.addEventListener("input", () => {
-    clearAllSetupSectionErrors();
+  setupForm.addEventListener("input", (event) => {
+    clearSectionErrorsForField(event.target);
     updateSetupSaveButtonState();
   });
-  setupForm.addEventListener("change", () => {
-    clearAllSetupSectionErrors();
+  setupForm.addEventListener("change", (event) => {
+    clearSectionErrorsForField(event.target);
     updateSetupSaveButtonState();
   });
 
