@@ -1189,9 +1189,6 @@ async function runVideoChatAgentEntry(ctx) {
       apiKey: lemonSliceApiKey,
       agentImageUrl: metadata.imageUrl,
       idleTimeout: metadata.avatarTimeoutSeconds,
-      extraPayload: {
-        aspect_ratio: metadata.aspectRatio,
-      },
     });
     console.log("[video-chat-agent] starting lemonslice avatar session");
     emitParentDebug("avatar.start.begin", {

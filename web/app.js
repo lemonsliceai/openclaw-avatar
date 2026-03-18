@@ -1700,6 +1700,19 @@ function parseSessionAspectRatioNumber(rawValue) {
   const width = Number(widthRaw);
   const height = Number(heightRaw);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    const [fallbackWidthRaw, fallbackHeightRaw] = resolveSessionAspectRatioValue(
+      AVATAR_PIP_DEFAULT_ASPECT_RATIO,
+    ).split("x");
+    const fallbackWidth = Number(fallbackWidthRaw);
+    const fallbackHeight = Number(fallbackHeightRaw);
+    if (
+      Number.isFinite(fallbackWidth) &&
+      Number.isFinite(fallbackHeight) &&
+      fallbackWidth > 0 &&
+      fallbackHeight > 0
+    ) {
+      return fallbackWidth / fallbackHeight;
+    }
     return AVATAR_PIP_DEFAULT_ASPECT_RATIO;
   }
   return width / height;
@@ -1718,6 +1731,14 @@ function applyPreferredAvatarAspectRatio() {
   }
   const [widthRaw, heightRaw] = getPreferredSessionAspectRatio().split("x");
   shellEl.style.setProperty("--avatar-aspect-ratio", `${widthRaw} / ${heightRaw}`);
+}
+
+function hydrateSessionAspectSettings(payload, priorAspectRatio, priorAvatarJoinTimeoutMs) {
+  activeSessionAspectRatio = resolveSessionAspectRatioValue(
+    payload?.session?.aspectRatio ?? priorAspectRatio,
+  );
+  activeSessionAvatarJoinTimeoutMs = priorAvatarJoinTimeoutMs;
+  applyPreferredAvatarAspectRatio();
 }
 
 function parseSessionAvatarTimeoutSeconds(rawValue) {
@@ -8191,11 +8212,7 @@ async function reconnectAvatarSession(options = {}) {
     });
     activeSession = payload.session;
     activeSessionImageUrl = priorSessionImageUrl;
-    activeSessionAspectRatio = resolveSessionAspectRatioValue(
-      payload?.session?.aspectRatio ?? priorAspectRatio,
-    );
-    activeSessionAvatarJoinTimeoutMs = priorAvatarJoinTimeoutMs;
-    applyPreferredAvatarAspectRatio();
+    hydrateSessionAspectSettings(payload, priorAspectRatio, priorAvatarJoinTimeoutMs);
     resetVoiceTranscriptDeduplication();
     setChatPaneOpen(true);
     updateRoomButtons();
@@ -8621,11 +8638,7 @@ if (sessionForm) {
       });
       activeSession = payload.session;
       activeSessionImageUrl = avatarImageUrl;
-      activeSessionAspectRatio = resolveSessionAspectRatioValue(
-        payload?.session?.aspectRatio ?? aspectRatio,
-      );
-      activeSessionAvatarJoinTimeoutMs = avatarJoinTimeoutMs;
-      applyPreferredAvatarAspectRatio();
+      hydrateSessionAspectSettings(payload, aspectRatio, avatarJoinTimeoutMs);
       resetVoiceTranscriptDeduplication();
       setChatPaneOpen(true);
       setOutput({ action: "session-started", session: activeSession });
