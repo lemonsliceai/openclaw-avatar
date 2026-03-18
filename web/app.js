@@ -2960,6 +2960,33 @@ function createAnimationFrameHandle(view, callback) {
   };
 }
 
+function resolveAvatarMessageOverlayElement({
+  options = {},
+  sourceDocument,
+  avatarPaneEl,
+  avatarMessageOverlayEl,
+  avatarDocumentPictureInPictureElements,
+}) {
+  const overlayTarget = options.overlayTarget === "pip" ? "pip" : "active";
+  if (overlayTarget === "pip") {
+    return avatarDocumentPictureInPictureElements?.messageOverlayEl;
+  }
+
+  const shouldTargetPictureInPictureOverlay =
+    sourceDocument === document &&
+    Boolean(avatarDocumentPictureInPictureElements?.messageOverlayEl) &&
+    (avatarPaneEl?.hidden || avatarPaneEl?.classList.contains("avatar-pane--document-picture-in-picture-active"));
+  if (shouldTargetPictureInPictureOverlay) {
+    return avatarDocumentPictureInPictureElements?.messageOverlayEl;
+  }
+
+  if (sourceDocument === document) {
+    return avatarMessageOverlayEl;
+  }
+
+  return avatarDocumentPictureInPictureElements?.messageOverlayEl;
+}
+
 function animateAvatarSentMessage(message, options = {}) {
   const normalizedMessage = typeof message === "string" ? message.trim() : "";
   const sourceAttachmentsContainer = options.sourceAttachmentsContainer?.isConnected
@@ -2973,19 +3000,13 @@ function animateAvatarSentMessage(message, options = {}) {
   const sourceInput = isTextAreaElement(options.sourceInput) ? options.sourceInput : null;
   const sourceDocument = sourceInput?.ownerDocument || document;
   const sourceWindow = sourceDocument.defaultView || window;
-  const overlayTarget = options.overlayTarget === "pip" ? "pip" : "active";
-  const shouldTargetPictureInPictureOverlay =
-    overlayTarget !== "pip" &&
-    sourceDocument === document &&
-    Boolean(avatarDocumentPictureInPictureElements?.messageOverlayEl) &&
-    (avatarPaneEl?.hidden || avatarPaneEl?.classList.contains("avatar-pane--document-picture-in-picture-active"));
-  const overlayEl = overlayTarget === "pip"
-    ? avatarDocumentPictureInPictureElements?.messageOverlayEl
-    : shouldTargetPictureInPictureOverlay
-      ? avatarDocumentPictureInPictureElements?.messageOverlayEl
-      : sourceDocument === document
-        ? avatarMessageOverlayEl
-        : avatarDocumentPictureInPictureElements?.messageOverlayEl;
+  const overlayEl = resolveAvatarMessageOverlayElement({
+    options,
+    sourceDocument,
+    avatarPaneEl,
+    avatarMessageOverlayEl,
+    avatarDocumentPictureInPictureElements,
+  });
   const overlayState = overlayEl === avatarMessageOverlayEl
     ? avatarMessageOverlayState
     : avatarDocumentPictureInPictureElements?.messageOverlayState;
