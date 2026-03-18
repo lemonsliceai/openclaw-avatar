@@ -2874,6 +2874,7 @@ function applyAvatarMessageBubbleStyles(element) {
   }
   element.style.display = "block";
   element.style.maxWidth = "min(78vw, 34rem)";
+  element.style.maxHeight = "calc(1.4em * 4 + 24px)";
   element.style.padding = "12px 16px";
   element.style.borderRadius = "18px";
   element.style.border = "1px solid rgba(255, 255, 255, 0.14)";
@@ -2885,6 +2886,10 @@ function applyAvatarMessageBubbleStyles(element) {
   element.style.textAlign = "left";
   element.style.boxShadow = "0 18px 38px rgba(2, 6, 23, 0.4)";
   element.style.wordBreak = "break-word";
+  element.style.overflowY = "auto";
+  element.style.pointerEvents = "auto";
+  element.style.overscrollBehavior = "contain";
+  element.style.webkitOverflowScrolling = "touch";
 }
 
 function applyAvatarMessagePayloadStyles(element) {
@@ -2955,6 +2960,33 @@ function createAnimationFrameHandle(view, callback) {
   };
 }
 
+function resolveAvatarMessageOverlayElement({
+  options = {},
+  sourceDocument,
+  avatarPaneEl,
+  avatarMessageOverlayEl,
+  avatarDocumentPictureInPictureElements,
+}) {
+  const overlayTarget = options.overlayTarget === "pip" ? "pip" : "active";
+  if (overlayTarget === "pip") {
+    return avatarDocumentPictureInPictureElements?.messageOverlayEl;
+  }
+
+  const shouldTargetPictureInPictureOverlay =
+    sourceDocument === document &&
+    Boolean(avatarDocumentPictureInPictureElements?.messageOverlayEl) &&
+    (avatarPaneEl?.hidden || avatarPaneEl?.classList.contains("avatar-pane--document-picture-in-picture-active"));
+  if (shouldTargetPictureInPictureOverlay) {
+    return avatarDocumentPictureInPictureElements?.messageOverlayEl;
+  }
+
+  if (sourceDocument === document) {
+    return avatarMessageOverlayEl;
+  }
+
+  return avatarDocumentPictureInPictureElements?.messageOverlayEl;
+}
+
 function animateAvatarSentMessage(message, options = {}) {
   const normalizedMessage = typeof message === "string" ? message.trim() : "";
   const sourceAttachmentsContainer = options.sourceAttachmentsContainer?.isConnected
@@ -2968,15 +3000,13 @@ function animateAvatarSentMessage(message, options = {}) {
   const sourceInput = isTextAreaElement(options.sourceInput) ? options.sourceInput : null;
   const sourceDocument = sourceInput?.ownerDocument || document;
   const sourceWindow = sourceDocument.defaultView || window;
-  const shouldTargetPictureInPictureOverlay =
-    sourceDocument === document &&
-    Boolean(avatarDocumentPictureInPictureElements?.messageOverlayEl) &&
-    (avatarPaneEl?.hidden || avatarPaneEl?.classList.contains("avatar-pane--document-picture-in-picture-active"));
-  const overlayEl = shouldTargetPictureInPictureOverlay
-    ? avatarDocumentPictureInPictureElements?.messageOverlayEl
-    : sourceDocument === document
-      ? avatarMessageOverlayEl
-      : avatarDocumentPictureInPictureElements?.messageOverlayEl;
+  const overlayEl = resolveAvatarMessageOverlayElement({
+    options,
+    sourceDocument,
+    avatarPaneEl,
+    avatarMessageOverlayEl,
+    avatarDocumentPictureInPictureElements,
+  });
   const overlayState = overlayEl === avatarMessageOverlayEl
     ? avatarMessageOverlayState
     : avatarDocumentPictureInPictureElements?.messageOverlayState;
@@ -3091,6 +3121,16 @@ function animateAvatarSentMessage(message, options = {}) {
       overlayState.hideTimer = null;
     }, 320);
   }, 3520);
+}
+
+function animateAvatarReceivedMessage(message) {
+  const normalizedMessage = typeof message === "string" ? message.trim() : "";
+  if (!normalizedMessage || !avatarDocumentPictureInPictureElements?.messageOverlayEl) {
+    return;
+  }
+  animateAvatarSentMessage(normalizedMessage, {
+    overlayTarget: "pip",
+  });
 }
 
 function setHealthStatus(dotEl, valueEl, tone, text) {
@@ -6822,6 +6862,7 @@ function handleGatewayChatEvent(payload) {
       content.text || (hasStreamingBubble && typeof streamingBubble?.text === "string" ? streamingBubble.text : "");
     if (resolvedAssistantText) {
       rememberRecentAvatarReply(resolvedAssistantText, resolveMessageTimestamp(payload.message));
+      animateAvatarReceivedMessage(resolvedAssistantText);
     }
     const assistantMessage =
       !hasStreamingBubble && !content.text && content.images.length === 0
