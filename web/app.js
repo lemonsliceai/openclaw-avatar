@@ -1701,7 +1701,7 @@ function parseSessionAspectRatioNumber(rawValue) {
   const height = Number(heightRaw);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     const [fallbackWidthRaw, fallbackHeightRaw] = resolveSessionAspectRatioValue(
-      AVATAR_PIP_DEFAULT_ASPECT_RATIO,
+      SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
     ).split("x");
     const fallbackWidth = Number(fallbackWidthRaw);
     const fallbackHeight = Number(fallbackHeightRaw);
@@ -1713,7 +1713,7 @@ function parseSessionAspectRatioNumber(rawValue) {
     ) {
       return fallbackWidth / fallbackHeight;
     }
-    return AVATAR_PIP_DEFAULT_ASPECT_RATIO;
+    return SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
   }
   return width / height;
 }
