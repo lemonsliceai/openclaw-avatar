@@ -2874,6 +2874,7 @@ function applyAvatarMessageBubbleStyles(element) {
   }
   element.style.display = "block";
   element.style.maxWidth = "min(78vw, 34rem)";
+  element.style.maxHeight = "calc(1.4em * 4 + 24px)";
   element.style.padding = "12px 16px";
   element.style.borderRadius = "18px";
   element.style.border = "1px solid rgba(255, 255, 255, 0.14)";
@@ -2885,6 +2886,10 @@ function applyAvatarMessageBubbleStyles(element) {
   element.style.textAlign = "left";
   element.style.boxShadow = "0 18px 38px rgba(2, 6, 23, 0.4)";
   element.style.wordBreak = "break-word";
+  element.style.overflowY = "auto";
+  element.style.pointerEvents = "auto";
+  element.style.overscrollBehavior = "contain";
+  element.style.webkitOverflowScrolling = "touch";
 }
 
 function applyAvatarMessagePayloadStyles(element) {
