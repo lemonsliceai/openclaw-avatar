@@ -1695,27 +1695,33 @@ function resolveSessionAspectRatioValue(rawValue) {
   return SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
 }
 
-function parseSessionAspectRatioNumber(rawValue) {
-  const [widthRaw, heightRaw] = resolveSessionAspectRatioValue(rawValue).split("x");
+function parseAspectRatioValueToNumber(rawValue) {
+  const [widthRaw, heightRaw] = (typeof rawValue === "string" ? rawValue : "").split("x");
   const width = Number(widthRaw);
   const height = Number(heightRaw);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    const [fallbackWidthRaw, fallbackHeightRaw] = resolveSessionAspectRatioValue(
-      SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
-    ).split("x");
-    const fallbackWidth = Number(fallbackWidthRaw);
-    const fallbackHeight = Number(fallbackHeightRaw);
-    if (
-      Number.isFinite(fallbackWidth) &&
-      Number.isFinite(fallbackHeight) &&
-      fallbackWidth > 0 &&
-      fallbackHeight > 0
-    ) {
-      return fallbackWidth / fallbackHeight;
-    }
-    return SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
+    return null;
   }
   return width / height;
+}
+
+function parseSessionAspectRatioNumber(rawValue) {
+  const aspectRatio = parseAspectRatioValueToNumber(resolveSessionAspectRatioValue(rawValue));
+  if (aspectRatio !== null) {
+    return aspectRatio;
+  }
+
+  const resolvedDefaultAspectRatio = parseAspectRatioValueToNumber(
+    resolveSessionAspectRatioValue(SESSION_AVATAR_ASPECT_RATIO_DEFAULT),
+  );
+  if (resolvedDefaultAspectRatio !== null) {
+    return resolvedDefaultAspectRatio;
+  }
+
+  const defaultAspectRatio = parseAspectRatioValueToNumber(
+    SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
+  );
+  return defaultAspectRatio ?? 1;
 }
 
 function getPreferredSessionAspectRatio() {
