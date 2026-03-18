@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
+import { VIDEO_CHAT_AVATAR_ASPECT_RATIOS } from "./avatar-aspect-ratio.js";
 import plugin from "./index.js";
 
 const {
@@ -415,7 +416,7 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.session.stop")).toBe(true);
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(9);
+    expect(httpRoutes).toHaveLength(10);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -450,6 +451,11 @@ describe("video-chat plugin", () => {
         }),
         expect.objectContaining({
           path: "/plugins/video-chat/app.js",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/avatar-aspect-ratio.js",
           auth: "plugin",
           match: "exact",
         }),
@@ -2158,7 +2164,11 @@ describe("video-chat plugin", () => {
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
-    expect(call?.[2]?.message).toContain("aspectRatio must be one of 2x3, 3x2, 9x16, 16x9");
+    const message = call?.[2]?.message;
+    expect(message?.startsWith("invalid videoChat.session.create params: aspectRatio must be one of")).toBe(true);
+    for (const ratio of VIDEO_CHAT_AVATAR_ASPECT_RATIOS) {
+      expect(message).toContain(ratio);
+    }
   });
 
   it("rejects invalid session stop params", async () => {
@@ -2428,6 +2438,21 @@ describe("video-chat plugin", () => {
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
     expect(readmePage.res.body).toContain("/plugins/video-chat/assets/GreenConfig.png");
     expect(readmePage.res.body).not.toContain("__README_HTML__");
+
+    const aspectRatioModule = await invokeHttpRoute(
+      httpRoutes,
+      "/plugins/video-chat/avatar-aspect-ratio.js",
+      {
+        url: "/plugins/video-chat/avatar-aspect-ratio.js",
+      },
+    );
+    expect(aspectRatioModule.handled).toBe(true);
+    expect(aspectRatioModule.res.statusCode).toBe(200);
+    expect(aspectRatioModule.res.header("content-type")).toBe(
+      "application/javascript; charset=utf-8",
+    );
+    expect(aspectRatioModule.res.body).toContain("VIDEO_CHAT_AVATAR_ASPECT_RATIOS");
+    expect(aspectRatioModule.res.body).toContain("VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT");
 
     const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/setup",

@@ -9,6 +9,7 @@
     "assets",
     "openclaw.plugin.json",
     "styles",
+    "video-chat/avatar-aspect-ratio.js",
     "video-chat/index.ts",
     "video-chat/sidecar-process-control.ts",
     "video-chat/video-chat-agent-bridge.mjs",

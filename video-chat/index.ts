@@ -20,6 +20,10 @@ import {
   stopChildProcess,
   stopMatchingProcesses,
 } from "./sidecar-process-control.js";
+import {
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+} from "./avatar-aspect-ratio.js";
 
 const VIDEO_CHAT_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_CHAT_ATTACHMENT_COUNT_MAX = 4;
@@ -63,8 +67,6 @@ const INVALID_CHAT_SEND_PARAMS_ERROR = "invalid videoChat.chat.send params";
 const VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS = 60;
 const VIDEO_CHAT_AVATAR_TIMEOUT_MIN_SECONDS = 1;
 const VIDEO_CHAT_AVATAR_TIMEOUT_MAX_SECONDS = 600;
-const VIDEO_CHAT_AVATAR_ASPECT_RATIOS = ["2x3", "3x2", "9x16", "16x9"] as const;
-const VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT = "16x9";
 
 type VideoChatAvatarAspectRatio = (typeof VIDEO_CHAT_AVATAR_ASPECT_RATIOS)[number];
 
@@ -274,13 +276,9 @@ function normalizeAvatarAspectRatio(aspectRatio?: string | null): VideoChatAvata
   if (!normalized) {
     return VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT;
   }
-  if (
-    normalized === "2x3" ||
-    normalized === "3x2" ||
-    normalized === "9x16" ||
-    normalized === "16x9"
-  ) {
-    return normalized;
+  const normalizedAspectRatio = normalized as VideoChatAvatarAspectRatio;
+  if (VIDEO_CHAT_AVATAR_ASPECT_RATIOS.includes(normalizedAspectRatio)) {
+    return normalizedAspectRatio;
   }
   throw new Error(
     `invalid videoChat.session.create params: aspectRatio must be one of ${VIDEO_CHAT_AVATAR_ASPECT_RATIOS.join(", ")}`,
@@ -3201,6 +3199,14 @@ function registerVideoChatHttpRoutes(
         );
         return true;
       }
+      if (normalizedPath === "/plugins/video-chat/avatar-aspect-ratio.js") {
+        const script = await readFile(new URL("./avatar-aspect-ratio.js", import.meta.url), "utf8");
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(asTextResponse(script, "application/javascript; charset=utf-8")),
+        );
+        return true;
+      }
       sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
       return true;
     } catch (error) {
@@ -3289,6 +3295,13 @@ function registerVideoChatHttpRoutes(
 
   api.registerHttpRoute({
     path: "/plugins/video-chat/app.js",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/avatar-aspect-ratio.js",
     auth: "plugin",
     match: "exact",
     handler: uiHandler,
