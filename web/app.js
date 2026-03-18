@@ -2973,15 +2973,19 @@ function animateAvatarSentMessage(message, options = {}) {
   const sourceInput = isTextAreaElement(options.sourceInput) ? options.sourceInput : null;
   const sourceDocument = sourceInput?.ownerDocument || document;
   const sourceWindow = sourceDocument.defaultView || window;
+  const overlayTarget = options.overlayTarget === "pip" ? "pip" : "active";
   const shouldTargetPictureInPictureOverlay =
+    overlayTarget !== "pip" &&
     sourceDocument === document &&
     Boolean(avatarDocumentPictureInPictureElements?.messageOverlayEl) &&
     (avatarPaneEl?.hidden || avatarPaneEl?.classList.contains("avatar-pane--document-picture-in-picture-active"));
-  const overlayEl = shouldTargetPictureInPictureOverlay
+  const overlayEl = overlayTarget === "pip"
     ? avatarDocumentPictureInPictureElements?.messageOverlayEl
-    : sourceDocument === document
-      ? avatarMessageOverlayEl
-      : avatarDocumentPictureInPictureElements?.messageOverlayEl;
+    : shouldTargetPictureInPictureOverlay
+      ? avatarDocumentPictureInPictureElements?.messageOverlayEl
+      : sourceDocument === document
+        ? avatarMessageOverlayEl
+        : avatarDocumentPictureInPictureElements?.messageOverlayEl;
   const overlayState = overlayEl === avatarMessageOverlayEl
     ? avatarMessageOverlayState
     : avatarDocumentPictureInPictureElements?.messageOverlayState;
@@ -3096,6 +3100,16 @@ function animateAvatarSentMessage(message, options = {}) {
       overlayState.hideTimer = null;
     }, 320);
   }, 3520);
+}
+
+function animateAvatarReceivedMessage(message) {
+  const normalizedMessage = typeof message === "string" ? message.trim() : "";
+  if (!normalizedMessage || !avatarDocumentPictureInPictureElements?.messageOverlayEl) {
+    return;
+  }
+  animateAvatarSentMessage(normalizedMessage, {
+    overlayTarget: "pip",
+  });
 }
 
 function setHealthStatus(dotEl, valueEl, tone, text) {
@@ -6827,6 +6841,7 @@ function handleGatewayChatEvent(payload) {
       content.text || (hasStreamingBubble && typeof streamingBubble?.text === "string" ? streamingBubble.text : "");
     if (resolvedAssistantText) {
       rememberRecentAvatarReply(resolvedAssistantText, resolveMessageTimestamp(payload.message));
+      animateAvatarReceivedMessage(resolvedAssistantText);
     }
     const assistantMessage =
       !hasStreamingBubble && !content.text && content.images.length === 0
