@@ -752,6 +752,7 @@ describe("video-chat plugin", () => {
     const respond = await invoke(methods, "videoChat.session.create", {
       sessionKey: "agent:main/main",
       avatarImageUrl: "https://example.com/browser-avatar.png",
+      aspectRatio: "9x16",
       avatarTimeoutSeconds: 75,
       interruptReplyOnNewMessage: true,
     });
@@ -760,15 +761,17 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(true);
     const payload = call?.[1] as
       | {
-          roomName?: string;
-          participantToken?: string;
-          agentName?: string;
-          interruptReplyOnNewMessage?: boolean;
-        }
+        roomName?: string;
+        participantToken?: string;
+        agentName?: string;
+        aspectRatio?: string;
+        interruptReplyOnNewMessage?: boolean;
+      }
       | undefined;
     expect(payload?.roomName).toContain("openclaw-agent-main-main-");
     expect(payload?.participantToken?.split(".")).toHaveLength(3);
     expectEphemeralAgentName(payload?.agentName);
+    expect(payload?.aspectRatio).toBe("9x16");
     expect(payload?.interruptReplyOnNewMessage).toBe(true);
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       video: {
@@ -790,6 +793,7 @@ describe("video-chat plugin", () => {
         sessionKey: "agent:main/main",
         imageUrl: "https://example.com/browser-avatar.png",
         avatarTimeoutSeconds: 75,
+        aspectRatio: "9x16",
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -837,12 +841,14 @@ describe("video-chat plugin", () => {
     const payload = call?.[1] as
       | {
           sessionKey?: string;
-          chatSessionKey?: string;
-          participantToken?: string;
-        }
+        chatSessionKey?: string;
+        participantToken?: string;
+        aspectRatio?: string;
+      }
       | undefined;
     expect(payload?.sessionKey).toBe("main");
     expect(payload?.chatSessionKey).toBe("agent:main:main");
+    expect(payload?.aspectRatio).toBe("16x9");
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       video: {
         roomJoin: true,
@@ -860,6 +866,7 @@ describe("video-chat plugin", () => {
         sessionKey: "agent:main:main",
         imageUrl: "https://example.com/default-avatar.png",
         avatarTimeoutSeconds: 60,
+        aspectRatio: "16x9",
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -2139,6 +2146,19 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
     expect(call?.[2]?.message).toContain("invalid videoChat.session.create params");
+  });
+
+  it("rejects unsupported avatar aspect ratios", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.session.create", {
+      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
+      aspectRatio: "1x1",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.code).toBe("INVALID_REQUEST");
+    expect(call?.[2]?.message).toContain("aspectRatio must be one of 2x3, 3x2, 9x16, 16x9");
   });
 
   it("rejects invalid session stop params", async () => {

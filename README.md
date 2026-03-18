@@ -213,9 +213,11 @@ Typical first run:
 
 2. Paste your public avatar image URL.
 
-3. Leave avatar timeout at `60` unless you need a different value.
+3. Pick an avatar aspect ratio. Leave it at `16x9` unless your source image works better in one of the supported portrait or landscape ratios below.
 
-4. Start the session and begin chatting through the page controls.
+4. Leave avatar timeout at `60` unless you need a different value.
+
+5. Start the session and begin chatting through the page controls.
 
 <a id="usage-tips"></a>
 ## Usage tips

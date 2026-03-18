@@ -8,6 +8,8 @@ const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
 const AVATAR_CONTROL_EVENT_TOPIC = "video-chat.avatar-control";
 const AVATAR_CONTROL_ACK_EVENT_TOPIC = "video-chat.avatar-control-ack";
+const LEMONSLICE_AVATAR_ASPECT_RATIO_DEFAULT = "16x9";
+const LEMONSLICE_AVATAR_ASPECT_RATIOS = new Set(["2x3", "3x2", "9x16", "16x9"]);
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -97,11 +99,16 @@ function parseJobMetadata(raw) {
     typeof parsed.avatarTimeoutSeconds === "number" && Number.isFinite(parsed.avatarTimeoutSeconds)
       ? Math.min(600, Math.max(1, Math.floor(parsed.avatarTimeoutSeconds)))
       : 60;
+  const aspectRatio =
+    typeof parsed.aspectRatio === "string" &&
+    LEMONSLICE_AVATAR_ASPECT_RATIOS.has(parsed.aspectRatio.trim())
+      ? parsed.aspectRatio.trim()
+      : LEMONSLICE_AVATAR_ASPECT_RATIO_DEFAULT;
   const interruptReplyOnNewMessage = parsed.interruptReplyOnNewMessage === true;
   if (!sessionKey || !imageUrl) {
     throw new Error("LiveKit Claw Cast job metadata is incomplete");
   }
-  return { sessionKey, imageUrl, avatarTimeoutSeconds, interruptReplyOnNewMessage };
+  return { sessionKey, imageUrl, avatarTimeoutSeconds, aspectRatio, interruptReplyOnNewMessage };
 }
 
 function extractTextFromMessage(message) {
@@ -1179,6 +1186,9 @@ async function runVideoChatAgentEntry(ctx) {
       apiKey: lemonSliceApiKey,
       agentImageUrl: metadata.imageUrl,
       idleTimeout: metadata.avatarTimeoutSeconds,
+      extraPayload: {
+        aspect_ratio: metadata.aspectRatio,
+      },
     });
     console.log("[video-chat-agent] starting lemonslice avatar session");
     emitParentDebug("avatar.start.begin", {
