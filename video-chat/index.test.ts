@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
+import { VIDEO_CHAT_AVATAR_ASPECT_RATIOS } from "./avatar-aspect-ratio.js";
 import plugin from "./index.js";
 
 const {
@@ -415,7 +416,7 @@ describe("video-chat plugin", () => {
     expect(methods.has("videoChat.session.stop")).toBe(true);
     expect(methods.has("videoChat.audio.transcribe")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(9);
+    expect(httpRoutes).toHaveLength(10);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -450,6 +451,11 @@ describe("video-chat plugin", () => {
         }),
         expect.objectContaining({
           path: "/plugins/video-chat/app.js",
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: "/plugins/video-chat/avatar-aspect-ratio.js",
           auth: "plugin",
           match: "exact",
         }),
@@ -752,6 +758,7 @@ describe("video-chat plugin", () => {
     const respond = await invoke(methods, "videoChat.session.create", {
       sessionKey: "agent:main/main",
       avatarImageUrl: "https://example.com/browser-avatar.png",
+      aspectRatio: "9x16",
       avatarTimeoutSeconds: 75,
       interruptReplyOnNewMessage: true,
     });
@@ -760,15 +767,17 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(true);
     const payload = call?.[1] as
       | {
-          roomName?: string;
-          participantToken?: string;
-          agentName?: string;
-          interruptReplyOnNewMessage?: boolean;
-        }
+        roomName?: string;
+        participantToken?: string;
+        agentName?: string;
+        aspectRatio?: string;
+        interruptReplyOnNewMessage?: boolean;
+      }
       | undefined;
     expect(payload?.roomName).toContain("openclaw-agent-main-main-");
     expect(payload?.participantToken?.split(".")).toHaveLength(3);
     expectEphemeralAgentName(payload?.agentName);
+    expect(payload?.aspectRatio).toBe("9x16");
     expect(payload?.interruptReplyOnNewMessage).toBe(true);
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       video: {
@@ -790,6 +799,7 @@ describe("video-chat plugin", () => {
         sessionKey: "agent:main/main",
         imageUrl: "https://example.com/browser-avatar.png",
         avatarTimeoutSeconds: 75,
+        aspectRatio: "9x16",
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -837,12 +847,14 @@ describe("video-chat plugin", () => {
     const payload = call?.[1] as
       | {
           sessionKey?: string;
-          chatSessionKey?: string;
-          participantToken?: string;
-        }
+        chatSessionKey?: string;
+        participantToken?: string;
+        aspectRatio?: string;
+      }
       | undefined;
     expect(payload?.sessionKey).toBe("main");
     expect(payload?.chatSessionKey).toBe("agent:main:main");
+    expect(payload?.aspectRatio).toBe("16x9");
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       video: {
         roomJoin: true,
@@ -860,6 +872,7 @@ describe("video-chat plugin", () => {
         sessionKey: "agent:main:main",
         imageUrl: "https://example.com/default-avatar.png",
         avatarTimeoutSeconds: 60,
+        aspectRatio: "16x9",
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -2141,6 +2154,23 @@ describe("video-chat plugin", () => {
     expect(call?.[2]?.message).toContain("invalid videoChat.session.create params");
   });
 
+  it("rejects unsupported avatar aspect ratios", async () => {
+    const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.session.create", {
+      avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
+      aspectRatio: "1x1",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.code).toBe("INVALID_REQUEST");
+    const message = call?.[2]?.message;
+    expect(message?.startsWith("invalid videoChat.session.create params: aspectRatio must be one of")).toBe(true);
+    for (const ratio of VIDEO_CHAT_AVATAR_ASPECT_RATIOS) {
+      expect(message).toContain(ratio);
+    }
+  });
+
   it("rejects invalid session stop params", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "videoChat.session.stop", {
@@ -2408,6 +2438,21 @@ describe("video-chat plugin", () => {
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
     expect(readmePage.res.body).toContain("/plugins/video-chat/assets/GreenConfig.png");
     expect(readmePage.res.body).not.toContain("__README_HTML__");
+
+    const aspectRatioModule = await invokeHttpRoute(
+      httpRoutes,
+      "/plugins/video-chat/avatar-aspect-ratio.js",
+      {
+        url: "/plugins/video-chat/avatar-aspect-ratio.js",
+      },
+    );
+    expect(aspectRatioModule.handled).toBe(true);
+    expect(aspectRatioModule.res.statusCode).toBe(200);
+    expect(aspectRatioModule.res.header("content-type")).toBe(
+      "application/javascript; charset=utf-8",
+    );
+    expect(aspectRatioModule.res.body).toContain("VIDEO_CHAT_AVATAR_ASPECT_RATIOS");
+    expect(aspectRatioModule.res.body).toContain("VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT");
 
     const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/setup",

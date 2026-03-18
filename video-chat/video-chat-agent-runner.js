@@ -3,11 +3,16 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import {
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+} from "./avatar-aspect-ratio.js";
 
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
 const AVATAR_CONTROL_EVENT_TOPIC = "video-chat.avatar-control";
 const AVATAR_CONTROL_ACK_EVENT_TOPIC = "video-chat.avatar-control-ack";
+const VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP = new Set(VIDEO_CHAT_AVATAR_ASPECT_RATIOS);
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -97,11 +102,16 @@ function parseJobMetadata(raw) {
     typeof parsed.avatarTimeoutSeconds === "number" && Number.isFinite(parsed.avatarTimeoutSeconds)
       ? Math.min(600, Math.max(1, Math.floor(parsed.avatarTimeoutSeconds)))
       : 60;
+  const aspectRatio =
+    typeof parsed.aspectRatio === "string" &&
+    VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP.has(parsed.aspectRatio.trim())
+      ? parsed.aspectRatio.trim()
+      : VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT;
   const interruptReplyOnNewMessage = parsed.interruptReplyOnNewMessage === true;
   if (!sessionKey || !imageUrl) {
     throw new Error("LiveKit Claw Cast job metadata is incomplete");
   }
-  return { sessionKey, imageUrl, avatarTimeoutSeconds, interruptReplyOnNewMessage };
+  return { sessionKey, imageUrl, avatarTimeoutSeconds, aspectRatio, interruptReplyOnNewMessage };
 }
 
 function extractTextFromMessage(message) {
@@ -1220,5 +1230,10 @@ async function runVideoChatAgentEntry(ctx) {
 }
 
 export const videoChatAgent = { entry: runVideoChatAgentEntry };
-export { GatewayWsClient };
+export {
+  GatewayWsClient,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP,
+};
 export default videoChatAgent;

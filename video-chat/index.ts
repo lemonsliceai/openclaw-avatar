@@ -20,6 +20,10 @@ import {
   stopChildProcess,
   stopMatchingProcesses,
 } from "./sidecar-process-control.js";
+import {
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+} from "./avatar-aspect-ratio.js";
 
 const VIDEO_CHAT_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_CHAT_ATTACHMENT_COUNT_MAX = 4;
@@ -64,6 +68,8 @@ const VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS = 60;
 const VIDEO_CHAT_AVATAR_TIMEOUT_MIN_SECONDS = 1;
 const VIDEO_CHAT_AVATAR_TIMEOUT_MAX_SECONDS = 600;
 
+type VideoChatAvatarAspectRatio = (typeof VIDEO_CHAT_AVATAR_ASPECT_RATIOS)[number];
+
 type VideoChatConfigResponse = {
   provider: "lemonslice" | null;
   configured: boolean;
@@ -98,6 +104,7 @@ type VideoChatSessionResult = {
   agentName: string;
   avatarImageUrl: string;
   avatarTimeoutSeconds: number;
+  aspectRatio: VideoChatAvatarAspectRatio;
   interruptReplyOnNewMessage: boolean;
 };
 
@@ -203,6 +210,7 @@ type VideoChatSessionHandlers = {
     sessionKey: string;
     avatarImageUrl?: string;
     avatarTimeoutSeconds?: number;
+    aspectRatio?: string;
     interruptReplyOnNewMessage?: boolean;
   }) => Promise<VideoChatSessionResult>;
   stopSession: (params: { roomName: string }) => Promise<VideoChatSessionStopResult>;
@@ -260,6 +268,20 @@ function normalizeAvatarTimeoutSeconds(avatarTimeoutSeconds?: number): number {
   return Math.min(
     VIDEO_CHAT_AVATAR_TIMEOUT_MAX_SECONDS,
     Math.max(VIDEO_CHAT_AVATAR_TIMEOUT_MIN_SECONDS, normalized),
+  );
+}
+
+function normalizeAvatarAspectRatio(aspectRatio?: string | null): VideoChatAvatarAspectRatio {
+  const normalized = normalizeOptionalString(aspectRatio);
+  if (!normalized) {
+    return VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT;
+  }
+  const normalizedAspectRatio = normalized as VideoChatAvatarAspectRatio;
+  if (VIDEO_CHAT_AVATAR_ASPECT_RATIOS.includes(normalizedAspectRatio)) {
+    return normalizedAspectRatio;
+  }
+  throw new Error(
+    `invalid videoChat.session.create params: aspectRatio must be one of ${VIDEO_CHAT_AVATAR_ASPECT_RATIOS.join(", ")}`,
   );
 }
 
@@ -1079,12 +1101,14 @@ function buildVideoChatDispatchMetadata(params: {
   sessionKey: string;
   imageUrl: string;
   avatarTimeoutSeconds?: number;
+  aspectRatio?: string | null;
   interruptReplyOnNewMessage?: boolean;
 }): string {
   return JSON.stringify({
     sessionKey: params.sessionKey,
     imageUrl: params.imageUrl,
     avatarTimeoutSeconds: normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds),
+    aspectRatio: normalizeAvatarAspectRatio(params.aspectRatio),
     interruptReplyOnNewMessage: normalizeInterruptReplyOnNewMessage(params.interruptReplyOnNewMessage),
   });
 }
@@ -2828,6 +2852,9 @@ function registerVideoChatHttpRoutes(
             ) {
               throw new Error("invalid videoChat.session.create params");
             }
+            if (params.aspectRatio !== undefined && typeof params.aspectRatio !== "string") {
+              throw new Error("invalid videoChat.session.create params");
+            }
             if (
               params.interruptReplyOnNewMessage !== undefined &&
               typeof params.interruptReplyOnNewMessage !== "boolean"
@@ -2848,10 +2875,15 @@ function registerVideoChatHttpRoutes(
               typeof params.avatarTimeoutSeconds === "number"
                 ? normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds)
                 : undefined;
+            const aspectRatio =
+              typeof params.aspectRatio === "string"
+                ? normalizeAvatarAspectRatio(params.aspectRatio)
+                : undefined;
             logVideoChatEvent(api.logger, "info", "http.session.create.requested", {
               sessionKey,
               avatarImageUrlProvided: Boolean(avatarImageUrl),
               avatarTimeoutSeconds: avatarTimeoutSeconds ?? VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS,
+              aspectRatio: aspectRatio ?? VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
               interruptReplyOnNewMessage,
             });
             const session = await handlers.createSession({
@@ -2859,6 +2891,7 @@ function registerVideoChatHttpRoutes(
               sessionKey,
               avatarImageUrl,
               avatarTimeoutSeconds,
+              aspectRatio,
               interruptReplyOnNewMessage,
             });
             logVideoChatEvent(api.logger, "info", "http.session.create.completed", {
@@ -3166,6 +3199,14 @@ function registerVideoChatHttpRoutes(
         );
         return true;
       }
+      if (normalizedPath === "/plugins/video-chat/avatar-aspect-ratio.js") {
+        const script = await readFile(new URL("./avatar-aspect-ratio.js", import.meta.url), "utf8");
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(asTextResponse(script, "application/javascript; charset=utf-8")),
+        );
+        return true;
+      }
       sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
       return true;
     } catch (error) {
@@ -3254,6 +3295,13 @@ function registerVideoChatHttpRoutes(
 
   api.registerHttpRoute({
     path: "/plugins/video-chat/app.js",
+    auth: "plugin",
+    match: "exact",
+    handler: uiHandler,
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/video-chat/avatar-aspect-ratio.js",
     auth: "plugin",
     match: "exact",
     handler: uiHandler,
@@ -3412,6 +3460,7 @@ async function createVideoChatSession(params: {
   sessionKey: string;
   avatarImageUrl?: string;
   avatarTimeoutSeconds?: number;
+  aspectRatio?: string;
   interruptReplyOnNewMessage?: boolean;
   agentName?: string;
   nowMs?: number;
@@ -3429,6 +3478,7 @@ async function createVideoChatSession(params: {
   });
   const avatarImageUrl = normalizeOptionalString(params.avatarImageUrl);
   const avatarTimeoutSeconds = normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds);
+  const aspectRatio = normalizeAvatarAspectRatio(params.aspectRatio);
   const livekitUrl = normalizeOptionalString(livekit?.url);
   const apiKey = normalizeResolvedSecretInputString({
     value: livekit?.apiKey,
@@ -3483,6 +3533,7 @@ async function createVideoChatSession(params: {
     agentName: normalizeOptionalString(params.agentName) ?? VIDEO_CHAT_AGENT_NAME,
     avatarImageUrl,
     avatarTimeoutSeconds,
+    aspectRatio,
     interruptReplyOnNewMessage,
   };
 }
@@ -3862,6 +3913,7 @@ async function createVideoChatAgentDispatch(params: {
     sessionKey: params.session.chatSessionKey,
     imageUrl: params.session.avatarImageUrl,
     avatarTimeoutSeconds: params.session.avatarTimeoutSeconds,
+    aspectRatio: params.session.aspectRatio,
     interruptReplyOnNewMessage: params.session.interruptReplyOnNewMessage,
   });
   logVideoChatEvent(params.logger, "info", "agent-dispatch.create.begin", {
@@ -4987,16 +5039,19 @@ const videoChatPlugin = {
       sessionKey: string;
       avatarImageUrl?: string;
       avatarTimeoutSeconds?: number;
+      aspectRatio?: string;
       interruptReplyOnNewMessage?: boolean;
     }): Promise<VideoChatSessionResult> => {
       const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
         params.interruptReplyOnNewMessage,
       );
       const avatarTimeoutSeconds = normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds);
+      const aspectRatio = normalizeAvatarAspectRatio(params.aspectRatio);
       logVideoChatEvent(api.logger, "info", "session.create.begin", {
         sessionKey: params.sessionKey,
         avatarImageUrlProvided: Boolean(normalizeOptionalString(params.avatarImageUrl)),
         avatarTimeoutSeconds,
+        aspectRatio,
         interruptReplyOnNewMessage,
       });
       let session: VideoChatSessionResult | null = null;
@@ -5031,6 +5086,7 @@ const videoChatPlugin = {
           agentName: session.agentName,
           dispatchId: dispatch.id,
           avatarTimeoutSeconds: session.avatarTimeoutSeconds,
+          aspectRatio: session.aspectRatio,
           interruptReplyOnNewMessage: session.interruptReplyOnNewMessage,
         });
         return session;
@@ -5048,6 +5104,7 @@ const videoChatPlugin = {
           sessionKey: params.sessionKey,
           avatarImageUrlProvided: Boolean(normalizeOptionalString(params.avatarImageUrl)),
           avatarTimeoutSeconds,
+          aspectRatio,
           interruptReplyOnNewMessage,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -5268,6 +5325,14 @@ const videoChatPlugin = {
             );
             return;
           }
+          if (params.aspectRatio !== undefined && typeof params.aspectRatio !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.session.create params",
+            );
+            return;
+          }
           if (
             params.interruptReplyOnNewMessage !== undefined &&
             typeof params.interruptReplyOnNewMessage !== "boolean"
@@ -5293,12 +5358,17 @@ const videoChatPlugin = {
             typeof params.avatarTimeoutSeconds === "number"
               ? normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds)
               : undefined;
+          const aspectRatio =
+            typeof params.aspectRatio === "string"
+              ? normalizeAvatarAspectRatio(params.aspectRatio)
+              : undefined;
 
           const payload = await createManagedSession({
             config: cfg,
             sessionKey,
             avatarImageUrl,
             avatarTimeoutSeconds,
+            aspectRatio,
             interruptReplyOnNewMessage,
           });
           respond(true, payload);

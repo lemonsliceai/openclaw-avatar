@@ -1,3 +1,8 @@
+import {
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT as SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIOS as SESSION_AVATAR_ASPECT_RATIO_VALUES,
+} from "./avatar-aspect-ratio.js";
+
 const statusEl = document.getElementById("status");
 const outputEl = document.getElementById("output");
 const setupForm = document.getElementById("setup-form");
@@ -11,6 +16,7 @@ const elevenLabsErrorEl = document.getElementById("elevenlabs-error");
 const sessionForm = document.getElementById("session-form");
 const startSessionButton = document.getElementById("start-session");
 const sessionImageUrlInput = document.getElementById("session-image-url");
+const sessionAspectRatioInput = document.getElementById("session-aspect-ratio");
 const avatarTimeoutSecondsInput = document.getElementById("avatar-timeout-seconds");
 const startInPictureInPictureCheckbox = document.getElementById("start-in-pip");
 const reloadButton = document.getElementById("reload-status");
@@ -78,6 +84,7 @@ const MIC_MUTED_STORAGE_KEY = "videoChat.microphoneMuted";
 const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
 const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "videoChat.avatarAutoStartInPictureInPicture";
 const SESSION_IMAGE_URL_STORAGE_KEY = "videoChat.sessionImageUrl";
+const SESSION_ASPECT_RATIO_STORAGE_KEY = "videoChat.sessionAspectRatio";
 const SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY = "videoChat.sessionAvatarTimeoutSeconds";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
@@ -114,6 +121,7 @@ const AVATAR_JOIN_TIMEOUT_MS = 12_000;
 const SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS = 60;
 const SESSION_AVATAR_TIMEOUT_MIN_SECONDS = 1;
 const SESSION_AVATAR_TIMEOUT_MAX_SECONDS = 600;
+const SESSION_AVATAR_ASPECT_RATIOS = new Set(SESSION_AVATAR_ASPECT_RATIO_VALUES);
 const AVATAR_JOIN_PROGRESS_GRACE_MS = 12_000;
 const AVATAR_JOIN_MAX_TIMEOUT_MS = 45_000;
 const AVATAR_STATUS_POLL_MS = 1_000;
@@ -286,6 +294,7 @@ const STRUCTURED_SETUP_ERROR_FIELD_MAP = new Map([
   ["elevenLabsVoiceId", "elevenlabs"],
 ]);
 let activeSessionImageUrl = "";
+let activeSessionAspectRatio = SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
 let activeSessionAvatarJoinTimeoutMs = SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS * 1000;
 const renderedVoiceUserRuns = new Set();
 const chatMessages = [];
@@ -1660,6 +1669,13 @@ function loadSessionFormPreferences() {
   if (sessionImageUrlInput && typeof sessionImageUrlInput.value === "string" && !sessionImageUrlInput.value) {
     sessionImageUrlInput.value = getStoredStringPreference(SESSION_IMAGE_URL_STORAGE_KEY, "");
   }
+  if (sessionAspectRatioInput && typeof sessionAspectRatioInput.value === "string") {
+    const storedAspectRatio = getStoredStringPreference(
+      SESSION_ASPECT_RATIO_STORAGE_KEY,
+      sessionAspectRatioInput.value || SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
+    );
+    sessionAspectRatioInput.value = resolveSessionAspectRatioValue(storedAspectRatio);
+  }
   if (avatarTimeoutSecondsInput && typeof avatarTimeoutSecondsInput.value === "string") {
     const storedTimeout = getStoredStringPreference(
       SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY,
@@ -1667,7 +1683,68 @@ function loadSessionFormPreferences() {
     );
     avatarTimeoutSecondsInput.value = String(parseSessionAvatarTimeoutSeconds(storedTimeout));
   }
+  applyPreferredAvatarAspectRatio();
   updateSessionStartButtonState();
+}
+
+function resolveSessionAspectRatioValue(rawValue) {
+  const normalized = typeof rawValue === "string" ? rawValue.trim() : "";
+  if (SESSION_AVATAR_ASPECT_RATIOS.has(normalized)) {
+    return normalized;
+  }
+  return SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
+}
+
+function parseAspectRatioValueToNumber(rawValue) {
+  const [widthRaw, heightRaw] = (typeof rawValue === "string" ? rawValue : "").split("x");
+  const width = Number(widthRaw);
+  const height = Number(heightRaw);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return width / height;
+}
+
+function parseSessionAspectRatioNumber(rawValue) {
+  const aspectRatio = parseAspectRatioValueToNumber(resolveSessionAspectRatioValue(rawValue));
+  if (aspectRatio !== null) {
+    return aspectRatio;
+  }
+
+  const resolvedDefaultAspectRatio = parseAspectRatioValueToNumber(
+    resolveSessionAspectRatioValue(SESSION_AVATAR_ASPECT_RATIO_DEFAULT),
+  );
+  if (resolvedDefaultAspectRatio !== null) {
+    return resolvedDefaultAspectRatio;
+  }
+
+  const defaultAspectRatio = parseAspectRatioValueToNumber(
+    SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
+  );
+  return defaultAspectRatio ?? 1;
+}
+
+function getPreferredSessionAspectRatio() {
+  if (activeSession && typeof activeSessionAspectRatio === "string" && activeSessionAspectRatio.trim()) {
+    return resolveSessionAspectRatioValue(activeSessionAspectRatio);
+  }
+  return resolveSessionAspectRatioValue(sessionAspectRatioInput?.value);
+}
+
+function applyPreferredAvatarAspectRatio() {
+  if (!shellEl) {
+    return;
+  }
+  const [widthRaw, heightRaw] = getPreferredSessionAspectRatio().split("x");
+  shellEl.style.setProperty("--avatar-aspect-ratio", `${widthRaw} / ${heightRaw}`);
+}
+
+function hydrateSessionAspectSettings(payload, priorAspectRatio, priorAvatarJoinTimeoutMs) {
+  activeSessionAspectRatio = resolveSessionAspectRatioValue(
+    payload?.session?.aspectRatio ?? priorAspectRatio,
+  );
+  activeSessionAvatarJoinTimeoutMs = priorAvatarJoinTimeoutMs;
+  applyPreferredAvatarAspectRatio();
 }
 
 function parseSessionAvatarTimeoutSeconds(rawValue) {
@@ -1760,6 +1837,7 @@ function buildSessionCreatePayload(sessionKey, options = {}) {
   return {
     sessionKey,
     avatarImageUrl,
+    aspectRatio: resolveSessionAspectRatioValue(options.aspectRatio),
     avatarTimeoutSeconds: parseSessionAvatarTimeoutSeconds(options.avatarTimeoutSeconds),
     interruptReplyOnNewMessage: true,
   };
@@ -4286,7 +4364,7 @@ function updateAvatarAspectRatio(videoElement) {
     videoElement.videoWidth <= 0 ||
     videoElement.videoHeight <= 0
   ) {
-    shellEl.style.setProperty("--avatar-aspect-ratio", "16 / 9");
+    applyPreferredAvatarAspectRatio();
     return;
   }
   shellEl.style.setProperty("--avatar-aspect-ratio", `${videoElement.videoWidth} / ${videoElement.videoHeight}`);
@@ -4321,7 +4399,7 @@ function getAvatarVideoAspectRatio(videoElement = getAvatarVideoElement()) {
   ) {
     return videoElement.videoWidth / videoElement.videoHeight;
   }
-  return AVATAR_PIP_DEFAULT_ASPECT_RATIO;
+  return parseSessionAspectRatioNumber(getPreferredSessionAspectRatio());
 }
 
 function getAvatarPictureInPictureWindowSize(options = {}) {
@@ -8104,6 +8182,7 @@ async function reconnectAvatarSession(options = {}) {
   const priorSessionImageUrl = resolveSessionImageUrlValue(
     activeSessionImageUrl || sessionImageUrlInput?.value,
   );
+  const priorAspectRatio = getPreferredSessionAspectRatio();
   const priorAvatarJoinTimeoutMs = Number.isFinite(activeSessionAvatarJoinTimeoutMs)
     ? activeSessionAvatarJoinTimeoutMs
     : resolveSessionAvatarJoinTimeoutMs(avatarTimeoutSecondsInput?.value);
@@ -8132,13 +8211,14 @@ async function reconnectAvatarSession(options = {}) {
       body: JSON.stringify(
         buildSessionCreatePayload(priorSessionKey, {
           avatarImageUrl: priorSessionImageUrl,
+          aspectRatio: priorAspectRatio,
           avatarTimeoutSeconds: Math.round(priorAvatarJoinTimeoutMs / 1000),
         }),
       ),
     });
     activeSession = payload.session;
     activeSessionImageUrl = priorSessionImageUrl;
-    activeSessionAvatarJoinTimeoutMs = priorAvatarJoinTimeoutMs;
+    hydrateSessionAspectSettings(payload, priorAspectRatio, priorAvatarJoinTimeoutMs);
     resetVoiceTranscriptDeduplication();
     setChatPaneOpen(true);
     updateRoomButtons();
@@ -8188,7 +8268,9 @@ async function stopActiveSession() {
   disconnectRoom();
   activeSession = null;
   activeSessionImageUrl = "";
+  activeSessionAspectRatio = SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
   activeSessionAvatarJoinTimeoutMs = SESSION_AVATAR_TIMEOUT_DEFAULT_SECONDS * 1000;
+  applyPreferredAvatarAspectRatio();
   resetVoiceTranscriptDeduplication();
   setAvatarConnectionState("idle");
   updateAvatarUiState();
@@ -8515,9 +8597,16 @@ if (sessionForm) {
       resolveSessionImageUrlValue(sessionImageUrlInput?.value),
     );
     persistStringPreference(
+      SESSION_ASPECT_RATIO_STORAGE_KEY,
+      resolveSessionAspectRatioValue(sessionAspectRatioInput?.value),
+    );
+    persistStringPreference(
       SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY,
       String(parseSessionAvatarTimeoutSeconds(avatarTimeoutSecondsInput?.value)),
     );
+    if (!activeSession) {
+      applyPreferredAvatarAspectRatio();
+    }
     updateSessionStartButtonState();
   });
 
@@ -8529,6 +8618,7 @@ if (sessionForm) {
     const formData = new FormData(sessionForm);
     const sessionKey = String(formData.get("sessionKey") || "").trim();
     const avatarImageUrl = resolveSessionImageUrlValue(formData.get("avatarImageUrl"));
+    const aspectRatio = resolveSessionAspectRatioValue(formData.get("aspectRatio"));
     const avatarJoinTimeoutMs = resolveSessionAvatarJoinTimeoutMs(
       formData.get("avatarTimeoutSeconds"),
     );
@@ -8547,13 +8637,14 @@ if (sessionForm) {
         body: JSON.stringify(
           buildSessionCreatePayload(sessionKey, {
             avatarImageUrl,
+            aspectRatio,
             avatarTimeoutSeconds: formData.get("avatarTimeoutSeconds"),
           }),
         ),
       });
       activeSession = payload.session;
       activeSessionImageUrl = avatarImageUrl;
-      activeSessionAvatarJoinTimeoutMs = avatarJoinTimeoutMs;
+      hydrateSessionAspectSettings(payload, aspectRatio, avatarJoinTimeoutMs);
       resetVoiceTranscriptDeduplication();
       setChatPaneOpen(true);
       setOutput({ action: "session-started", session: activeSession });

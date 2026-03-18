@@ -5,8 +5,14 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import videoChatAgent, {
   GatewayWsClient,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT as RUNNER_VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP,
   computeStreamingTextDelta,
 } from "./video-chat-agent-runner.js";
+import {
+  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
+  VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+} from "./avatar-aspect-ratio.js";
 
 class MockWebSocket extends EventEmitter {
   static CONNECTING = 0;
@@ -200,6 +206,17 @@ describe("computeStreamingTextDelta", () => {
 
   it("returns null when the next chunk is not a monotonic prefix extension", () => {
     expect(computeStreamingTextDelta("Hello world", "Hi")).toBeNull();
+  });
+});
+
+describe("avatar aspect ratio constants", () => {
+  it("keeps the runner validation whitelist aligned with the shared constants", () => {
+    expect(Array.from(VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP)).toEqual([
+      ...VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+    ]);
+    expect(RUNNER_VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT).toBe(
+      VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
+    );
   });
 });
 
