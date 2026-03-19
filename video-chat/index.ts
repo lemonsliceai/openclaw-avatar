@@ -48,27 +48,12 @@ const REDACTED_SECRET_VALUES = new Set(["_REDACTED_", "__OPENCLAW_REDACTED__"]);
 const PACKAGE_VERSION_PLACEHOLDER = "__PACKAGE_VERSION__";
 const SHARED_SHELL_BOOTSTRAP_PLACEHOLDER = "__SHARED_SHELL_BOOTSTRAP__";
 const README_HTML_PLACEHOLDER_REGEX = /__README_HTML__/g;
-const ELEVENLABS_SPEECH_TO_TEXT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text";
-const ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID = "scribe_v1";
-const ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS = 3;
-const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL =
-  "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe";
-const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID = "scribe_v2_realtime";
-const ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS = 4_000;
-const ELEVENLABS_TEXT_TO_SPEECH_API_BASE_URL = "https://api.elevenlabs.io/v1/text-to-speech";
-const ELEVENLABS_TEXT_TO_SPEECH_VERIFY_VOICE_ID = "bIHbv24MWmeRgasZH58o";
-const ELEVENLABS_TEXT_TO_SPEECH_VERIFY_MODEL_ID = "eleven_turbo_v2_5";
-const ELEVENLABS_TEXT_TO_SPEECH_VERIFY_OUTPUT_FORMAT = "pcm_22050";
-const ELEVENLABS_TEXT_TO_SPEECH_VERIFY_TEXT = "Hi.";
-const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS = 8;
-const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.9;
 const VIDEO_CHAT_SETUP_VERIFY_TIMEOUT_MS = 4_000;
 const INVALID_CHAT_HISTORY_PARAMS_ERROR = "invalid videoChat.chat.history params";
 const INVALID_CHAT_SEND_PARAMS_ERROR = "invalid videoChat.chat.send params";
 const VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS = 60;
 const VIDEO_CHAT_AVATAR_TIMEOUT_MIN_SECONDS = 1;
 const VIDEO_CHAT_AVATAR_TIMEOUT_MAX_SECONDS = 600;
-const VIDEO_CHAT_GATEWAY_SYNTHESIZE_METHOD = "videoChat.audio.synthesize";
 const VIDEO_CHAT_RUNTIME_SPEECH_VERIFY_TEXT = "OpenClaw speech check.";
 
 type VideoChatAvatarAspectRatio = (typeof VIDEO_CHAT_AVATAR_ASPECT_RATIOS)[number];
@@ -88,11 +73,6 @@ type VideoChatConfigResponse = {
     apiKeyConfigured: boolean;
     apiSecret: string | null;
     apiSecretConfigured: boolean;
-  };
-  tts: {
-    elevenLabsApiKey: string | null;
-    elevenLabsApiKeyConfigured: boolean;
-    elevenLabsVoiceId: string | null;
   };
 };
 
@@ -150,9 +130,6 @@ type SidecarCredentials = {
   livekitUrl: string;
   livekitApiKey: string;
   livekitApiSecret: string;
-  elevenLabsApiKey?: string;
-  elevenLabsVoiceId?: string;
-  elevenLabsModelId?: string;
 };
 
 type VideoChatAgentSidecar = {
@@ -197,8 +174,6 @@ type VideoChatSetupInput = {
   livekitUrl?: string;
   livekitApiKey?: string;
   livekitApiSecret?: string;
-  elevenLabsApiKey?: string;
-  elevenLabsVoiceId?: string;
 };
 
 type HttpResponsePayload = {
@@ -321,9 +296,13 @@ type VideoChatChatHandlers = {
 
 type VideoChatSpeechRuntime = NonNullable<OpenClawPluginApi["runtime"]["tts"]>;
 type VideoChatVideoAvatarRuntime = NonNullable<OpenClawPluginApi["runtime"]["videoAvatar"]>;
-type VideoChatMediaUnderstandingRuntime = NonNullable<
-  OpenClawPluginApi["runtime"]["mediaUnderstanding"]
->;
+type VideoChatAudioTranscriptionRuntime = {
+  transcribeAudioFile: (input: {
+    filePath: string;
+    cfg: OpenClawConfig;
+    mime?: string;
+  }) => Promise<{ text?: string }>;
+};
 type VideoChatSpeechSynthesisResult = {
   audioBuffer: Buffer;
   sampleRate: number;
@@ -626,14 +605,11 @@ function resolveEffectiveVideoChatConfig(config: OpenClawConfig): OpenClawConfig
   if (!pluginConfig) {
     return config;
   }
-  // Plugin-owned setup is persisted under plugins.entries.video-chat.config, but the rest of the
-  // runtime reads the effective top-level videoChat/messages branches.
+  // Plugin-owned setup is persisted under plugins.entries.video-chat.config, but Claw Cast only
+  // owns the videoChat branch now. Shared speech/media config must come from the gateway root.
   const effective: OpenClawConfig = { ...config };
   if (isObjectRecord(pluginConfig.videoChat)) {
     effective.videoChat = pluginConfig.videoChat as OpenClawConfig["videoChat"];
-  }
-  if (isObjectRecord(pluginConfig.messages)) {
-    effective.messages = pluginConfig.messages as OpenClawConfig["messages"];
   }
   return effective;
 }
@@ -730,12 +706,18 @@ function hasVideoChatVideoAvatarTranscriptionRuntime(
 
 function getVideoChatMediaUnderstandingRuntime(
   runtime: OpenClawPluginApi["runtime"],
-): VideoChatMediaUnderstandingRuntime | null {
-  const mediaUnderstanding = runtime.mediaUnderstanding;
-  if (
-    mediaUnderstanding &&
-    typeof mediaUnderstanding.transcribeAudioFile === "function"
-  ) {
+): VideoChatAudioTranscriptionRuntime | null {
+  const sttRuntime = (runtime as OpenClawPluginApi["runtime"] & {
+    stt?: VideoChatAudioTranscriptionRuntime;
+  }).stt;
+  if (sttRuntime && typeof sttRuntime.transcribeAudioFile === "function") {
+    return sttRuntime;
+  }
+
+  const mediaUnderstanding = (runtime as OpenClawPluginApi["runtime"] & {
+    mediaUnderstanding?: VideoChatAudioTranscriptionRuntime;
+  }).mediaUnderstanding;
+  if (mediaUnderstanding && typeof mediaUnderstanding.transcribeAudioFile === "function") {
     return mediaUnderstanding;
   }
   return null;
@@ -1035,122 +1017,6 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-function truncateForLog(value: string, maxLength = 240): string {
-  const normalized = value.trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-  return `${normalized.slice(0, maxLength)}...`;
-}
-
-function parseServiceErrorMessage(rawBody: string, fallbackMessage: string): string {
-  const trimmed = rawBody.trim();
-  if (!trimmed) {
-    return fallbackMessage;
-  }
-
-  try {
-    const payload = JSON.parse(trimmed) as Record<string, unknown>;
-    const detail = payload.detail;
-    if (typeof detail === "string" && detail.trim()) {
-      return detail.trim();
-    }
-    if (
-      detail &&
-      typeof detail === "object" &&
-      typeof (detail as { message?: unknown }).message === "string" &&
-      (detail as { message: string }).message.trim()
-    ) {
-      return (detail as { message: string }).message.trim();
-    }
-    if (Array.isArray(detail)) {
-      const detailMessage = detail
-        .map((entry) => {
-          if (typeof entry === "string" && entry.trim()) {
-            return entry.trim();
-          }
-          if (
-            entry &&
-            typeof entry === "object" &&
-            typeof (entry as { msg?: unknown }).msg === "string" &&
-            (entry as { msg: string }).msg.trim()
-          ) {
-            return (entry as { msg: string }).msg.trim();
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join("; ");
-      if (detailMessage) {
-        return detailMessage;
-      }
-    }
-    if (typeof payload.message === "string" && payload.message.trim()) {
-      return payload.message.trim();
-    }
-    if (
-      payload.error &&
-      typeof payload.error === "object" &&
-      typeof (payload.error as { message?: unknown }).message === "string" &&
-      (payload.error as { message: string }).message.trim()
-    ) {
-      return (payload.error as { message: string }).message.trim();
-    }
-  } catch {}
-
-  return `${fallbackMessage} (${truncateForLog(trimmed)})`;
-}
-
-function parseElevenLabsErrorMessage(rawBody: string, status: number): string {
-  const trimmed = rawBody.trim();
-  if (!trimmed) {
-    return `Claw Cast transcription failed: ElevenLabs returned ${status}`;
-  }
-
-  try {
-    const payload = JSON.parse(trimmed) as Record<string, unknown>;
-    const detail = payload.detail;
-    if (typeof detail === "string" && detail.trim()) {
-      return detail.trim();
-    }
-    if (Array.isArray(detail)) {
-      const detailMessage = detail
-        .map((entry) => {
-          if (typeof entry === "string" && entry.trim()) {
-            return entry.trim();
-          }
-          if (
-            entry &&
-            typeof entry === "object" &&
-            typeof (entry as { msg?: unknown }).msg === "string" &&
-            (entry as { msg: string }).msg.trim()
-          ) {
-            return (entry as { msg: string }).msg.trim();
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join("; ");
-      if (detailMessage) {
-        return detailMessage;
-      }
-    }
-    if (typeof payload.message === "string" && payload.message.trim()) {
-      return payload.message.trim();
-    }
-    if (
-      payload.error &&
-      typeof payload.error === "object" &&
-      typeof (payload.error as { message?: unknown }).message === "string" &&
-      (payload.error as { message: string }).message.trim()
-    ) {
-      return (payload.error as { message: string }).message.trim();
-    }
-  } catch {}
-
-  return `Claw Cast transcription failed: ElevenLabs returned ${status} (${truncateForLog(trimmed)})`;
-}
-
 function sanitizeVideoChatRoomPart(value: string): string {
   const normalized = value
     .trim()
@@ -1191,97 +1057,6 @@ function toBase64Url(value: Buffer | string): string {
 
 function toBase64UrlJson(value: object): string {
   return toBase64Url(Buffer.from(JSON.stringify(value)));
-}
-
-function stripTranscriptionCaptionCues(value: string): string {
-  const timestampCuePattern =
-    /(?:^|\s)(?:\d{1,6}\s+)?\d{2}:\d{2}:\d{2}[,.:]\d{1,3}\s*(?:-->|--)\s*\d{2}:\d{2}:\d{2}[,.:]\d{1,3}(?=$|\s)/g;
-  return value
-    .replace(timestampCuePattern, " ")
-    .split(/\r?\n+/)
-    .map((line) => line.trim())
-    .filter((line) => line && !/^\d+$/.test(line))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function extractElevenLabsSpeechWordLogprobs(payload: Record<string, unknown>): number[] {
-  const rawWords = payload.words;
-  if (!Array.isArray(rawWords)) {
-    return [];
-  }
-  return rawWords.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") {
-      return [];
-    }
-    const type = typeof (entry as { type?: unknown }).type === "string" ? (entry as { type: string }).type : "";
-    if (type && type !== "word") {
-      return [];
-    }
-    const text = typeof (entry as { text?: unknown }).text === "string" ? (entry as { text: string }).text : "";
-    const logprob =
-      typeof (entry as { logprob?: unknown }).logprob === "number"
-        ? (entry as { logprob: number }).logprob
-        : Number.NaN;
-    if (!text.trim() || !Number.isFinite(logprob)) {
-      return [];
-    }
-    return [logprob];
-  });
-}
-
-function parseElevenLabsTranscript(payload: Record<string, unknown>): {
-  transcript: string;
-  filteredReason: string | null;
-  speechWordCount: number;
-  avgWordLogprob: number | null;
-} {
-  const rawTranscript = typeof payload.text === "string" ? payload.text.trim() : "";
-  if (!rawTranscript) {
-    return {
-      transcript: "",
-      filteredReason: "empty",
-      speechWordCount: 0,
-      avgWordLogprob: null,
-    };
-  }
-
-  const transcript = stripTranscriptionCaptionCues(rawTranscript);
-  const wordLogprobs = extractElevenLabsSpeechWordLogprobs(payload);
-  const avgWordLogprob =
-    wordLogprobs.length > 0
-      ? wordLogprobs.reduce((total, value) => total + value, 0) / wordLogprobs.length
-      : null;
-
-  if (!transcript) {
-    return {
-      transcript: "",
-      filteredReason: "caption-cue",
-      speechWordCount: wordLogprobs.length,
-      avgWordLogprob,
-    };
-  }
-
-  if (
-    avgWordLogprob !== null &&
-    wordLogprobs.length >= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS &&
-    avgWordLogprob <= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD
-  ) {
-    return {
-      transcript: "",
-      filteredReason: "low-confidence",
-      speechWordCount: wordLogprobs.length,
-      avgWordLogprob,
-    };
-  }
-
-  return {
-    transcript,
-    filteredReason: null,
-    speechWordCount: wordLogprobs.length,
-    avgWordLogprob,
-  };
 }
 
 function buildVideoChatDispatchMetadata(params: {
@@ -1347,6 +1122,21 @@ function validateVideoChatRoomName(roomName: string): string {
   return normalizedRoomName;
 }
 
+function isVideoChatTtsConfigured(config: OpenClawConfig): boolean {
+  const effective = resolveEffectiveVideoChatConfig(config);
+  const ttsRecord = asObjectRecord(asObjectRecord(effective.messages).tts);
+  return Boolean(normalizeOptionalString(ttsRecord.provider));
+}
+
+function isVideoChatAudioTranscriptionConfigured(config: OpenClawConfig): boolean {
+  const effective = resolveEffectiveVideoChatConfig(config);
+  const audioRecord = asObjectRecord(asObjectRecord(asObjectRecord(effective.tools).media).audio);
+  if (audioRecord.enabled === false) {
+    return false;
+  }
+  return Array.isArray(audioRecord.models) && audioRecord.models.length > 0;
+}
+
 function buildVideoChatConfigResponse(
   config: OpenClawConfig,
   runtime?: OpenClawPluginApi["runtime"],
@@ -1355,7 +1145,6 @@ function buildVideoChatConfigResponse(
   const provider = effective.videoChat?.provider === "lemonslice" ? "lemonslice" : null;
   const lemonSlice = effective.videoChat?.lemonSlice;
   const livekit = effective.videoChat?.livekit;
-  const elevenLabs = effective.messages?.tts?.elevenlabs;
   const missing: string[] = [];
   const readSecretValue = (value: unknown, path: string): string | null => {
     if (!hasConfiguredSecretInput(value)) {
@@ -1379,27 +1168,32 @@ function buildVideoChatConfigResponse(
   if (!hasConfiguredSecretInput(livekit?.apiSecret)) {
     missing.push("videoChat.livekit.apiSecret");
   }
+  if (!isVideoChatTtsConfigured(config)) {
+    missing.push("messages.tts");
+  }
+  if (!isVideoChatAudioTranscriptionConfigured(config)) {
+    missing.push("tools.media.audio");
+  }
   if (
     runtime &&
     !hasVideoChatVideoAvatarSpeechRuntime(runtime) &&
-    !getVideoChatSpeechRuntime(runtime) &&
-    !hasConfiguredSecretInput(elevenLabs?.apiKey)
+    !getVideoChatSpeechRuntime(runtime)
   ) {
     missing.push("messages.tts");
   }
   if (
     runtime &&
     !hasVideoChatVideoAvatarTranscriptionRuntime(runtime) &&
-    !getVideoChatMediaUnderstandingRuntime(runtime) &&
-    !hasConfiguredSecretInput(elevenLabs?.apiKey)
+    !getVideoChatMediaUnderstandingRuntime(runtime)
   ) {
     missing.push("tools.media.audio");
   }
+  const uniqueMissing = [...new Set(missing)];
 
   return {
     provider,
-    configured: missing.length === 0,
-    missing,
+    configured: uniqueMissing.length === 0,
+    missing: uniqueMissing,
     lemonSlice: {
       apiKey: readSecretValue(lemonSlice?.apiKey, "videoChat.lemonSlice.apiKey"),
       apiKeyConfigured: hasConfiguredSecretInput(lemonSlice?.apiKey),
@@ -1411,11 +1205,6 @@ function buildVideoChatConfigResponse(
       apiKeyConfigured: hasConfiguredSecretInput(livekit?.apiKey),
       apiSecret: readSecretValue(livekit?.apiSecret, "videoChat.livekit.apiSecret"),
       apiSecretConfigured: hasConfiguredSecretInput(livekit?.apiSecret),
-    },
-    tts: {
-      elevenLabsApiKey: readSecretValue(elevenLabs?.apiKey, "messages.tts.elevenlabs.apiKey"),
-      elevenLabsApiKeyConfigured: hasConfiguredSecretInput(elevenLabs?.apiKey),
-      elevenLabsVoiceId: normalizeOptionalString(elevenLabs?.voiceId) ?? null,
     },
   };
 }
@@ -1550,172 +1339,6 @@ async function verifyCoreSpeechSetupConfig(params: {
   }
 }
 
-async function verifyElevenLabsSetupConfig(params: {
-  logger: VideoChatLogger;
-  elevenLabsApiKey: string;
-  elevenLabsVoiceId?: string;
-  elevenLabsModelId?: string;
-}): Promise<void> {
-  logVideoChatEvent(params.logger, "info", "setup.verify.elevenlabs.begin", {
-    voiceId: params.elevenLabsVoiceId,
-  });
-  const sttController = new AbortController();
-  const sttTimeoutId = setTimeout(() => {
-    sttController.abort();
-  }, VIDEO_CHAT_SETUP_VERIFY_TIMEOUT_MS);
-  try {
-    const sttResponse = await fetch(ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL, {
-      method: "POST",
-      headers: {
-        "xi-api-key": params.elevenLabsApiKey,
-      },
-      signal: sttController.signal,
-    });
-    const sttRawBody = await sttResponse.text();
-    if (!sttResponse.ok) {
-      throw classifySetupVerificationError(
-        `ElevenLabs speech-to-text access could not be verified: ${parseServiceErrorMessage(
-          sttRawBody,
-          `ElevenLabs returned ${sttResponse.status}`,
-        )}`,
-        { status: sttResponse.status },
-      );
-    }
-
-    let sttPayload: Record<string, unknown> | null = null;
-    if (sttRawBody.trim()) {
-      try {
-        sttPayload = JSON.parse(sttRawBody) as Record<string, unknown>;
-      } catch {
-        sttPayload = null;
-      }
-    }
-    const realtimeToken =
-      typeof sttPayload?.token === "string" ? sttPayload.token.trim() : "";
-    if (!realtimeToken) {
-      throw new VideoChatRequestError(
-        "UNAVAILABLE",
-        "ElevenLabs speech-to-text access could not be verified: realtime token response returned no token",
-      );
-    }
-  } catch (error) {
-    if (error instanceof VideoChatRequestError) {
-      logVideoChatEvent(
-        params.logger,
-        error.code === "INVALID_REQUEST" ? "warn" : "error",
-        "setup.verify.elevenlabs.failed",
-        {
-          voiceId: params.elevenLabsVoiceId,
-          code: error.code,
-          error: error.message,
-        },
-      );
-      throw error;
-    }
-    const message =
-      sttController.signal.aborted || (error instanceof Error && error.name === "AbortError")
-        ? `ElevenLabs speech-to-text access could not be verified: request timed out after ${VIDEO_CHAT_SETUP_VERIFY_TIMEOUT_MS}ms`
-        : `ElevenLabs speech-to-text access could not be verified: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-    const requestError = classifySetupVerificationError(message, error);
-    logVideoChatEvent(
-      params.logger,
-      requestError.code === "INVALID_REQUEST" ? "warn" : "error",
-      "setup.verify.elevenlabs.failed",
-      {
-        voiceId: params.elevenLabsVoiceId,
-        code: requestError.code,
-        error: requestError.message,
-      },
-    );
-    throw requestError;
-  } finally {
-    clearTimeout(sttTimeoutId);
-  }
-
-  const ttsVoiceId =
-    normalizeOptionalString(params.elevenLabsVoiceId) ?? ELEVENLABS_TEXT_TO_SPEECH_VERIFY_VOICE_ID;
-  const ttsModelId =
-    normalizeOptionalString(params.elevenLabsModelId) ?? ELEVENLABS_TEXT_TO_SPEECH_VERIFY_MODEL_ID;
-  const ttsController = new AbortController();
-  const ttsTimeoutId = setTimeout(() => {
-    ttsController.abort();
-  }, VIDEO_CHAT_SETUP_VERIFY_TIMEOUT_MS);
-  try {
-    const ttsUrl = new URL(
-      `${ELEVENLABS_TEXT_TO_SPEECH_API_BASE_URL}/${encodeURIComponent(ttsVoiceId)}/stream`,
-    );
-    ttsUrl.searchParams.set("model_id", ttsModelId);
-    ttsUrl.searchParams.set("output_format", ELEVENLABS_TEXT_TO_SPEECH_VERIFY_OUTPUT_FORMAT);
-    const ttsResponse = await fetch(ttsUrl, {
-      method: "POST",
-      headers: {
-        "xi-api-key": params.elevenLabsApiKey,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        text: ELEVENLABS_TEXT_TO_SPEECH_VERIFY_TEXT,
-        model_id: ttsModelId,
-      }),
-      signal: ttsController.signal,
-    });
-    if (!ttsResponse.ok) {
-      const ttsRawBody = await ttsResponse.text();
-      const prefix = params.elevenLabsVoiceId
-        ? "ElevenLabs text-to-speech voice could not be verified"
-        : "ElevenLabs text-to-speech access could not be verified";
-      throw classifySetupVerificationError(
-        `${prefix}: ${parseServiceErrorMessage(
-          ttsRawBody,
-          `ElevenLabs returned ${ttsResponse.status}`,
-        )}`,
-        { status: ttsResponse.status },
-      );
-    }
-    try {
-      await ttsResponse.body?.cancel();
-    } catch {}
-    logVideoChatEvent(params.logger, "info", "setup.verify.elevenlabs.succeeded", {
-      voiceId: ttsVoiceId,
-    });
-  } catch (error) {
-    if (error instanceof VideoChatRequestError) {
-      logVideoChatEvent(
-        params.logger,
-        error.code === "INVALID_REQUEST" ? "warn" : "error",
-        "setup.verify.elevenlabs.failed",
-        {
-          voiceId: params.elevenLabsVoiceId,
-          code: error.code,
-          error: error.message,
-        },
-      );
-      throw error;
-    }
-    const message =
-      ttsController.signal.aborted || (error instanceof Error && error.name === "AbortError")
-        ? `ElevenLabs text-to-speech access could not be verified: request timed out after ${VIDEO_CHAT_SETUP_VERIFY_TIMEOUT_MS}ms`
-        : `ElevenLabs text-to-speech access could not be verified: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-    const requestError = classifySetupVerificationError(message, error);
-    logVideoChatEvent(
-      params.logger,
-      requestError.code === "INVALID_REQUEST" ? "warn" : "error",
-      "setup.verify.elevenlabs.failed",
-      {
-        voiceId: params.elevenLabsVoiceId,
-        code: requestError.code,
-        error: requestError.message,
-      },
-    );
-    throw requestError;
-  } finally {
-    clearTimeout(ttsTimeoutId);
-  }
-}
-
 function parseVideoChatSetupInput(
   params: Record<string, unknown>,
   method: string,
@@ -1737,8 +1360,6 @@ function parseVideoChatSetupInput(
     livekitUrl: readInput("livekitUrl"),
     livekitApiKey: readInput("livekitApiKey"),
     livekitApiSecret: readInput("livekitApiSecret"),
-    elevenLabsApiKey: readInput("elevenLabsApiKey"),
-    elevenLabsVoiceId: readInput("elevenLabsVoiceId"),
   };
 
   return parsed;
@@ -1763,12 +1384,6 @@ function applyVideoChatSetupToConfig(
   const livekitApiSecret =
     normalizeOptionalSetupSecretString(setupInput.livekitApiSecret) ??
     effective.videoChat?.livekit?.apiSecret;
-  const elevenLabsApiKey =
-    normalizeOptionalSetupSecretString(setupInput.elevenLabsApiKey) ??
-    effective.messages?.tts?.elevenlabs?.apiKey;
-  const elevenLabsVoiceId =
-    normalizeOptionalString(setupInput.elevenLabsVoiceId) ??
-    effective.messages?.tts?.elevenlabs?.voiceId;
 
   const plugins = asObjectRecord(config.plugins);
   const entries = asObjectRecord(plugins.entries);
@@ -1778,9 +1393,6 @@ function applyVideoChatSetupToConfig(
   const videoChatRecord = asObjectRecord(effective.videoChat);
   const lemonSliceRecord = asObjectRecord(videoChatRecord.lemonSlice);
   const livekitRecord = asObjectRecord(videoChatRecord.livekit);
-  const messagesRecord = asObjectRecord(effective.messages);
-  const ttsRecord = asObjectRecord(messagesRecord.tts);
-  const elevenLabsRecord = asObjectRecord(ttsRecord.elevenlabs);
 
   return {
     ...config,
@@ -1818,17 +1430,6 @@ function applyVideoChatSetupToConfig(
                 apiSecret: livekitApiSecret,
               },
             },
-            messages: {
-              ...messagesRecord,
-              tts: {
-                ...ttsRecord,
-                elevenlabs: {
-                  ...elevenLabsRecord,
-                  apiKey: elevenLabsApiKey,
-                  voiceId: elevenLabsVoiceId,
-                },
-              },
-            },
           },
         },
       },
@@ -1844,9 +1445,6 @@ function buildVideoChatProviderConfigSnapshot(config: OpenClawConfig): string {
     livekitUrl: effective.videoChat?.livekit?.url ?? null,
     livekitApiKey: effective.videoChat?.livekit?.apiKey ?? null,
     livekitApiSecret: effective.videoChat?.livekit?.apiSecret ?? null,
-    elevenLabsApiKey: effective.messages?.tts?.elevenlabs?.apiKey ?? null,
-    elevenLabsVoiceId: effective.messages?.tts?.elevenlabs?.voiceId ?? null,
-    elevenLabsModelId: effective.messages?.tts?.elevenlabs?.modelId ?? null,
   });
 }
 
@@ -1887,14 +1485,6 @@ async function verifyVideoChatSetupConfig(params: {
         path: "videoChat.livekit.apiSecret",
       })
     : undefined;
-  const elevenLabsApiKey = hasConfiguredSecretInput(effective.messages?.tts?.elevenlabs?.apiKey)
-    ? normalizeResolvedSecretInputString({
-        value: effective.messages?.tts?.elevenlabs?.apiKey,
-        path: "messages.tts.elevenlabs.apiKey",
-      })
-    : undefined;
-  const elevenLabsVoiceId = normalizeOptionalString(effective.messages?.tts?.elevenlabs?.voiceId);
-  const elevenLabsModelId = normalizeOptionalString(effective.messages?.tts?.elevenlabs?.modelId);
   const speechRuntime = getVideoChatSpeechRuntime(params.runtime);
   const mediaUnderstandingRuntime = getVideoChatMediaUnderstandingRuntime(params.runtime);
   const hasVideoAvatarSpeechRuntime = hasVideoChatVideoAvatarSpeechRuntime(params.runtime);
@@ -1915,22 +1505,15 @@ async function verifyVideoChatSetupConfig(params: {
   }
   if (
     (hasVideoAvatarSpeechRuntime || speechRuntime) &&
-    (hasVideoAvatarTranscriptionRuntime || mediaUnderstandingRuntime)
+    (hasVideoAvatarTranscriptionRuntime || mediaUnderstandingRuntime) &&
+    isVideoChatTtsConfigured(params.config) &&
+    isVideoChatAudioTranscriptionConfigured(params.config)
   ) {
     checks.push(
       verifyCoreSpeechSetupConfig({
         logger: params.logger,
         runtime: params.runtime,
         config: params.config,
-      }),
-    );
-  } else if (elevenLabsApiKey) {
-    checks.push(
-      verifyElevenLabsSetupConfig({
-        logger: params.logger,
-        elevenLabsApiKey,
-        elevenLabsVoiceId,
-        elevenLabsModelId,
       }),
     );
   }
@@ -1970,124 +1553,25 @@ async function transcribeVideoChatAudio(params: {
     mimeType: mimeType ?? "application/octet-stream",
   });
 
-  if (
-    hasVideoChatVideoAvatarTranscriptionRuntime(params.runtime) ||
-    getVideoChatMediaUnderstandingRuntime(params.runtime)
-  ) {
-    const runtimeTranscription = await transcribeAudioBufferWithRuntime({
-      runtime: params.runtime,
-      cfg: params.cfg,
-      audioBuffer,
-      mimeType: mimeType ?? "audio/wav",
-    });
-    const transcript = normalizeOptionalString(runtimeTranscription.text) ?? "";
-    logVideoChatEvent(
-      params.logger,
-      "info",
-      transcript ? "transcription.succeeded" : "transcription.ignored",
-      {
-        bytes: audioBuffer.length,
-        mimeType: mimeType ?? "application/octet-stream",
-        transcriptChars: transcript.length,
-        provider: "runtime",
-      },
-    );
-    return { transcript };
-  }
-
-  const effectiveConfig = resolveEffectiveVideoChatConfig(params.cfg);
-  const elevenLabsApiKey = normalizeResolvedSecretInputString({
-    value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
-    path: "messages.tts.elevenlabs.apiKey",
+  const runtimeTranscription = await transcribeAudioBufferWithRuntime({
+    runtime: params.runtime,
+    cfg: params.cfg,
+    audioBuffer,
+    mimeType: mimeType ?? "audio/wav",
   });
-  if (!elevenLabsApiKey) {
-    throw new Error("Claw Cast transcription is unavailable: missing OpenClaw speech runtime or ElevenLabs API key");
-  }
-
-  const fileName = `input${extensionForAudioMimeType(mimeType)}`;
-
-  for (let attempt = 1; attempt <= ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS; attempt += 1) {
-    const form = new FormData();
-    form.append("model_id", ELEVENLABS_SPEECH_TO_TEXT_MODEL_ID);
-    form.append("tag_audio_events", "false");
-    form.append(
-      "file",
-      new Blob([new Uint8Array(audioBuffer)], { type: mimeType ?? "application/octet-stream" }),
-      fileName,
-    );
-
-    try {
-      const response = await fetch(ELEVENLABS_SPEECH_TO_TEXT_API_URL, {
-        method: "POST",
-        headers: {
-          "xi-api-key": elevenLabsApiKey,
-        },
-        body: form,
-      });
-
-      const rawBody = await response.text();
-      if (!response.ok) {
-        const message = parseElevenLabsErrorMessage(rawBody, response.status);
-        const retryable = response.status === 429 || response.status >= 500;
-        params.logger.warn(
-          `Claw Cast transcription attempt ${attempt}/${ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS} failed with status=${response.status}: ${message}`,
-        );
-        if (retryable && attempt < ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS) {
-          await sleep(250 * attempt);
-          continue;
-        }
-        throw new Error(message);
-      }
-
-      let payload: Record<string, unknown> | null = null;
-      if (rawBody.trim()) {
-        try {
-          payload = JSON.parse(rawBody) as Record<string, unknown>;
-        } catch {
-          payload = null;
-        }
-      }
-
-      const transcriptResult = payload ? parseElevenLabsTranscript(payload) : null;
-      if (!transcriptResult || !transcriptResult.transcript) {
-        logVideoChatEvent(params.logger, "info", "transcription.ignored", {
-          bytes: audioBuffer.length,
-          mimeType: mimeType ?? "application/octet-stream",
-          attempt,
-          reason: transcriptResult?.filteredReason ?? "invalid-payload",
-          speechWordCount: transcriptResult?.speechWordCount ?? 0,
-          avgWordLogprob: transcriptResult?.avgWordLogprob ?? null,
-        });
-        return { transcript: "" };
-      }
-      logVideoChatEvent(params.logger, "info", "transcription.succeeded", {
-        bytes: audioBuffer.length,
-        mimeType: mimeType ?? "application/octet-stream",
-        transcriptChars: transcriptResult.transcript.length,
-        speechWordCount: transcriptResult.speechWordCount,
-        avgWordLogprob: transcriptResult.avgWordLogprob,
-        attempt,
-      });
-      return { transcript: transcriptResult.transcript };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const networkError =
-        message === "fetch failed" ||
-        message.includes("ECONNRESET") ||
-        message.includes("ETIMEDOUT") ||
-        message.includes("ENOTFOUND");
-      if (networkError && attempt < ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS) {
-        params.logger.warn(
-          `Claw Cast transcription attempt ${attempt}/${ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS} errored: ${message}`,
-        );
-        await sleep(250 * attempt);
-        continue;
-      }
-      throw error;
-    }
-  }
-
-  throw new Error("Claw Cast transcription failed after retries");
+  const transcript = normalizeOptionalString(runtimeTranscription.text) ?? "";
+  logVideoChatEvent(
+    params.logger,
+    "info",
+    transcript ? "transcription.succeeded" : "transcription.ignored",
+    {
+      bytes: audioBuffer.length,
+      mimeType: mimeType ?? "application/octet-stream",
+      transcriptChars: transcript.length,
+      provider: "runtime",
+    },
+  );
+  return { transcript };
 }
 
 async function synthesizeVideoChatAudio(params: {
@@ -2118,74 +1602,6 @@ async function synthesizeVideoChatAudio(params: {
     audioBase64: result.audioBuffer.toString("base64"),
     sampleRate: result.sampleRate,
     provider: result.provider,
-  };
-}
-
-async function createRealtimeVideoChatTranscriptionToken(params: {
-  logger: OpenClawPluginApi["logger"];
-  cfg: OpenClawConfig;
-}): Promise<{ token: string; modelId: string }> {
-  const effectiveConfig = resolveEffectiveVideoChatConfig(params.cfg);
-  const elevenLabsApiKey = normalizeResolvedSecretInputString({
-    value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
-    path: "messages.tts.elevenlabs.apiKey",
-  });
-  if (!elevenLabsApiKey) {
-    throw new Error("Claw Cast realtime transcription is unavailable: missing ElevenLabs API key");
-  }
-
-  logVideoChatEvent(params.logger, "info", "transcription.realtime-token.requested");
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_URL, {
-      method: "POST",
-      headers: {
-        "xi-api-key": elevenLabsApiKey,
-      },
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if (
-      controller.signal.aborted ||
-      (error instanceof Error && error.name === "AbortError")
-    ) {
-      throw new Error(
-        `Claw Cast realtime transcription token request timed out after ${ELEVENLABS_REALTIME_SPEECH_TO_TEXT_TOKEN_TIMEOUT_MS}ms`,
-      );
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-  const rawBody = await response.text();
-  if (!response.ok) {
-    throw new Error(parseElevenLabsErrorMessage(rawBody, response.status));
-  }
-
-  let payload: Record<string, unknown> | null = null;
-  if (rawBody.trim()) {
-    try {
-      payload = JSON.parse(rawBody) as Record<string, unknown>;
-    } catch {
-      payload = null;
-    }
-  }
-
-  const token = typeof payload?.token === "string" ? payload.token.trim() : "";
-  if (!token) {
-    throw new Error("Claw Cast realtime transcription token request returned no token");
-  }
-
-  logVideoChatEvent(params.logger, "info", "transcription.realtime-token.succeeded", {
-    modelId: ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID,
-  });
-  return {
-    token,
-    modelId: ELEVENLABS_REALTIME_SPEECH_TO_TEXT_MODEL_ID,
   };
 }
 
@@ -2228,14 +1644,6 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
       readCliOption(options, "livekitApiKey") ?? process.env.VIDEO_CHAT_LIVEKIT_API_KEY,
     livekitApiSecret:
       readCliOption(options, "livekitApiSecret") ?? process.env.VIDEO_CHAT_LIVEKIT_API_SECRET,
-    elevenLabsApiKey:
-      readCliOption(options, "elevenlabsApiKey") ??
-      readCliOption(options, "elevenLabsApiKey") ??
-      process.env.VIDEO_CHAT_ELEVENLABS_API_KEY,
-    elevenLabsVoiceId:
-      readCliOption(options, "elevenlabsVoiceId") ??
-      readCliOption(options, "elevenLabsVoiceId") ??
-      process.env.VIDEO_CHAT_ELEVENLABS_VOICE_ID,
   };
 
   if (
@@ -2255,14 +1663,6 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
         }),
         livekitApiKey: await promptTerminalField({ rl, label: "LiveKit API key" }),
         livekitApiSecret: await promptTerminalField({ rl, label: "LiveKit API secret" }),
-        elevenLabsApiKey: await promptTerminalField({ rl, label: "ElevenLabs API key" }),
-        elevenLabsVoiceId: await promptTerminalField({
-          rl,
-          label: "ElevenLabs voice ID",
-          defaultValue: normalizeOptionalString(
-            effectiveCurrentConfig.messages?.tts?.elevenlabs?.voiceId,
-          ),
-        }),
       };
     } finally {
       rl.close();
@@ -2301,8 +1701,6 @@ function registerVideoChatSetupCli(api: OpenClawPluginApi): void {
         .option("--livekit-url <url>", "LiveKit URL")
         .option("--livekit-api-key <key>", "LiveKit API key")
         .option("--livekit-api-secret <secret>", "LiveKit API secret")
-        .option("--elevenlabs-api-key <key>", "ElevenLabs API key")
-        .option("--elevenlabs-voice-id <id>", "ElevenLabs voice ID")
         .action(async (options: unknown) => {
           await runVideoChatSetupCli(api, options);
         });
@@ -3391,23 +2789,6 @@ function registerVideoChatHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/video-chat/api/transcribe/token" && method === "POST") {
-          const cfg = api.runtime.config.loadConfig();
-          const result = await createRealtimeVideoChatTranscriptionToken({
-            logger: api.logger,
-            cfg,
-          });
-          setNoStoreHeaders(res);
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              ...result,
-            }),
-          );
-          return true;
-        }
-
         if (normalizedPath === "/plugins/video-chat/api/transcribe" && method === "POST") {
           const params = await readRequestJson(req);
           if (typeof params.data !== "string") {
@@ -3434,6 +2815,37 @@ function registerVideoChatHttpRoutes(
             base64Chars: base64Length,
             transcriptChars: result.transcript.length,
           });
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              ...result,
+            }),
+          );
+          return true;
+        }
+
+        if (normalizedPath === "/plugins/video-chat/api/synthesize" && method === "POST") {
+          const params = await readRequestJson(req);
+          if (typeof params.text !== "string") {
+            throw new Error("invalid videoChat.audio.synthesize params");
+          }
+          const cfg = api.runtime.config.loadConfig();
+          logVideoChatEvent(api.logger, "info", "http.synthesize.requested", {
+            textChars: params.text.length,
+          });
+          const result = await synthesizeVideoChatAudio({
+            runtime: api.runtime,
+            logger: api.logger,
+            cfg,
+            text: params.text,
+          });
+          logVideoChatEvent(api.logger, "info", "http.synthesize.completed", {
+            textChars: params.text.length,
+            sampleRate: result.sampleRate,
+            provider: result.provider ?? "runtime",
+          });
+          setNoStoreHeaders(res);
           sendHttpResponse(
             res,
             asJsonResponse({
@@ -3909,21 +3321,11 @@ function resolveVideoChatAgentCredentials(config: OpenClawConfig): SidecarCreden
     return null;
   }
 
-  const elevenLabsApiKey = hasConfiguredSecretInput(effective.messages?.tts?.elevenlabs?.apiKey)
-    ? normalizeResolvedSecretInputString({
-        value: effective.messages?.tts?.elevenlabs?.apiKey,
-        path: "messages.tts.elevenlabs.apiKey",
-      })
-    : undefined;
-
   return {
     lemonSliceApiKey,
     livekitUrl,
     livekitApiKey,
     livekitApiSecret,
-    ...(elevenLabsApiKey ? { elevenLabsApiKey } : {}),
-    elevenLabsVoiceId: normalizeOptionalString(effective.messages?.tts?.elevenlabs?.voiceId),
-    elevenLabsModelId: normalizeOptionalString(effective.messages?.tts?.elevenlabs?.modelId),
   };
 }
 
@@ -4394,15 +3796,6 @@ function buildWorkerEnv(params: {
   }
   if (params.gateway.auth.mode === "password" && params.gateway.auth.password) {
     env.OPENCLAW_VIDEO_CHAT_GATEWAY_PASSWORD = params.gateway.auth.password;
-  }
-  if (params.credentials.elevenLabsApiKey) {
-    env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY = params.credentials.elevenLabsApiKey;
-  }
-  if (params.credentials.elevenLabsVoiceId) {
-    env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_VOICE_ID = params.credentials.elevenLabsVoiceId;
-  }
-  if (params.credentials.elevenLabsModelId) {
-    env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_MODEL_ID = params.credentials.elevenLabsModelId;
   }
   return env;
 }
@@ -5849,41 +5242,6 @@ const videoChatPlugin = {
             respond,
             invalidMessages.has(message) ? "INVALID_REQUEST" : "UNAVAILABLE",
             message,
-          );
-        }
-      },
-    );
-
-    api.registerGatewayMethod(
-      VIDEO_CHAT_GATEWAY_SYNTHESIZE_METHOD,
-      async ({ params, respond }: GatewayRequestHandlerOptions) => {
-        try {
-          if (!assertMethodParams(params, VIDEO_CHAT_GATEWAY_SYNTHESIZE_METHOD, respond)) {
-            return;
-          }
-          if (typeof params.text !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid videoChat.audio.synthesize params",
-            );
-            return;
-          }
-          const cfg = api.runtime.config.loadConfig();
-          const result = await synthesizeVideoChatAudio({
-            runtime: api.runtime,
-            logger: api.logger,
-            cfg,
-            text: params.text,
-          });
-          respond(true, result);
-        } catch (error) {
-          respondGatewayError(
-            respond,
-            error instanceof Error && error.message === "speech text is required"
-              ? "INVALID_REQUEST"
-              : "UNAVAILABLE",
-            error instanceof Error ? error.message : "Claw Cast speech synthesis failed",
           );
         }
       },

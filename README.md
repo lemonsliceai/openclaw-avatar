@@ -62,9 +62,6 @@ You will also need accounts with the following service providers:
 - **OpenClaw speech/media providers** — Claw Cast now prefers whatever TTS and audio-transcription capabilities you have already configured in OpenClaw for your agents.
   Configure those first in OpenClaw so avatar reply speech and browser voice transcription can use the shared runtime contracts.
 
-- **Optional legacy fallback: ElevenLabs** — kept only as a compatibility path when the host runtime does not expose the newer speech/media helpers yet.
-  Sign up at https://elevenlabs.io if you need that fallback path.
-
 - **LiveKit** — provides the real-time video/audio room infrastructure.
   Sign up at https://livekit.io
 
@@ -87,7 +84,7 @@ openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
 openclaw plugins enable video-chat
 ```
 
-3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. ElevenLabs is optional and only used as a legacy fallback:
+3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Claw Cast:
 
 ```bash
 openclaw video-chat-setup
@@ -255,7 +252,7 @@ WARNING: Plugin "video-chat" contains dangerous code patterns: Shell command exe
 That warning is expected for this plugin. It is flagging two real implementation details:
 
 - `child_process` in `video-chat/index.ts` is used to start a local sidecar worker for the `video-chat-agent` service. That worker runs the long-lived LiveKit agent runtime in a separate process so it can be started, stopped, restarted, and isolated from the main gateway process.
-- `process.env` plus network activity in `video-chat/index.ts` is used to read setup defaults and plugin-specific runtime variables, then connect to the local OpenClaw gateway and the configured LiveKit, ElevenLabs, and LemonSlice services that power the plugin.
+- `process.env` plus network activity in `video-chat/index.ts` is used to read setup defaults and plugin-specific runtime variables, then connect to the local OpenClaw gateway and the configured LiveKit, LemonSlice, and OpenClaw speech/media runtime services that power the plugin.
 
 What this plugin is not doing:
 

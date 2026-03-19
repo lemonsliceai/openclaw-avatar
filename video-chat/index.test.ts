@@ -113,8 +113,14 @@ const baseConfig = {
   },
   messages: {
     tts: {
-      elevenlabs: {
-        apiKey: "eleven-key",
+      provider: "openai",
+    },
+  },
+  tools: {
+    media: {
+      audio: {
+        enabled: true,
+        models: [{ provider: "openai", model: "gpt-4o-mini-transcribe" }],
       },
     },
   },
@@ -141,24 +147,6 @@ function parseDispatchMetadata(callIndex: number): Record<string, unknown> {
     | undefined;
   expect(typeof options?.metadata).toBe("string");
   return JSON.parse(options?.metadata ?? "{}") as Record<string, unknown>;
-}
-
-function resolveFetchInvocation(
-  input: string | URL | Request,
-  init?: { method?: string },
-): { url: string; method: string } {
-  const url =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url;
-  const method =
-    (
-      init?.method ??
-      (input instanceof Request ? input.method : "GET")
-    ).toUpperCase();
-  return { url, method };
 }
 
 function setup(
@@ -353,6 +341,10 @@ describe("video-chat plugin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", mockFetch);
+    mockFetch.mockReset();
+    mockFetch.mockImplementation(async () => {
+      throw new Error("Unhandled fetch request in test");
+    });
     delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
     mockSpawn.mockImplementation(() => createSpawnedChild(4999));
     mockStopMatchingProcesses.mockResolvedValue([]);
@@ -372,34 +364,6 @@ describe("video-chat plugin", () => {
     );
     mockAgentDispatchGetDispatch.mockResolvedValue(undefined);
     mockAgentDispatchDeleteDispatch.mockResolvedValue(undefined);
-    mockFetch.mockImplementation(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      if (url === "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe" && method === "POST") {
-        return new Response(JSON.stringify({ token: "rtm_token_123" }), {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        });
-      }
-      if (url.startsWith("https://api.elevenlabs.io/v1/text-to-speech/") && method === "POST") {
-        return new Response("audio-bytes", {
-          status: 200,
-          headers: {
-            "content-type": "audio/mpeg",
-          },
-        });
-      }
-      if (url === "https://api.elevenlabs.io/v1/speech-to-text" && method === "POST") {
-        return new Response(JSON.stringify({ text: "hello from microphone" }), {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        });
-      }
-      throw new Error(`Unhandled fetch request in test: ${method} ${url}`);
-    });
     mockStat.mockImplementation(async (candidate: string) => {
       if (
         candidate.endsWith("/video-chat/video-chat-agent-runner.js") ||
@@ -739,12 +703,13 @@ describe("video-chat plugin", () => {
   it("reads plugin-owned config from the plugin entry overlay", async () => {
     const { methods } = setup({
       session: { mainKey: "main" },
+      messages: baseConfig.messages,
+      tools: baseConfig.tools,
       plugins: {
         entries: {
           "video-chat": {
             config: {
               videoChat: baseConfig.videoChat,
-              messages: baseConfig.messages,
             },
           },
         },
@@ -1844,7 +1809,7 @@ describe("video-chat plugin", () => {
   });
 
   it("returns setup state for plugin-owned setup surfaces", async () => {
-    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
+    const { methods } = setup();
     const respond = await invoke(methods, "videoChat.setup.get", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -1861,8 +1826,6 @@ describe("video-chat plugin", () => {
       livekitUrl: "wss://new.livekit.cloud",
       livekitApiKey: "",
       livekitApiSecret: "",
-      elevenLabsApiKey: "",
-      elevenLabsVoiceId: "voice-1234",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -1878,7 +1841,6 @@ describe("video-chat plugin", () => {
                     lemonSlice?: { apiKey?: string; imageUrl?: string };
                     livekit?: { url?: string; apiKey?: string; apiSecret?: string };
                   };
-                  messages?: { tts?: { elevenlabs?: { apiKey?: string; voiceId?: string } } };
                 };
               };
             };
@@ -1891,8 +1853,6 @@ describe("video-chat plugin", () => {
     expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
-    expect(pluginConfig?.messages?.tts?.elevenlabs?.apiKey).toBe("eleven-key");
-    expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
   });
 
   it("saves gateway token into the root gateway auth config", async () => {
@@ -1960,8 +1920,6 @@ describe("video-chat plugin", () => {
       livekitUrl: "wss://new.livekit.cloud",
       livekitApiKey: "__OPENCLAW_REDACTED__",
       livekitApiSecret: "_REDACTED_",
-      elevenLabsApiKey: "__OPENCLAW_REDACTED__",
-      elevenLabsVoiceId: "voice-1234",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -1977,7 +1935,6 @@ describe("video-chat plugin", () => {
                     lemonSlice?: { apiKey?: string; imageUrl?: string };
                     livekit?: { url?: string; apiKey?: string; apiSecret?: string };
                   };
-                  messages?: { tts?: { elevenlabs?: { apiKey?: string; voiceId?: string } } };
                 };
               };
             };
@@ -1990,8 +1947,6 @@ describe("video-chat plugin", () => {
     expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
-    expect(pluginConfig?.messages?.tts?.elevenlabs?.apiKey).toBe("eleven-key");
-    expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
   });
 
   it("rejects invalid setup save params", async () => {
@@ -2024,125 +1979,6 @@ describe("video-chat plugin", () => {
     expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
   });
 
-  it("rejects setup save when the ElevenLabs API key cannot be verified", async () => {
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ detail: "Invalid API key" }), {
-        status: 401,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
-
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      elevenLabsApiKey: "bad-eleven-key",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(false);
-    expect(call?.[2]).toEqual({
-      code: "INVALID_REQUEST",
-      message: "ElevenLabs speech-to-text access could not be verified: Invalid API key",
-    });
-    expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
-  });
-
-  it("rejects setup save when the ElevenLabs voice ID does not exist", async () => {
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ token: "rtm_token_123" }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toContain("/v1/text-to-speech/missing-voice/stream?");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ detail: "voice not found" }), {
-        status: 404,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
-
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      elevenLabsVoiceId: "missing-voice",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(false);
-    expect(call?.[2]).toEqual({
-      code: "INVALID_REQUEST",
-      message: "ElevenLabs text-to-speech voice could not be verified: voice not found",
-    });
-    expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-  });
-
-  it("treats ElevenLabs transport failures as unavailable during setup save", async () => {
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
-      expect(method).toBe("POST");
-      throw Object.assign(new Error("fetch failed"), { code: "ENOTFOUND" });
-    });
-    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
-
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      elevenLabsApiKey: "network-flaky-key",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(false);
-    expect(call?.[2]).toEqual({
-      code: "UNAVAILABLE",
-      message: "ElevenLabs speech-to-text access could not be verified: fetch failed",
-    });
-    expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
-  });
-
-  it("uses the configured ElevenLabs model ID when verifying setup saves", async () => {
-    const { methods, runtime } = setup(
-      {
-        ...baseConfig,
-        messages: {
-          tts: {
-            elevenlabs: {
-              apiKey: "eleven-key",
-              modelId: "custom-eleven-model",
-            },
-          },
-        },
-      },
-      { disableVideoAvatarRuntime: true },
-    );
-
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      elevenLabsVoiceId: "voice-1234",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect(runtime.config.writeConfigFile).toHaveBeenCalledTimes(1);
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const ttsCall = mockFetch.mock.calls[1];
-    expect(String(ttsCall?.[0])).toContain("model_id=custom-eleven-model");
-    expect(ttsCall?.[1]).toMatchObject({ method: "POST" });
-    expect(JSON.parse(String(ttsCall?.[1]?.body))).toMatchObject({
-      model_id: "custom-eleven-model",
-    });
-  });
 
   it("rejects session create when the avatar image URL is not direct", async () => {
     const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
@@ -2242,174 +2078,6 @@ describe("video-chat plugin", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("strips subtitle timing cues from ElevenLabs transcripts", async () => {
-    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
-    mockFetch.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          text: "00012 00:01:07,348 -- 00:01:10,23\nhello from microphone",
-        }),
-        {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        },
-      ),
-    );
-
-    const respond = await invoke(methods, "videoChat.audio.transcribe", {
-      mimeType: "audio/webm;codecs=opus",
-      data: Buffer.from("audio-bytes").toString("base64"),
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
-      "hello from microphone",
-    );
-  });
-
-  it("drops low-confidence hallucinated ElevenLabs transcripts", async () => {
-    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
-    mockFetch.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          text:
-            "So I'm gonna go ahead and get this recording started now so you can hear me talking about the Black Panther Party here at home with us tonight",
-          words: [
-            { type: "word", text: "So", logprob: -1.24 },
-            { type: "word", text: "I'm", logprob: -1.18 },
-            { type: "word", text: "gonna", logprob: -1.31 },
-            { type: "word", text: "go", logprob: -1.09 },
-            { type: "word", text: "ahead", logprob: -1.27 },
-            { type: "word", text: "and", logprob: -1.12 },
-            { type: "word", text: "get", logprob: -1.21 },
-            { type: "word", text: "this", logprob: -1.16 },
-          ],
-        }),
-        {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        },
-      ),
-    );
-
-    const respond = await invoke(methods, "videoChat.audio.transcribe", {
-      mimeType: "audio/webm;codecs=opus",
-      data: Buffer.from("audio-bytes").toString("base64"),
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe("");
-  });
-
-  it("mints a realtime transcription token for the browser websocket", async () => {
-    const { httpRoutes } = setup();
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ token: "rtm_token_123" }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-        },
-      }),
-    );
-
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/transcribe/token",
-      method: "POST",
-    });
-
-    expect(handled).toBe(true);
-    expect(res.statusCode).toBe(200);
-    expect(res.header("content-type")).toBe("application/json; charset=utf-8");
-    expect(res.header("cache-control")).toBe("no-store");
-    expect(JSON.parse(res.body)).toEqual({
-      success: true,
-      token: "rtm_token_123",
-      modelId: "scribe_v2_realtime",
-    });
-    expect(mockFetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
-      expect.objectContaining({
-        method: "POST",
-        headers: {
-          "xi-api-key": "eleven-key",
-        },
-      }),
-    );
-  });
-
-  it("fails realtime transcription token requests with a timeout error", async () => {
-    vi.useFakeTimers();
-    try {
-      const { httpRoutes } = setup();
-      mockFetch.mockImplementationOnce(
-        async (_url: string, options?: { signal?: AbortSignal }) =>
-          await new Promise<Response>((_resolve, reject) => {
-            options?.signal?.addEventListener("abort", () => {
-              reject(new DOMException("The operation was aborted.", "AbortError"));
-            });
-          }),
-      );
-
-      const pendingResponse = invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-        url: "/plugins/video-chat/api/transcribe/token",
-        method: "POST",
-      });
-
-      await vi.advanceTimersByTimeAsync(4_000);
-
-      const { handled, res } = await pendingResponse;
-      expect(handled).toBe(true);
-      expect(res.statusCode).toBe(503);
-      expect(JSON.parse(res.body)).toEqual({
-        success: false,
-        error: {
-          code: "UNAVAILABLE",
-          message: "Claw Cast realtime transcription token request timed out after 4000ms",
-        },
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retries transient ElevenLabs transcription failures", async () => {
-    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
-    mockFetch
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ detail: "temporary upstream issue" }), {
-          status: 503,
-          headers: {
-            "content-type": "application/json",
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ text: "hello after retry" }), {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        }),
-      );
-
-    const respond = await invoke(methods, "videoChat.audio.transcribe", {
-      mimeType: "audio/webm;codecs=opus",
-      data: Buffer.from("audio-bytes").toString("base64"),
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe("hello after retry");
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-  });
-
   it("serves the shipped browser shell and setup API routes", async () => {
     const { httpRoutes } = setup();
     const packageJson = JSON.parse(
@@ -2478,57 +2146,8 @@ describe("video-chat plugin", () => {
           apiKey: "lk-key",
           apiSecret: "lk-secret",
         },
-        tts: {
-          elevenLabsApiKey: "eleven-key",
-        },
       },
     });
-  });
-
-  it("rejects HTTP setup saves when verification fails", async () => {
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ token: "rtm_token_123" }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toContain("/v1/text-to-speech/missing-voice/stream?");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ detail: "voice not found" }), {
-        status: 404,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    const { httpRoutes, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
-
-    const response = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/setup",
-      method: "POST",
-      body: {
-        elevenLabsVoiceId: "missing-voice",
-      },
-    });
-
-    expect(response.handled).toBe(true);
-    expect(response.res.statusCode).toBe(400);
-    expect(JSON.parse(response.res.body)).toEqual({
-      success: false,
-      error: {
-        code: "INVALID_REQUEST",
-        message: "ElevenLabs text-to-speech voice could not be verified: voice not found",
-      },
-    });
-    expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
-    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it("bootstraps the configured gateway token for the browser settings page", async () => {

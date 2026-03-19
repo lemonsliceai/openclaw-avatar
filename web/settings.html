@@ -185,9 +185,6 @@
               <button class="config-nav__item" type="button" data-section-filter="livekit">
                 <span class="config-nav__label">LiveKit</span>
               </button>
-              <button class="config-nav__item" type="button" data-section-filter="elevenlabs">
-                <span class="config-nav__label">11Labs</span>
-              </button>
               <button class="config-nav__item" type="button" data-section-filter="output">
                 <span class="config-nav__label">Output</span>
               </button>
@@ -418,62 +415,6 @@
                   </div>
                 </section>
 
-                <section class="config-section-card stack" id="elevenlabs-section" data-config-section="elevenlabs">
-                  <header class="config-section-card__header video-chat-head">
-                    <h2 class="card-title">11Labs</h2>
-                    <p class="card-sub">Configure ElevenLabs voice settings for avatar speech.</p>
-                  </header>
-                  <div class="config-section-card__content">
-                    <p id="elevenlabs-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
-                    <div class="provider-group" id="elevenlabs">
-                      <h3>11Labs</h3>
-                      <div class="video-chat-grid cols-2">
-                        <label class="field secret-field">
-                          <span>API key</span>
-                          <div class="secret-row">
-                            <input
-                              type="password"
-                              name="elevenLabsApiKey"
-                              autocomplete="off"
-                              data-sensitive-field="elevenLabsApiKey"
-                            />
-                            <button
-                              class="btn btn--sm secret-toggle"
-                              type="button"
-                              data-toggle-secret-visibility="elevenLabsApiKey"
-                              data-secret-label="ElevenLabs API key"
-                              aria-label="Show ElevenLabs API key"
-                              aria-pressed="false"
-                              title="Show ElevenLabs API key"
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"></path>
-                                <circle cx="12" cy="12" r="3"></circle>
-                              </svg>
-                            </button>
-                            <button
-                              class="btn btn--sm secret-copy"
-                              type="button"
-                              data-copy-secret="elevenLabsApiKey"
-                              data-secret-label="ElevenLabs API key"
-                              aria-label="Copy ElevenLabs API key"
-                              title="Copy ElevenLabs API key"
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
-                              </svg>
-                            </button>
-                          </div>
-                        </label>
-                        <label class="field">
-                          <span>Voice ID</span>
-                          <input type="text" name="elevenLabsVoiceId" autocomplete="off" />
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                </section>
               </form>
 
               <form id="setup-raw-form" class="video-chat-form is-mode-hidden" novalidate>
@@ -490,8 +431,7 @@
                     <p id="setup-raw-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                     <p class="setup-raw-help">
                       Supported keys: lemonSliceApiKey, livekitUrl, livekitApiKey,
-                      livekitApiSecret, elevenLabsApiKey, elevenLabsVoiceId. Use <code>_REDACTED_</code> for secret keys to keep
-                      existing values.
+                      livekitApiSecret. Use <code>_REDACTED_</code> for secret keys to keep existing values.
                     </p>
                   </div>
                 </section>

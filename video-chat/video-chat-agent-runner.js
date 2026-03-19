@@ -61,14 +61,6 @@ async function importFromCandidates(baseRunnerPaths, specifier) {
   return import(pathToFileURL(resolveSpecifierFromCandidates(baseRunnerPaths, specifier)).href);
 }
 
-async function importOptionalFromCandidates(baseRunnerPaths, specifier) {
-  try {
-    return await importFromCandidates(baseRunnerPaths, specifier);
-  } catch {
-    return null;
-  }
-}
-
 async function loadDeps() {
   const runnerPath = process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim();
   const baseRunnerPath = resolveDepsBaseRunnerPath();
@@ -79,9 +71,8 @@ async function loadDeps() {
       ),
     ),
   );
-  const [agentsModule, elevenlabsModule, lemonsliceModule, wsModule] = await Promise.all([
+  const [agentsModule, lemonsliceModule, wsModule] = await Promise.all([
     importFromCandidates(resolutionPaths, "@livekit/agents"),
-    importOptionalFromCandidates(resolutionPaths, "@livekit/agents-plugin-elevenlabs"),
     importFromCandidates(resolutionPaths, "@livekit/agents-plugin-lemonslice"),
     importFromCandidates(resolutionPaths, "ws"),
   ]);
@@ -93,7 +84,6 @@ async function loadDeps() {
 
   return {
     agents: agentsModule,
-    elevenlabs: elevenlabsModule,
     lemonslice: lemonsliceModule,
     WebSocket,
   };
@@ -627,8 +617,74 @@ function normalizeGatewaySpeechPayload(payload) {
   };
 }
 
+function buildGatewayHttpUrl(pathname) {
+  const gatewayUrl = new URL(requireEnv("OPENCLAW_VIDEO_CHAT_GATEWAY_URL"));
+  gatewayUrl.protocol = gatewayUrl.protocol === "wss:" ? "https:" : "http:";
+  gatewayUrl.pathname = pathname;
+  gatewayUrl.search = "";
+  gatewayUrl.hash = "";
+  return gatewayUrl.toString();
+}
+
+function buildGatewayHttpAuthHeaders() {
+  const token = process.env.OPENCLAW_VIDEO_CHAT_GATEWAY_TOKEN?.trim();
+  const password = process.env.OPENCLAW_VIDEO_CHAT_GATEWAY_PASSWORD?.trim();
+  const sharedSecret = token || password;
+  return sharedSecret ? { authorization: `Bearer ${sharedSecret}` } : {};
+}
+
+function parseGatewayHttpErrorMessage(status, rawBody) {
+  const trimmed = typeof rawBody === "string" ? rawBody.trim() : "";
+  if (!trimmed) {
+    return `gateway speech request failed with status ${status}`;
+  }
+  try {
+    const payload = JSON.parse(trimmed);
+    if (typeof payload?.error?.message === "string" && payload.error.message.trim()) {
+      return payload.error.message.trim();
+    }
+    if (typeof payload?.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+  } catch {}
+  return `gateway speech request failed with status ${status}: ${trimmed}`;
+}
+
+async function requestGatewaySpeechSynthesis(text) {
+  const response = await fetch(buildGatewayHttpUrl("/plugins/video-chat/api/synthesize"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...buildGatewayHttpAuthHeaders(),
+    },
+    body: JSON.stringify({ text }),
+  });
+  const rawBody = await response.text();
+  if (!response.ok) {
+    throw new Error(parseGatewayHttpErrorMessage(response.status, rawBody));
+  }
+  let payload = null;
+  if (rawBody.trim()) {
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      payload = null;
+    }
+  }
+  const body =
+    payload && payload.success === true && payload.audioBase64
+      ? payload
+      : payload && payload.success === true && payload
+        ? payload
+        : null;
+  if (!body) {
+    throw new Error("gateway speech response returned no payload");
+  }
+  return normalizeGatewaySpeechPayload(body);
+}
+
 function createGatewaySpeechTts(params) {
-  const { deps, getGatewayClient, fallbackTts } = params;
+  const { deps } = params;
 
   class GatewaySpeechChunkedStream extends deps.agents.tts.ChunkedStream {
     label = "openclaw.GatewaySpeechChunkedStream";
@@ -638,52 +694,29 @@ function createGatewaySpeechTts(params) {
     }
 
     async run() {
-      try {
-        const gatewayClient = getGatewayClient();
-        if (!gatewayClient) {
-          throw new Error("gateway speech runtime unavailable");
+      const payload = await requestGatewaySpeechSynthesis(this.inputText);
+      const frameStream = new deps.agents.AudioByteStream(payload.sampleRate, 1);
+      const arrayBuffer = payload.audioBuffer.buffer.slice(
+        payload.audioBuffer.byteOffset,
+        payload.audioBuffer.byteOffset + payload.audioBuffer.byteLength,
+      );
+      const frames = [...frameStream.write(arrayBuffer), ...frameStream.flush()];
+      if (frames.length === 0) {
+        throw new Error("gateway speech response returned no audio frames");
+      }
+      const requestId = randomUUID();
+      const segmentId = randomUUID();
+      for (let index = 0; index < frames.length; index += 1) {
+        if (this.abortSignal.aborted) {
+          return;
         }
-        const payload = normalizeGatewaySpeechPayload(
-          await gatewayClient.request("videoChat.audio.synthesize", {
-            text: this.inputText,
-          }),
-        );
-        const frameStream = new deps.agents.AudioByteStream(payload.sampleRate, 1);
-        const arrayBuffer = payload.audioBuffer.buffer.slice(
-          payload.audioBuffer.byteOffset,
-          payload.audioBuffer.byteOffset + payload.audioBuffer.byteLength,
-        );
-        const frames = [...frameStream.write(arrayBuffer), ...frameStream.flush()];
-        if (frames.length === 0) {
-          throw new Error("gateway speech response returned no audio frames");
-        }
-        const requestId = randomUUID();
-        const segmentId = randomUUID();
-        for (let index = 0; index < frames.length; index += 1) {
-          if (this.abortSignal.aborted) {
-            return;
-          }
-          this.queue.put({
-            requestId,
-            segmentId,
-            frame: frames[index],
-            final: index === frames.length - 1,
-            ...(index === 0 ? { deltaText: this.inputText } : {}),
-          });
-        }
-      } catch (error) {
-        if (!fallbackTts) {
-          throw error;
-        }
-        console.warn(
-          `[video-chat-agent] gateway speech runtime failed, falling back to ElevenLabs: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        for await (const audio of fallbackTts.synthesize(this.inputText, undefined, this.abortSignal)) {
-          if (this.abortSignal.aborted) {
-            return;
-          }
-          this.queue.put(audio);
-        }
+        this.queue.put({
+          requestId,
+          segmentId,
+          frame: frames[index],
+          final: index === frames.length - 1,
+          ...(index === 0 ? { deltaText: this.inputText } : {}),
+        });
       }
     }
   }
@@ -708,26 +741,6 @@ function createGatewaySpeechTts(params) {
   }
 
   return new GatewaySpeechTTS();
-}
-
-function createLegacyElevenLabsTts(deps) {
-  if (!deps.elevenlabs) {
-    return null;
-  }
-  const elevenLabsApiKey = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY?.trim();
-  if (!elevenLabsApiKey) {
-    return null;
-  }
-  const elevenLabsVoiceId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_VOICE_ID?.trim();
-  const elevenLabsModelId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_MODEL_ID?.trim();
-  return new deps.elevenlabs.TTS({
-    apiKey: elevenLabsApiKey,
-    ...(elevenLabsVoiceId ? { voiceId: elevenLabsVoiceId } : {}),
-    ...(elevenLabsModelId ? { modelId: elevenLabsModelId } : {}),
-    autoMode: false,
-    wordTokenizer: new deps.agents.tokenize.basic.WordTokenizer(false),
-    streamingLatency: 1,
-  });
 }
 
 async function runVideoChatAgentTestMode(ctx, metadata) {
@@ -816,11 +829,7 @@ async function runVideoChatAgentEntry(ctx) {
   }
   const deps = await loadDeps();
   const lemonSliceApiKey = requireEnv("OPENCLAW_VIDEO_CHAT_LEMONSLICE_API_KEY");
-  const tts = createGatewaySpeechTts({
-    deps,
-    getGatewayClient: () => gatewayClient,
-    fallbackTts: createLegacyElevenLabsTts(deps),
-  });
+  const tts = createGatewaySpeechTts({ deps });
 
   const session = new deps.agents.voice.AgentSession({
     tts,

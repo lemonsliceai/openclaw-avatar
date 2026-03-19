@@ -12,7 +12,6 @@ const setupRawErrorEl = document.getElementById("setup-raw-error");
 const gatewayTokenErrorEl = document.getElementById("gateway-token-error");
 const lemonSliceErrorEl = document.getElementById("lemonslice-error");
 const liveKitErrorEl = document.getElementById("livekit-error");
-const elevenLabsErrorEl = document.getElementById("elevenlabs-error");
 const sessionForm = document.getElementById("session-form");
 const startSessionButton = document.getElementById("start-session");
 const sessionImageUrlInput = document.getElementById("session-image-url");
@@ -145,20 +144,14 @@ const AVATAR_ECHO_TOKEN_OVERLAP_THRESHOLD = 0.8;
 const AVATAR_ECHO_MAX_RECENT_REPLIES = 4;
 const MINIMUM_COMPATIBLE_OPENCLAW_VERSION = "2026.3.11";
 const INCOMPATIBLE_OPENCLAW_VERSION_MESSAGE = "incompatible openclaw version";
-const ELEVENLABS_REALTIME_TRANSCRIPTION_WS_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
-const ELEVENLABS_REALTIME_TRANSCRIPTION_SAMPLE_RATE = 16_000;
-const ELEVENLABS_REALTIME_TRANSCRIPTION_BUFFER_SIZE = 4_096;
-const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS = 8;
-const ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.9;
+const SERVER_SPEECH_SAMPLE_RATE = 16_000;
+const SERVER_SPEECH_BUFFER_SIZE = 4_096;
 const SERVER_SPEECH_SILENCE_MS = 300;
 const SERVER_SPEECH_MIN_DURATION_MS = 120;
-const SERVER_SPEECH_VAD_THRESHOLD = 0.45;
 const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
-const SERVER_SPEECH_RECONNECT_DELAY_MS = 250;
 const SERVER_SPEECH_START_RETRY_BASE_DELAY_MS = 500;
 const SERVER_SPEECH_START_RETRY_MAX_DELAY_MS = 4_000;
 const SERVER_SPEECH_START_RETRY_MAX_ATTEMPTS = 5;
-const SERVER_SPEECH_TOKEN_PREFETCH_MAX_AGE_MS = 20_000;
 const AVATAR_INTERRUPT_ACK_TIMEOUT_MS = 3_000;
 const CHAT_MAX_IMAGE_ATTACHMENTS = 4;
 const CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -188,9 +181,6 @@ let browserSpeechRecognitionActive = false;
 let browserSpeechRecognitionShouldRun = false;
 let browserSpeechRecognitionRestartTimer = null;
 const lastVoiceTranscriptByConnection = new Map();
-let preferServerSpeechTranscription = true;
-let serverSpeechTranscriptionUnavailable = false;
-let serverSpeechRecorderLastSpeechAt = 0;
 let serverSpeechRecorderAudioContext = null;
 let serverSpeechRecorderSourceNode = null;
 let serverSpeechRecorderProcessorNode = null;
@@ -202,15 +192,8 @@ let serverSpeechRecorderSilenceStartedAt = 0;
 let serverSpeechRecorderPcmChunks = [];
 let serverSpeechRecorderPrerollChunks = [];
 let serverSpeechSubmissionQueue = Promise.resolve();
-let serverSpeechRealtimeSocket = null;
-let serverSpeechRealtimeSocketReady = false;
-let serverSpeechRealtimeStopRequested = false;
-const serverSpeechRealtimeSocketsSuppressReconnect = new WeakSet();
-let serverSpeechRealtimeReconnectTimer = null;
 let serverSpeechStartRetryTimer = null;
 let serverSpeechStartRetryCount = 0;
-let serverSpeechRealtimeTokenCache = null;
-let serverSpeechRealtimeTokenPrefetchPromise = null;
 let roomConnectGeneration = 0;
 let roomConnectionState = LIVEKIT ? "disconnected" : "failed";
 let avatarConnectionState = "idle";
@@ -269,11 +252,9 @@ let activeConfigSectionFilter = "all";
 let activeConfigMode = "form";
 let setupFormBaseline = {
   livekitUrl: "",
-  elevenLabsVoiceId: "",
   lemonSliceApiKey: "",
   livekitApiKey: "",
   livekitApiSecret: "",
-  elevenLabsApiKey: "",
 };
 let setupRawBaseline = "";
 
@@ -281,14 +262,12 @@ const setupSectionErrorEls = new Map([
   ["gateway-token", gatewayTokenErrorEl],
   ["lemonslice", lemonSliceErrorEl],
   ["livekit", liveKitErrorEl],
-  ["elevenlabs", elevenLabsErrorEl],
 ]);
 const STRUCTURED_SETUP_ERROR_SECTION_MAP = new Map([
   ["GATEWAY_UNAUTHORIZED", "gateway-token"],
   ["GATEWAY_TOKEN", "gateway-token"],
   ["LEMONSLICE", "lemonslice"],
   ["LIVEKIT", "livekit"],
-  ["ELEVENLABS", "elevenlabs"],
 ]);
 const STRUCTURED_SETUP_ERROR_FIELD_MAP = new Map([
   ["gatewayToken", "gateway-token"],
@@ -296,8 +275,6 @@ const STRUCTURED_SETUP_ERROR_FIELD_MAP = new Map([
   ["livekitUrl", "livekit"],
   ["livekitApiKey", "livekit"],
   ["livekitApiSecret", "livekit"],
-  ["elevenLabsApiKey", "elevenlabs"],
-  ["elevenLabsVoiceId", "elevenlabs"],
 ]);
 let activeSessionImageUrl = "";
 let activeSessionAspectRatio = SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
@@ -1128,14 +1105,6 @@ function classifySetupErrorSection(message) {
   ) {
     return "livekit";
   }
-  if (
-    normalized.includes("elevenlabs") ||
-    normalized.includes("11labs") ||
-    normalized.includes("elevenlabsapikey") ||
-    normalized.includes("elevenlabsvoiceid")
-  ) {
-    return "elevenlabs";
-  }
   return null;
 }
 
@@ -1163,18 +1132,6 @@ function sanitizeSetupErrorMessage(message, sectionKey) {
   }
   if (sectionKey === "livekit") {
     return "LiveKit settings could not be verified. Check the URL, API key, and API secret, then try again.";
-  }
-  if (sectionKey === "elevenlabs") {
-    if (normalized.includes("speech-to-text")) {
-      return "ElevenLabs speech-to-text access could not be verified. Check the API key permissions and try again.";
-    }
-    if (normalized.includes("text-to-speech voice") || normalized.includes("voice")) {
-      return "ElevenLabs voice settings could not be verified. Check the voice ID and model, then try again.";
-    }
-    if (normalized.includes("text-to-speech")) {
-      return "ElevenLabs text-to-speech access could not be verified. Check the API key, voice ID, and model, then try again.";
-    }
-    return "ElevenLabs settings could not be verified. Check the API key, voice ID, and permissions, then try again.";
   }
   return "An unexpected error occurred while checking config. Try again.";
 }
@@ -2129,14 +2086,6 @@ function stopBrowserSpeechRecognition() {
   } catch {}
 }
 
-function clearServerSpeechReconnectTimer() {
-  if (serverSpeechRealtimeReconnectTimer === null) {
-    return;
-  }
-  clearTimeout(serverSpeechRealtimeReconnectTimer);
-  serverSpeechRealtimeReconnectTimer = null;
-}
-
 function clearServerSpeechStartRetryTimer(options = {}) {
   if (serverSpeechStartRetryTimer !== null) {
     clearTimeout(serverSpeechStartRetryTimer);
@@ -2148,7 +2097,7 @@ function clearServerSpeechStartRetryTimer(options = {}) {
 }
 
 function scheduleServerSpeechStartRetry(reason) {
-  if (serverSpeechRealtimeStopRequested || serverSpeechStartRetryTimer !== null) {
+  if (serverSpeechStartRetryTimer !== null) {
     return;
   }
   if (serverSpeechStartRetryCount >= SERVER_SPEECH_START_RETRY_MAX_ATTEMPTS) {
@@ -2178,78 +2127,6 @@ function scheduleServerSpeechStartRetry(reason) {
     });
     void startServerSpeechTranscription();
   }, delayMs);
-}
-
-function clearServerSpeechRealtimeTokenCache() {
-  serverSpeechRealtimeTokenCache = null;
-}
-
-function isFreshServerSpeechRealtimeToken(tokenPayload) {
-  return Boolean(
-    tokenPayload &&
-      typeof tokenPayload.token === "string" &&
-      tokenPayload.token.trim() &&
-      Number.isFinite(tokenPayload.fetchedAt) &&
-      Date.now() - tokenPayload.fetchedAt <= SERVER_SPEECH_TOKEN_PREFETCH_MAX_AGE_MS,
-  );
-}
-
-function takePrefetchedServerSpeechRealtimeToken() {
-  if (!isFreshServerSpeechRealtimeToken(serverSpeechRealtimeTokenCache)) {
-    clearServerSpeechRealtimeTokenCache();
-    return null;
-  }
-  const tokenPayload = serverSpeechRealtimeTokenCache;
-  serverSpeechRealtimeTokenCache = null;
-  return tokenPayload;
-}
-
-async function mintServerSpeechRealtimeToken() {
-  const tokenPayload = await requestJson("/plugins/video-chat/api/transcribe/token", {
-    method: "POST",
-  });
-  const token = typeof tokenPayload?.token === "string" ? tokenPayload.token.trim() : "";
-  if (!token) {
-    throw new Error("Claw Cast realtime transcription token request returned no token.");
-  }
-  return {
-    token,
-    modelId: tokenPayload?.modelId,
-    fetchedAt: Date.now(),
-  };
-}
-
-async function prefetchServerSpeechRealtimeToken() {
-  if (isFreshServerSpeechRealtimeToken(serverSpeechRealtimeTokenCache)) {
-    return serverSpeechRealtimeTokenCache;
-  }
-  if (serverSpeechRealtimeTokenPrefetchPromise) {
-    return serverSpeechRealtimeTokenPrefetchPromise;
-  }
-  serverSpeechRealtimeTokenPrefetchPromise = mintServerSpeechRealtimeToken()
-    .then((tokenPayload) => {
-      serverSpeechRealtimeTokenCache = tokenPayload;
-      return tokenPayload;
-    })
-    .finally(() => {
-      serverSpeechRealtimeTokenPrefetchPromise = null;
-    });
-  return serverSpeechRealtimeTokenPrefetchPromise;
-}
-
-async function getServerSpeechRealtimeToken() {
-  const prefetched = takePrefetchedServerSpeechRealtimeToken();
-  if (prefetched) {
-    return prefetched;
-  }
-  if (serverSpeechRealtimeTokenPrefetchPromise) {
-    await serverSpeechRealtimeTokenPrefetchPromise;
-    const awaitedPrefetch = takePrefetchedServerSpeechRealtimeToken();
-    if (awaitedPrefetch) {
-      return awaitedPrefetch;
-    }
-  }
-  return mintServerSpeechRealtimeToken();
 }
 
 function base64EncodeBytes(bytes) {
@@ -2292,29 +2169,11 @@ function downsampleAudioForRealtimeTranscription(samples, inputRate, outputRate)
   return output;
 }
 
-function encodeRealtimeTranscriptionChunk(samples, inputRate) {
-  const downsampled = downsampleAudioForRealtimeTranscription(
-    samples,
-    inputRate,
-    ELEVENLABS_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
-  );
-  if (!downsampled.length) {
-    return "";
-  }
-  const pcmBytes = new Uint8Array(downsampled.length * 2);
-  const view = new DataView(pcmBytes.buffer);
-  for (let index = 0; index < downsampled.length; index += 1) {
-    const sample = Math.max(-1, Math.min(1, downsampled[index]));
-    view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-  }
-  return base64EncodeBytes(pcmBytes);
-}
-
 function convertSamplesToPcmBytes(samples, inputRate) {
   const downsampled = downsampleAudioForRealtimeTranscription(
     samples,
     inputRate,
-    ELEVENLABS_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
+    SERVER_SPEECH_SAMPLE_RATE,
   );
   if (!downsampled.length) {
     return new Uint8Array(0);
@@ -2369,32 +2228,6 @@ function measureRealtimeSpeechLevel(samples) {
   return Math.sqrt(total / samples.length);
 }
 
-function buildServerSpeechRealtimeSocketUrl(token, modelId) {
-  const socketUrl = new URL(ELEVENLABS_REALTIME_TRANSCRIPTION_WS_URL);
-  socketUrl.searchParams.set("token", token);
-  socketUrl.searchParams.set("model_id", modelId || "scribe_v2_realtime");
-  socketUrl.searchParams.set("audio_format", "pcm_16000");
-  socketUrl.searchParams.set("include_timestamps", "true");
-  socketUrl.searchParams.set("commit_strategy", "vad");
-  socketUrl.searchParams.set("vad_threshold", String(SERVER_SPEECH_VAD_THRESHOLD));
-  socketUrl.searchParams.set("min_speech_duration_ms", String(SERVER_SPEECH_MIN_DURATION_MS));
-  socketUrl.searchParams.set("vad_silence_threshold_secs", String(SERVER_SPEECH_SILENCE_MS / 1000));
-  socketUrl.searchParams.set("min_silence_duration_ms", String(SERVER_SPEECH_SILENCE_MS));
-  return socketUrl.toString();
-}
-
-function parseServerSpeechRealtimeMessage(event) {
-  const data = typeof event?.data === "string" ? event.data.trim() : "";
-  if (!data) {
-    return null;
-  }
-  try {
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
-}
-
 function extractServerSpeechTranscript(payload) {
   if (!payload || typeof payload !== "object") {
     return "";
@@ -2419,180 +2252,6 @@ function stripRealtimeTranscriptionCaptionCues(value) {
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function extractRealtimeSpeechWordLogprobs(payload) {
-  const rawWords = payload?.words;
-  if (!Array.isArray(rawWords)) {
-    return [];
-  }
-  return rawWords.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") {
-      return [];
-    }
-    const type = typeof entry.type === "string" ? entry.type : "";
-    if (type && type !== "word") {
-      return [];
-    }
-    const text = typeof entry.text === "string" ? entry.text : "";
-    const logprob = typeof entry.logprob === "number" ? entry.logprob : Number.NaN;
-    if (!text.trim() || !Number.isFinite(logprob)) {
-      return [];
-    }
-    return [logprob];
-  });
-}
-
-function parseServerSpeechRealtimeTranscript(payload) {
-  const rawTranscript = extractServerSpeechTranscript(payload);
-  if (!rawTranscript) {
-    return {
-      transcript: "",
-      filteredReason: "empty",
-    };
-  }
-  const transcript = stripRealtimeTranscriptionCaptionCues(rawTranscript);
-  if (!transcript) {
-    return {
-      transcript: "",
-      filteredReason: "caption-cue",
-    };
-  }
-  const wordLogprobs = extractRealtimeSpeechWordLogprobs(payload);
-  const avgWordLogprob =
-    wordLogprobs.length > 0
-      ? wordLogprobs.reduce((total, value) => total + value, 0) / wordLogprobs.length
-      : null;
-  if (
-    avgWordLogprob !== null &&
-    wordLogprobs.length >= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_MIN_WORDS &&
-    avgWordLogprob <= ELEVENLABS_TRANSCRIPT_LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD
-  ) {
-    return {
-      transcript: "",
-      filteredReason: "low-confidence",
-    };
-  }
-  return {
-    transcript,
-    filteredReason: null,
-  };
-}
-
-function isCommittedRealtimeTranscript(payload) {
-  const messageType =
-    typeof payload?.type === "string"
-      ? payload.type
-      : typeof payload?.message_type === "string"
-        ? payload.message_type
-        : "";
-  return (
-    messageType === "committed_transcript" ||
-    messageType === "committed_transcript_with_timestamps"
-  );
-}
-
-function isPartialRealtimeTranscript(payload) {
-  const messageType =
-    typeof payload?.type === "string"
-      ? payload.type
-      : typeof payload?.message_type === "string"
-        ? payload.message_type
-        : "";
-  return messageType === "partial_transcript";
-}
-
-function isRealtimeSessionStarted(payload) {
-  const messageType =
-    typeof payload?.type === "string"
-      ? payload.type
-      : typeof payload?.message_type === "string"
-        ? payload.message_type
-        : "";
-  return messageType === "session_started";
-}
-
-function scheduleServerSpeechReconnect(reason) {
-  if (serverSpeechRealtimeReconnectTimer !== null || serverSpeechRealtimeStopRequested) {
-    return;
-  }
-  serverSpeechRealtimeReconnectTimer = setTimeout(() => {
-    serverSpeechRealtimeReconnectTimer = null;
-    if (!shouldRunVoiceTranscription() || shouldPreferBrowserSpeechRecognition()) {
-      return;
-    }
-    setOutput({
-      action: "server-speech-reconnect",
-      reason,
-    });
-    void startServerSpeechTranscription();
-  }, SERVER_SPEECH_RECONNECT_DELAY_MS);
-}
-
-async function handleServerSpeechRealtimeMessage(event) {
-  const payload = parseServerSpeechRealtimeMessage(event);
-  if (!payload) {
-    return;
-  }
-  if (isRealtimeSessionStarted(payload)) {
-    clearServerSpeechStartRetryTimer({
-      resetCount: true,
-    });
-    serverSpeechRealtimeSocketReady = true;
-    serverSpeechTranscriptionUnavailable = false;
-    setOutput({
-      action: "server-speech-transcription-ready",
-      modelId: payload?.config?.model_id || "scribe_v2_realtime",
-    });
-    return;
-  }
-  if (
-    typeof payload?.message_type === "string" &&
-    (payload.message_type === "error" || payload.message_type.endsWith("_error"))
-  ) {
-    throw new Error(
-      typeof payload?.error === "string"
-        ? payload.error
-        : typeof payload?.message === "string"
-          ? payload.message
-          : "ElevenLabs realtime transcription failed",
-    );
-  }
-  if (isPartialRealtimeTranscript(payload)) {
-    const transcriptResult = parseServerSpeechRealtimeTranscript(payload);
-    const transcript = transcriptResult.transcript;
-    if (transcript) {
-      requestAvatarInterruptForVoiceTranscription("voice-transcription");
-    }
-    return;
-  }
-  if (!isCommittedRealtimeTranscript(payload)) {
-    return;
-  }
-  const transcriptResult = parseServerSpeechRealtimeTranscript(payload);
-  const transcript = transcriptResult.transcript;
-  if (!transcript) {
-    if (transcriptResult.filteredReason) {
-      debugLog("voice-chat:transcript-suppressed", {
-        reason: transcriptResult.filteredReason,
-      });
-    }
-    clearVoiceTranscriptionPending();
-    return;
-  }
-  try {
-    const submitted = await submitVoiceTranscript(transcript);
-    if (!submitted) {
-      clearVoiceTranscriptionPending();
-    }
-    setOutput({
-      action: "server-speech-transcribed",
-      transcriptChars: transcript.length,
-    });
-  } catch (error) {
-    clearVoiceTranscriptionPending();
-    setOutput({ action: "voice-chat-transcript-submit-failed", error: String(error) });
-  }
 }
 
 function resetServerSpeechCaptureState() {
@@ -2620,10 +2279,7 @@ function flushServerSpeechCapture() {
     offset += chunk.length;
   }
   resetServerSpeechCaptureState();
-  const wavBytes = buildWaveBytesFromPcm(
-    pcmBytes,
-    ELEVENLABS_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
-  );
+  const wavBytes = buildWaveBytesFromPcm(pcmBytes, SERVER_SPEECH_SAMPLE_RATE);
   const base64Data = base64EncodeBytes(wavBytes);
   serverSpeechSubmissionQueue = serverSpeechSubmissionQueue
     .then(async () => {
@@ -2658,45 +2314,18 @@ function flushServerSpeechCapture() {
 
 function stopServerSpeechTranscription(options = {}) {
   cleanupServerSpeechTranscriptionResources({
-    clearReconnectTimer: true,
     clearStartRetryTimer: true,
     resetRetryCount: true,
-    clearTokenCache: true,
-    suppressReconnect: true,
-    stopRequested: true,
   });
 }
 
 function cleanupServerSpeechTranscriptionResources(options = {}) {
-  if (options.clearReconnectTimer) {
-    clearServerSpeechReconnectTimer();
-  }
   if (options.clearStartRetryTimer) {
     clearServerSpeechStartRetryTimer({
       resetCount: options.resetRetryCount === true,
     });
   }
-  if (options.clearTokenCache) {
-    clearServerSpeechRealtimeTokenCache();
-  }
-  if (typeof options.stopRequested === "boolean") {
-    serverSpeechRealtimeStopRequested = options.stopRequested;
-  }
-  serverSpeechRealtimeSocketReady = false;
   clearVoiceTranscriptionPending();
-  const socket = options.socket ?? serverSpeechRealtimeSocket;
-  if (serverSpeechRealtimeSocket === socket) {
-    serverSpeechRealtimeSocket = null;
-  }
-  if (socket && options.suppressReconnect) {
-    serverSpeechRealtimeSocketsSuppressReconnect.add(socket);
-  }
-  if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
-    try {
-      socket.close();
-    } catch {}
-  }
-  serverSpeechRecorderLastSpeechAt = 0;
   resetServerSpeechCaptureState();
   const processorNode = options.processorNode ?? serverSpeechRecorderProcessorNode;
   if (processorNode) {
@@ -2738,7 +2367,6 @@ function cleanupServerSpeechTranscriptionResources(options = {}) {
 
 function shouldAbortServerSpeechRecorderStartup() {
   return (
-    serverSpeechRealtimeStopRequested ||
     !shouldRunVoiceTranscription() ||
     shouldPreferBrowserSpeechRecognition()
   );
@@ -2746,13 +2374,10 @@ function shouldAbortServerSpeechRecorderStartup() {
 
 function cleanupServerSpeechRecorderStartupResources(resources = {}) {
   cleanupServerSpeechTranscriptionResources({
-    socket: resources.socket,
     audioContext: resources.audioContext,
     sourceNode: resources.sourceNode,
     processorNode: resources.processorNode,
     silenceNode: resources.silenceNode,
-    suppressReconnect: true,
-    stopRequested: true,
   });
   const stream = resources.stream;
   if (stream && typeof stream.getTracks === "function") {
@@ -2763,7 +2388,6 @@ function cleanupServerSpeechRecorderStartupResources(resources = {}) {
     }
   }
   resources.stream = null;
-  resources.socket = null;
   resources.audioContext = null;
   resources.sourceNode = null;
   resources.processorNode = null;
@@ -2793,8 +2417,6 @@ async function startServerSpeechTranscription() {
     if (typeof AudioContextCtor !== "function") {
       throw new Error("AudioContext is unavailable for server speech transcription.");
     }
-    clearServerSpeechReconnectTimer();
-    serverSpeechRealtimeStopRequested = false;
     resetServerSpeechCaptureState();
     if (shouldAbortServerSpeechRecorderStartup()) {
       cleanupServerSpeechRecorderStartupResources({
@@ -2809,11 +2431,7 @@ async function startServerSpeechTranscription() {
     stream = new MediaStream([mediaStreamTrack]);
     audioContext = new AudioContextCtor();
     sourceNode = audioContext.createMediaStreamSource(stream);
-    processorNode = audioContext.createScriptProcessor(
-      ELEVENLABS_REALTIME_TRANSCRIPTION_BUFFER_SIZE,
-      1,
-      1,
-    );
+    processorNode = audioContext.createScriptProcessor(SERVER_SPEECH_BUFFER_SIZE, 1, 1);
     silenceNode = audioContext.createGain();
     silenceNode.gain.value = 0;
     processorNode.connect(silenceNode);
@@ -2833,9 +2451,6 @@ async function startServerSpeechTranscription() {
     }
 
     processorNode.onaudioprocess = (event) => {
-      if (serverSpeechRealtimeStopRequested) {
-        return;
-      }
       const channelSamples = event.inputBuffer.getChannelData(0);
       const pcmBytes = convertSamplesToPcmBytes(channelSamples, audioContext.sampleRate);
       const now = Date.now();
@@ -2862,7 +2477,6 @@ async function startServerSpeechTranscription() {
       if (pcmBytes.length) {
         serverSpeechRecorderPcmChunks.push(pcmBytes);
       }
-      serverSpeechRecorderLastSpeechAt = now;
       if (isSpeech) {
         serverSpeechRecorderSilenceStartedAt = 0;
         return;
@@ -2894,16 +2508,12 @@ async function startServerSpeechTranscription() {
     serverSpeechRecorderSourceNode = sourceNode;
     serverSpeechRecorderProcessorNode = processorNode;
     serverSpeechRecorderSilenceNode = silenceNode;
-    serverSpeechRecorderLastSpeechAt = 0;
-    serverSpeechRealtimeSocketReady = true;
-    serverSpeechTranscriptionUnavailable = false;
     setOutput({
       action: "server-speech-transcription-ready",
       mode: "runtime-chunked",
     });
   })()
     .catch((error) => {
-      const intentionalStop = serverSpeechRealtimeStopRequested;
       cleanupServerSpeechRecorderStartupResources({
         stream,
         audioContext,
@@ -2911,10 +2521,6 @@ async function startServerSpeechTranscription() {
         processorNode,
         silenceNode,
       });
-      if (intentionalStop) {
-        return;
-      }
-      serverSpeechRealtimeStopRequested = false;
       reportServerSpeechTranscriptionFailure("server-speech-recorder-start-failed", error);
       scheduleServerSpeechStartRetry("server-speech-recorder-start-failed");
     })
@@ -3021,7 +2627,7 @@ function syncVoiceTranscription() {
     stopServerSpeechTranscription();
     setOutput({
       action: "server-speech-transcription-unavailable",
-      reason: "realtime-stt-required",
+      reason: "server-audio-capture-required",
     });
     return;
   }
@@ -3409,8 +3015,6 @@ function getStoredSetupSecretValue(setup, fieldName) {
       return normalizeOptionalInputValue(setup?.livekit?.apiKey);
     case "livekitApiSecret":
       return normalizeOptionalInputValue(setup?.livekit?.apiSecret);
-    case "elevenLabsApiKey":
-      return normalizeOptionalInputValue(setup?.tts?.elevenLabsApiKey);
     default:
       return "";
   }
@@ -3437,8 +3041,6 @@ function getStoredSetupSecretValueFromPayload(setup, fieldName) {
       return normalizeOptionalInputValue(setup?.livekit?.apiKey);
     case "livekitApiSecret":
       return normalizeOptionalInputValue(setup?.livekit?.apiSecret);
-    case "elevenLabsApiKey":
-      return normalizeOptionalInputValue(setup?.tts?.elevenLabsApiKey);
     default:
       return "";
   }
@@ -3467,13 +3069,6 @@ function sanitizeSetupStatusForClient(setup) {
       apiSecret: redactSetupSecretValue(
         setup?.livekit?.apiSecret,
         setup?.livekit?.apiSecretConfigured,
-      ),
-    },
-    tts: {
-      ...setup.tts,
-      elevenLabsApiKey: redactSetupSecretValue(
-        setup?.tts?.elevenLabsApiKey,
-        setup?.tts?.elevenLabsApiKeyConfigured,
       ),
     },
   };
@@ -3523,7 +3118,6 @@ function updateSensitiveFieldMasking(setup) {
     ["lemonSliceApiKey", Boolean(setup?.lemonSlice?.apiKeyConfigured)],
     ["livekitApiKey", Boolean(setup?.livekit?.apiKeyConfigured)],
     ["livekitApiSecret", Boolean(setup?.livekit?.apiSecretConfigured)],
-    ["elevenLabsApiKey", Boolean(setup?.tts?.elevenLabsApiKeyConfigured)],
   ]);
 
   for (const [fieldName, configured] of configuredMap.entries()) {
@@ -3577,14 +3171,11 @@ const setupPayloadFieldNames = [
   "livekitUrl",
   "livekitApiKey",
   "livekitApiSecret",
-  "elevenLabsApiKey",
-  "elevenLabsVoiceId",
 ];
 const setupSecretFieldNames = [
   "lemonSliceApiKey",
   "livekitApiKey",
   "livekitApiSecret",
-  "elevenLabsApiKey",
 ];
 
 function hasOwn(obj, key) {
@@ -3768,11 +3359,9 @@ function snapshotSetupRawBaseline() {
 function snapshotSetupFormBaseline() {
   setupFormBaseline = {
     livekitUrl: getSetupFieldValue("livekitUrl"),
-    elevenLabsVoiceId: getSetupFieldValue("elevenLabsVoiceId"),
     lemonSliceApiKey: getSetupFieldValue("lemonSliceApiKey"),
     livekitApiKey: getSetupFieldValue("livekitApiKey"),
     livekitApiSecret: getSetupFieldValue("livekitApiSecret"),
-    elevenLabsApiKey: getSetupFieldValue("elevenLabsApiKey"),
   };
 }
 
@@ -3808,16 +3397,13 @@ function isSetupFormDirty() {
   }
 
   const urlsDirty = getSetupFieldValue("livekitUrl") !== setupFormBaseline.livekitUrl;
-  const voiceIdDirty =
-    getSetupFieldValue("elevenLabsVoiceId") !== setupFormBaseline.elevenLabsVoiceId;
 
   const secretsDirty =
     isSecretFieldDirty("lemonSliceApiKey") ||
     isSecretFieldDirty("livekitApiKey") ||
-    isSecretFieldDirty("livekitApiSecret") ||
-    isSecretFieldDirty("elevenLabsApiKey");
+    isSecretFieldDirty("livekitApiSecret");
 
-  return urlsDirty || voiceIdDirty || secretsDirty;
+  return urlsDirty || secretsDirty;
 }
 
 function isSetupRawDirty() {
@@ -7631,7 +7217,6 @@ function detachTrack(track) {
 function releaseLocalTracks() {
   stopBrowserSpeechRecognition();
   stopServerSpeechTranscription();
-  serverSpeechTranscriptionUnavailable = false;
   if (localAudioTrack) {
     try {
       localAudioTrack.stop();
@@ -7960,8 +7545,6 @@ async function publishLocalTracks(room) {
   }
   let tracks = [];
   try {
-    preferServerSpeechTranscription = true;
-    serverSpeechTranscriptionUnavailable = false;
     tracks = await LIVEKIT.createLocalTracks({
       audio: {
         echoCancellation: true,
@@ -8159,7 +7742,6 @@ async function connectToRoom(options = {}) {
   bindRoomEvents(room);
 
   try {
-    void prefetchServerSpeechRealtimeToken().catch(() => {});
     debugLog("livekit:connect-begin", {
       livekitUrl: activeSession.livekitUrl,
       participantIdentity: activeSession.participantIdentity ?? "",
@@ -8472,12 +8054,8 @@ function populateSetupFormFromSetupStatus(setup) {
     field.value = getStoredSetupSecretValue(setup, name);
   }
   const livekitUrlField = setupForm.elements.namedItem("livekitUrl");
-  const elevenLabsVoiceIdField = setupForm.elements.namedItem("elevenLabsVoiceId");
   if (livekitUrlField && typeof livekitUrlField.value === "string") {
     livekitUrlField.value = normalizeOptionalInputValue(setup?.livekit?.url);
-  }
-  if (elevenLabsVoiceIdField && typeof elevenLabsVoiceIdField.value === "string") {
-    elevenLabsVoiceIdField.value = normalizeOptionalInputValue(setup?.tts?.elevenLabsVoiceId);
   }
   updateSensitiveFieldMasking(setup);
 }
