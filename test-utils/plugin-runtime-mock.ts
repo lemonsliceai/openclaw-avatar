@@ -13,6 +13,16 @@ export function createPluginRuntimeMock() {
       getSession: vi.fn().mockResolvedValue({ messages: [] }),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     },
+    videoAvatar: {
+      synthesizeSpeech: vi.fn().mockResolvedValue({
+        audioBuffer: Buffer.from("pcm-audio"),
+        provider: "video-avatar",
+        sampleRate: 24000,
+      }),
+      transcribeAudio: vi.fn().mockResolvedValue({
+        text: "hello from microphone",
+      }),
+    },
     stt: {
       transcribeAudioFile: vi.fn(),
     },

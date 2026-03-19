@@ -161,7 +161,10 @@ function resolveFetchInvocation(
   return { url, method };
 }
 
-function setup(config: unknown = baseConfig) {
+function setup(
+  config: unknown = baseConfig,
+  options: { disableVideoAvatarRuntime?: boolean } = {},
+) {
   const runtime = createPluginRuntimeMock();
   const methods = new Map<string, unknown>();
   const services: unknown[] = [];
@@ -169,6 +172,14 @@ function setup(config: unknown = baseConfig) {
   const cliCommands: unknown[] = [];
 
   vi.mocked(runtime.config.loadConfig).mockReturnValue(config as never);
+  if (options.disableVideoAvatarRuntime) {
+    delete (runtime as { videoAvatar?: unknown }).videoAvatar;
+  }
+  if (runtime.videoAvatar) {
+    vi.mocked(runtime.videoAvatar.transcribeAudio).mockResolvedValue({
+      text: "hello from microphone",
+    });
+  }
   vi.mocked(runtime.stt.transcribeAudioFile).mockResolvedValue({
     text: "hello from microphone",
   });
@@ -1094,7 +1105,7 @@ describe("video-chat plugin", () => {
   });
 
   it("uses the room's stored LiveKit snapshot during session stop", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
@@ -1369,7 +1380,7 @@ describe("video-chat plugin", () => {
   });
 
   it("recycles the sidecar when the LiveKit credential fingerprint changes", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     await createTestSession(methods);
     await flushMicrotasks();
@@ -1394,7 +1405,7 @@ describe("video-chat plugin", () => {
   });
 
   it("skips redispatch when the replacement sidecar does not start", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     await createTestSession(methods);
 
@@ -1420,7 +1431,7 @@ describe("video-chat plugin", () => {
   });
 
   it("skips redispatch when the room snapshot fingerprint no longer matches the active sidecar", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     await createTestSession(methods);
 
@@ -1692,7 +1703,7 @@ describe("video-chat plugin", () => {
   });
 
   it("loads chat history through the gateway method", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     vi.mocked(runtime.subagent.getSessionMessages).mockResolvedValueOnce({
       messages: [
         {
@@ -1726,7 +1737,7 @@ describe("video-chat plugin", () => {
   });
 
   it("sends chat messages through the gateway method", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     vi.mocked(runtime.subagent.run).mockResolvedValueOnce({
       runId: "run-123",
     });
@@ -1833,7 +1844,7 @@ describe("video-chat plugin", () => {
   });
 
   it("returns setup state for plugin-owned setup surfaces", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     const respond = await invoke(methods, "videoChat.setup.get", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -1984,7 +1995,7 @@ describe("video-chat plugin", () => {
   });
 
   it("rejects invalid setup save params", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     const respond = await invoke(methods, "videoChat.setup.save", {
       livekitUrl: 12,
     });
@@ -2025,7 +2036,7 @@ describe("video-chat plugin", () => {
         },
       });
     });
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     const respond = await invoke(methods, "videoChat.setup.save", {
       elevenLabsApiKey: "bad-eleven-key",
@@ -2063,7 +2074,7 @@ describe("video-chat plugin", () => {
         },
       });
     });
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     const respond = await invoke(methods, "videoChat.setup.save", {
       elevenLabsVoiceId: "missing-voice",
@@ -2086,7 +2097,7 @@ describe("video-chat plugin", () => {
       expect(method).toBe("POST");
       throw Object.assign(new Error("fetch failed"), { code: "ENOTFOUND" });
     });
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     const respond = await invoke(methods, "videoChat.setup.save", {
       elevenLabsApiKey: "network-flaky-key",
@@ -2102,17 +2113,20 @@ describe("video-chat plugin", () => {
   });
 
   it("uses the configured ElevenLabs model ID when verifying setup saves", async () => {
-    const { methods, runtime } = setup({
-      ...baseConfig,
-      messages: {
-        tts: {
-          elevenlabs: {
-            apiKey: "eleven-key",
-            modelId: "custom-eleven-model",
+    const { methods, runtime } = setup(
+      {
+        ...baseConfig,
+        messages: {
+          tts: {
+            elevenlabs: {
+              apiKey: "eleven-key",
+              modelId: "custom-eleven-model",
+            },
           },
         },
       },
-    });
+      { disableVideoAvatarRuntime: true },
+    );
 
     const respond = await invoke(methods, "videoChat.setup.save", {
       elevenLabsVoiceId: "voice-1234",
@@ -2131,7 +2145,7 @@ describe("video-chat plugin", () => {
   });
 
   it("rejects session create when the avatar image URL is not direct", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     const respond = await invoke(methods, "videoChat.session.create", {
       avatarImageUrl: "https://e9riw81orx.ufs.sh/f/",
     });
@@ -2143,7 +2157,7 @@ describe("video-chat plugin", () => {
   });
 
   it("rejects invalid session params", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     const respond = await invoke(methods, "videoChat.session.create", {
       interruptReplyOnNewMessage: "yes",
     });
@@ -2155,7 +2169,7 @@ describe("video-chat plugin", () => {
   });
 
   it("rejects unsupported avatar aspect ratios", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     const respond = await invoke(methods, "videoChat.session.create", {
       avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
       aspectRatio: "1x1",
@@ -2172,7 +2186,7 @@ describe("video-chat plugin", () => {
   });
 
   it("rejects invalid session stop params", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     const respond = await invoke(methods, "videoChat.session.stop", {
       roomName: 12,
     });
@@ -2205,6 +2219,10 @@ describe("video-chat plugin", () => {
 
   it("transcribes uploaded browser audio", async () => {
     const { methods, runtime } = setup();
+    expect(runtime.videoAvatar).toBeDefined();
+    vi.mocked(runtime.videoAvatar!.transcribeAudio).mockResolvedValue({
+      text: "hello from microphone",
+    });
     vi.mocked(runtime.stt.transcribeAudioFile).mockRejectedValue(
       new Error("runtime STT should not be used"),
     );
@@ -2219,24 +2237,13 @@ describe("video-chat plugin", () => {
     expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
       "hello from microphone",
     );
+    expect(runtime.videoAvatar?.transcribeAudio).toHaveBeenCalledTimes(1);
     expect(runtime.stt.transcribeAudioFile).not.toHaveBeenCalled();
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch.mock.calls[0]?.[0]).toBe("https://api.elevenlabs.io/v1/speech-to-text");
-    expect(mockFetch.mock.calls[0]?.[1]).toMatchObject({
-      method: "POST",
-      headers: {
-        "xi-api-key": "eleven-key",
-      },
-    });
-    const requestBody = mockFetch.mock.calls[0]?.[1]?.body;
-    expect(requestBody).toBeInstanceOf(FormData);
-    expect((requestBody as FormData).get("model_id")).toBe("scribe_v1");
-    expect((requestBody as FormData).get("tag_audio_events")).toBe("false");
-    expect((requestBody as FormData).get("file")).toBeTruthy();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("strips subtitle timing cues from ElevenLabs transcripts", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     mockFetch.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -2264,7 +2271,7 @@ describe("video-chat plugin", () => {
   });
 
   it("drops low-confidence hallucinated ElevenLabs transcripts", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     mockFetch.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -2373,7 +2380,7 @@ describe("video-chat plugin", () => {
   });
 
   it("retries transient ElevenLabs transcription failures", async () => {
-    const { methods } = setup();
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     mockFetch
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ detail: "temporary upstream issue" }), {
@@ -2501,7 +2508,7 @@ describe("video-chat plugin", () => {
         },
       });
     });
-    const { httpRoutes, runtime } = setup();
+    const { httpRoutes, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     const response = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
       url: "/plugins/video-chat/api/setup",

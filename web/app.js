@@ -196,6 +196,12 @@ let serverSpeechRecorderSourceNode = null;
 let serverSpeechRecorderProcessorNode = null;
 let serverSpeechRecorderSilenceNode = null;
 let serverSpeechRecorderStartPromise = null;
+let serverSpeechRecorderSpeechActive = false;
+let serverSpeechRecorderSpeechStartedAt = 0;
+let serverSpeechRecorderSilenceStartedAt = 0;
+let serverSpeechRecorderPcmChunks = [];
+let serverSpeechRecorderPrerollChunks = [];
+let serverSpeechSubmissionQueue = Promise.resolve();
 let serverSpeechRealtimeSocket = null;
 let serverSpeechRealtimeSocketReady = false;
 let serverSpeechRealtimeStopRequested = false;
@@ -2070,7 +2076,6 @@ function serverSpeechTranscriptionSupported() {
   const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
   return Boolean(
     typeof AudioContextCtor === "function" &&
-      typeof globalThis.WebSocket === "function" &&
       mediaStreamTrack &&
       typeof MediaStream === "function",
   );
@@ -2303,6 +2308,54 @@ function encodeRealtimeTranscriptionChunk(samples, inputRate) {
     view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
   return base64EncodeBytes(pcmBytes);
+}
+
+function convertSamplesToPcmBytes(samples, inputRate) {
+  const downsampled = downsampleAudioForRealtimeTranscription(
+    samples,
+    inputRate,
+    ELEVENLABS_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
+  );
+  if (!downsampled.length) {
+    return new Uint8Array(0);
+  }
+  const pcmBytes = new Uint8Array(downsampled.length * 2);
+  const view = new DataView(pcmBytes.buffer);
+  for (let index = 0; index < downsampled.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, downsampled[index]));
+    view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+  }
+  return pcmBytes;
+}
+
+function buildWaveBytesFromPcm(pcmBytes, sampleRate, numChannels = 1) {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  const blockAlign = numChannels * 2;
+  const byteRate = sampleRate * blockAlign;
+  const writeAscii = (offset, value) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  };
+  writeAscii(0, "RIFF");
+  view.setUint32(4, 36 + pcmBytes.length, true);
+  writeAscii(8, "WAVE");
+  writeAscii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, "data");
+  view.setUint32(40, pcmBytes.length, true);
+
+  const wavBytes = new Uint8Array(44 + pcmBytes.length);
+  wavBytes.set(new Uint8Array(header), 0);
+  wavBytes.set(pcmBytes, 44);
+  return wavBytes;
 }
 
 function measureRealtimeSpeechLevel(samples) {
@@ -2542,6 +2595,67 @@ async function handleServerSpeechRealtimeMessage(event) {
   }
 }
 
+function resetServerSpeechCaptureState() {
+  serverSpeechRecorderSpeechActive = false;
+  serverSpeechRecorderSpeechStartedAt = 0;
+  serverSpeechRecorderSilenceStartedAt = 0;
+  serverSpeechRecorderPcmChunks = [];
+  serverSpeechRecorderPrerollChunks = [];
+}
+
+function flushServerSpeechCapture() {
+  if (serverSpeechRecorderPcmChunks.length === 0) {
+    resetServerSpeechCaptureState();
+    return;
+  }
+  const totalBytes = serverSpeechRecorderPcmChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  if (totalBytes === 0) {
+    resetServerSpeechCaptureState();
+    return;
+  }
+  const pcmBytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of serverSpeechRecorderPcmChunks) {
+    pcmBytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  resetServerSpeechCaptureState();
+  const wavBytes = buildWaveBytesFromPcm(
+    pcmBytes,
+    ELEVENLABS_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
+  );
+  const base64Data = base64EncodeBytes(wavBytes);
+  serverSpeechSubmissionQueue = serverSpeechSubmissionQueue
+    .then(async () => {
+      const payload = await requestJson("/plugins/video-chat/api/transcribe", {
+        method: "POST",
+        body: JSON.stringify({
+          data: base64Data,
+          mimeType: "audio/wav",
+        }),
+      });
+      const transcript = stripRealtimeTranscriptionCaptionCues(
+        extractServerSpeechTranscript(payload),
+      );
+      if (!transcript) {
+        clearVoiceTranscriptionPending();
+        return;
+      }
+      const submitted = await submitVoiceTranscript(transcript);
+      if (!submitted) {
+        clearVoiceTranscriptionPending();
+      }
+      setOutput({
+        action: "server-speech-transcribed",
+        transcriptChars: transcript.length,
+      });
+    })
+    .catch((error) => {
+      clearVoiceTranscriptionPending();
+      setOutput({ action: "voice-chat-transcript-submit-failed", error: String(error) });
+    });
+}
+
 function stopServerSpeechTranscription(options = {}) {
   cleanupServerSpeechTranscriptionResources({
     clearReconnectTimer: true,
@@ -2583,6 +2697,7 @@ function cleanupServerSpeechTranscriptionResources(options = {}) {
     } catch {}
   }
   serverSpeechRecorderLastSpeechAt = 0;
+  resetServerSpeechCaptureState();
   const processorNode = options.processorNode ?? serverSpeechRecorderProcessorNode;
   if (processorNode) {
     processorNode.onaudioprocess = null;
@@ -2656,7 +2771,11 @@ function cleanupServerSpeechRecorderStartupResources(resources = {}) {
 }
 
 async function startServerSpeechTranscription() {
-  if (serverSpeechRealtimeSocket || serverSpeechRecorderStartPromise || !serverSpeechTranscriptionSupported()) {
+  if (
+    serverSpeechRecorderProcessorNode ||
+    serverSpeechRecorderStartPromise ||
+    !serverSpeechTranscriptionSupported()
+  ) {
     return;
   }
   clearServerSpeechStartRetryTimer();
@@ -2668,7 +2787,6 @@ async function startServerSpeechTranscription() {
   let sourceNode = null;
   let processorNode = null;
   let silenceNode = null;
-  let socket = null;
   let stream = null;
   serverSpeechRecorderStartPromise = (async () => {
     const AudioContextCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
@@ -2677,11 +2795,10 @@ async function startServerSpeechTranscription() {
     }
     clearServerSpeechReconnectTimer();
     serverSpeechRealtimeStopRequested = false;
-    const tokenPayload = await getServerSpeechRealtimeToken();
+    resetServerSpeechCaptureState();
     if (shouldAbortServerSpeechRecorderStartup()) {
       cleanupServerSpeechRecorderStartupResources({
         stream,
-        socket,
         audioContext,
         sourceNode,
         processorNode,
@@ -2689,7 +2806,6 @@ async function startServerSpeechTranscription() {
       });
       return;
     }
-    const token = tokenPayload.token;
     stream = new MediaStream([mediaStreamTrack]);
     audioContext = new AudioContextCtor();
     sourceNode = audioContext.createMediaStreamSource(stream);
@@ -2708,7 +2824,6 @@ async function startServerSpeechTranscription() {
     if (shouldAbortServerSpeechRecorderStartup()) {
       cleanupServerSpeechRecorderStartupResources({
         stream,
-        socket,
         audioContext,
         sourceNode,
         processorNode,
@@ -2716,79 +2831,58 @@ async function startServerSpeechTranscription() {
       });
       return;
     }
-    const socketUrl = buildServerSpeechRealtimeSocketUrl(token, tokenPayload?.modelId);
-    socket = new WebSocket(socketUrl);
 
     processorNode.onaudioprocess = (event) => {
-      if (!serverSpeechRealtimeSocketReady || socket.readyState !== WebSocket.OPEN) {
+      if (serverSpeechRealtimeStopRequested) {
         return;
       }
       const channelSamples = event.inputBuffer.getChannelData(0);
-      const audioBase64 = encodeRealtimeTranscriptionChunk(channelSamples, audioContext.sampleRate);
-      if (!audioBase64) {
+      const pcmBytes = convertSamplesToPcmBytes(channelSamples, audioContext.sampleRate);
+      const now = Date.now();
+      const level = measureRealtimeSpeechLevel(channelSamples);
+      const isSpeech = level >= SERVER_SPEECH_LEVEL_THRESHOLD;
+
+      if (!serverSpeechRecorderSpeechActive) {
+        if (pcmBytes.length) {
+          serverSpeechRecorderPrerollChunks.push(pcmBytes);
+          if (serverSpeechRecorderPrerollChunks.length > 3) {
+            serverSpeechRecorderPrerollChunks.shift();
+          }
+        }
+        if (!isSpeech) {
+          return;
+        }
+        serverSpeechRecorderSpeechActive = true;
+        serverSpeechRecorderSpeechStartedAt = now;
+        serverSpeechRecorderSilenceStartedAt = 0;
+        serverSpeechRecorderPcmChunks = serverSpeechRecorderPrerollChunks.slice();
+        serverSpeechRecorderPrerollChunks = [];
+        requestAvatarInterruptForVoiceTranscription("voice-transcription");
+      }
+      if (pcmBytes.length) {
+        serverSpeechRecorderPcmChunks.push(pcmBytes);
+      }
+      serverSpeechRecorderLastSpeechAt = now;
+      if (isSpeech) {
+        serverSpeechRecorderSilenceStartedAt = 0;
         return;
       }
-      try {
-        socket.send(
-          JSON.stringify({
-            message_type: "input_audio_chunk",
-            audio_base_64: audioBase64,
-            sample_rate: ELEVENLABS_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
-          }),
-        );
-        serverSpeechRecorderLastSpeechAt = Date.now();
-      } catch (error) {
-        setOutput({
-          action: "server-speech-chunk-send-failed",
-          error: error instanceof Error ? error.message : String(error),
-        });
+      if (!serverSpeechRecorderSilenceStartedAt) {
+        serverSpeechRecorderSilenceStartedAt = now;
+        return;
+      }
+      if (
+        now - serverSpeechRecorderSpeechStartedAt >= SERVER_SPEECH_MIN_DURATION_MS &&
+        now - serverSpeechRecorderSilenceStartedAt >= SERVER_SPEECH_SILENCE_MS
+      ) {
+        flushServerSpeechCapture();
       }
     };
     sourceNode.connect(processorNode);
 
-    socket.addEventListener("message", (event) => {
-      void handleServerSpeechRealtimeMessage(event).catch((error) => {
-        reportServerSpeechTranscriptionFailure("server-speech-realtime-message-failed", error);
-        try {
-          socket.close();
-        } catch {}
-      });
-    });
-    socket.addEventListener("error", () => {
-      if (serverSpeechRealtimeStopRequested) {
-        return;
-      }
-      setOutput({
-        action: "server-speech-realtime-socket-error",
-      });
-    });
-    socket.addEventListener("close", (event) => {
-      const suppressReconnect = serverSpeechRealtimeSocketsSuppressReconnect.has(socket);
-      serverSpeechRealtimeSocketsSuppressReconnect.delete(socket);
-      const intentionalStop = serverSpeechRealtimeStopRequested || suppressReconnect;
-      cleanupServerSpeechTranscriptionResources({
-        socket,
-        audioContext,
-        sourceNode,
-        processorNode,
-        silenceNode,
-        stopRequested: intentionalStop,
-      });
-      if (intentionalStop || !shouldRunVoiceTranscription() || shouldPreferBrowserSpeechRecognition()) {
-        return;
-      }
-      setOutput({
-        action: "server-speech-realtime-socket-closed",
-        code: typeof event?.code === "number" ? event.code : undefined,
-        reason: typeof event?.reason === "string" ? event.reason : "",
-      });
-      scheduleServerSpeechReconnect("socket-closed");
-    });
-
     if (shouldAbortServerSpeechRecorderStartup()) {
       cleanupServerSpeechRecorderStartupResources({
         stream,
-        socket,
         audioContext,
         sourceNode,
         processorNode,
@@ -2800,15 +2894,18 @@ async function startServerSpeechTranscription() {
     serverSpeechRecorderSourceNode = sourceNode;
     serverSpeechRecorderProcessorNode = processorNode;
     serverSpeechRecorderSilenceNode = silenceNode;
-    serverSpeechRealtimeSocket = socket;
     serverSpeechRecorderLastSpeechAt = 0;
-    void prefetchServerSpeechRealtimeToken().catch(() => {});
+    serverSpeechRealtimeSocketReady = true;
+    serverSpeechTranscriptionUnavailable = false;
+    setOutput({
+      action: "server-speech-transcription-ready",
+      mode: "runtime-chunked",
+    });
   })()
     .catch((error) => {
       const intentionalStop = serverSpeechRealtimeStopRequested;
       cleanupServerSpeechRecorderStartupResources({
         stream,
-        socket,
         audioContext,
         sourceNode,
         processorNode,

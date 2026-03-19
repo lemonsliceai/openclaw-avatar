@@ -2,7 +2,7 @@
 
 Give your Openclaw agents a face! Claw Cast enables a real time video avatar for any of your Openclaw agents. Now you can speak directly with your agent and bring them anywhere on your desktop!
 
-Claw Cast is an OpenClaw plugin that integrates LemonSlice, LiveKit, and ElevenLabs to deliver a real-time avatar experience with plugin-managed setup, browser session controls, text chat, speech-to-text, and text-to-speech.
+Claw Cast is an OpenClaw plugin that integrates LemonSlice and LiveKit to deliver a real-time avatar experience with plugin-managed setup, browser session controls, text chat, and avatar speech routed through OpenClaw's shared speech/media runtime.
 
 <div>
   <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
@@ -59,10 +59,11 @@ You will also need accounts with the following service providers:
 - **LemonSlice** — provides the avatar/character rendering for the video chat experience.
   Sign up at https://www.lemonslice.com
 
-- **ElevenLabs** — powers plugin-owned speech-to-text (STT) and text-to-speech (TTS).
-  Sign up at https://elevenlabs.io
-  **The ElevenLabs API key must have both text-to-speech (TTS) and speech-to-text (STT) access enabled.**
-  Sample voice ID: `pg7Nd5b8Y3tnfSndq5lh`
+- **OpenClaw speech/media providers** — Claw Cast now prefers whatever TTS and audio-transcription capabilities you have already configured in OpenClaw for your agents.
+  Configure those first in OpenClaw so avatar reply speech and browser voice transcription can use the shared runtime contracts.
+
+- **Optional legacy fallback: ElevenLabs** — kept only as a compatibility path when the host runtime does not expose the newer speech/media helpers yet.
+  Sign up at https://elevenlabs.io if you need that fallback path.
 
 - **LiveKit** — provides the real-time video/audio room infrastructure.
   Sign up at https://livekit.io
@@ -86,7 +87,7 @@ openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
 openclaw plugins enable video-chat
 ```
 
-3. Run the plugin setup command and enter your LemonSlice, ElevenLabs, and LiveKit credentials:
+3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. ElevenLabs is optional and only used as a legacy fallback:
 
 ```bash
 openclaw video-chat-setup
@@ -136,7 +137,7 @@ The plugin can be configured with either the CLI (recommended) or the browser UI
 openclaw video-chat-setup
 ```
 
-This command is the recommended setup flow because it walks you through the required provider credentials in one place.
+This command is the recommended setup flow because it walks you through the required plugin credentials in one place.
 
 ### Browser Config
 

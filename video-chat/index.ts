@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { promises as dns } from "node:dns";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, unlink, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -67,6 +68,8 @@ const INVALID_CHAT_SEND_PARAMS_ERROR = "invalid videoChat.chat.send params";
 const VIDEO_CHAT_AVATAR_TIMEOUT_DEFAULT_SECONDS = 60;
 const VIDEO_CHAT_AVATAR_TIMEOUT_MIN_SECONDS = 1;
 const VIDEO_CHAT_AVATAR_TIMEOUT_MAX_SECONDS = 600;
+const VIDEO_CHAT_GATEWAY_SYNTHESIZE_METHOD = "videoChat.audio.synthesize";
+const VIDEO_CHAT_RUNTIME_SPEECH_VERIFY_TEXT = "OpenClaw speech check.";
 
 type VideoChatAvatarAspectRatio = (typeof VIDEO_CHAT_AVATAR_ASPECT_RATIOS)[number];
 
@@ -144,10 +147,10 @@ type VideoChatLogger = Pick<OpenClawPluginApi["logger"], "info" | "warn" | "erro
 
 type SidecarCredentials = {
   lemonSliceApiKey: string;
-  elevenLabsApiKey: string;
   livekitUrl: string;
   livekitApiKey: string;
   livekitApiSecret: string;
+  elevenLabsApiKey?: string;
   elevenLabsVoiceId?: string;
   elevenLabsModelId?: string;
 };
@@ -314,6 +317,17 @@ type VideoChatChatHandlers = {
     attachments?: VideoChatChatAttachmentInput[];
     idempotencyKey?: string;
   }) => Promise<VideoChatChatSendResult>;
+};
+
+type VideoChatSpeechRuntime = NonNullable<OpenClawPluginApi["runtime"]["tts"]>;
+type VideoChatVideoAvatarRuntime = NonNullable<OpenClawPluginApi["runtime"]["videoAvatar"]>;
+type VideoChatMediaUnderstandingRuntime = NonNullable<
+  OpenClawPluginApi["runtime"]["mediaUnderstanding"]
+>;
+type VideoChatSpeechSynthesisResult = {
+  audioBuffer: Buffer;
+  sampleRate: number;
+  provider: string | null;
 };
 
 function normalizeOptionalString(value: unknown): string | undefined {
@@ -678,6 +692,179 @@ function getVideoChatSubagentRuntime(api: OpenClawPluginApi): VideoChatSubagentR
     throw new Error("Claw Cast chat runtime unavailable during this request");
   }
   return candidate;
+}
+
+function getVideoChatSpeechRuntime(
+  runtime: OpenClawPluginApi["runtime"],
+): VideoChatSpeechRuntime | null {
+  const candidate = runtime.tts;
+  if (!candidate || typeof candidate.textToSpeechTelephony !== "function") {
+    return null;
+  }
+  return candidate;
+}
+
+function getVideoChatVideoAvatarRuntime(
+  runtime: OpenClawPluginApi["runtime"],
+): Partial<VideoChatVideoAvatarRuntime> | null {
+  const candidate = runtime.videoAvatar;
+  if (
+    !candidate ||
+    (typeof candidate.synthesizeSpeech !== "function" &&
+      typeof candidate.transcribeAudio !== "function")
+  ) {
+    return null;
+  }
+  return candidate;
+}
+
+function hasVideoChatVideoAvatarSpeechRuntime(runtime: OpenClawPluginApi["runtime"]): boolean {
+  return typeof getVideoChatVideoAvatarRuntime(runtime)?.synthesizeSpeech === "function";
+}
+
+function hasVideoChatVideoAvatarTranscriptionRuntime(
+  runtime: OpenClawPluginApi["runtime"],
+): boolean {
+  return typeof getVideoChatVideoAvatarRuntime(runtime)?.transcribeAudio === "function";
+}
+
+function getVideoChatMediaUnderstandingRuntime(
+  runtime: OpenClawPluginApi["runtime"],
+): VideoChatMediaUnderstandingRuntime | null {
+  const mediaUnderstanding = runtime.mediaUnderstanding;
+  if (
+    mediaUnderstanding &&
+    typeof mediaUnderstanding.transcribeAudioFile === "function"
+  ) {
+    return mediaUnderstanding;
+  }
+  return null;
+}
+
+function normalizeRuntimeAudioBuffer(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+  if (value instanceof ArrayBuffer) {
+    return Buffer.from(value);
+  }
+  return null;
+}
+
+function createPcmWaveBuffer(params: {
+  pcmAudioBuffer: Buffer;
+  sampleRate: number;
+  numChannels?: number;
+}): Buffer {
+  const numChannels = Math.max(1, Math.floor(params.numChannels ?? 1));
+  const bitsPerSample = 16;
+  const byteRate = params.sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const dataSize = params.pcmAudioBuffer.length;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write("WAVE", 8, "ascii");
+  header.write("fmt ", 12, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(params.sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(dataSize, 40);
+  return Buffer.concat([header, params.pcmAudioBuffer]);
+}
+
+async function transcribeAudioBufferWithRuntime(params: {
+  runtime: OpenClawPluginApi["runtime"];
+  cfg: OpenClawConfig;
+  audioBuffer: Buffer;
+  mimeType: string;
+}): Promise<{ text?: string }> {
+  const videoAvatar = getVideoChatVideoAvatarRuntime(params.runtime);
+  if (videoAvatar && typeof videoAvatar.transcribeAudio === "function") {
+    return await videoAvatar.transcribeAudio({
+      audioBuffer: params.audioBuffer,
+      cfg: params.cfg,
+      mime: params.mimeType,
+    });
+  }
+
+  const mediaUnderstanding = getVideoChatMediaUnderstandingRuntime(params.runtime);
+  if (!mediaUnderstanding) {
+    throw new Error("Claw Cast transcription runtime unavailable");
+  }
+
+  const extension = extensionForAudioMimeType(params.mimeType) || ".wav";
+  const filePath = path.join(tmpdir(), `openclaw-video-chat-${randomUUID()}${extension}`);
+  await writeFile(filePath, params.audioBuffer);
+  try {
+    return await mediaUnderstanding.transcribeAudioFile({
+      filePath,
+      cfg: params.cfg,
+      mime: params.mimeType,
+    });
+  } finally {
+    await unlink(filePath).catch(() => {});
+  }
+}
+
+async function synthesizeVideoChatSpeechWithRuntime(params: {
+  runtime: OpenClawPluginApi["runtime"];
+  cfg: OpenClawConfig;
+  text: string;
+}): Promise<VideoChatSpeechSynthesisResult> {
+  const videoAvatar = getVideoChatVideoAvatarRuntime(params.runtime);
+  if (videoAvatar && typeof videoAvatar.synthesizeSpeech === "function") {
+    const result = await videoAvatar.synthesizeSpeech({
+      text: params.text,
+      cfg: params.cfg,
+    });
+    const audioBuffer = normalizeRuntimeAudioBuffer(result.audioBuffer);
+    const sampleRate =
+      typeof result.sampleRate === "number" && Number.isFinite(result.sampleRate)
+        ? Math.floor(result.sampleRate)
+        : 0;
+    if (!audioBuffer || sampleRate <= 0) {
+      throw new Error("Claw Cast speech synthesis failed");
+    }
+
+    return {
+      audioBuffer,
+      sampleRate,
+      provider: normalizeOptionalString(result.provider) ?? null,
+    };
+  }
+
+  const speechRuntime = getVideoChatSpeechRuntime(params.runtime);
+  if (!speechRuntime) {
+    throw new Error("Claw Cast speech runtime unavailable");
+  }
+
+  const result = await speechRuntime.textToSpeechTelephony({
+    text: params.text,
+    cfg: params.cfg,
+  });
+  const audioBuffer = normalizeRuntimeAudioBuffer(result.audioBuffer);
+  const sampleRate =
+    typeof result.sampleRate === "number" && Number.isFinite(result.sampleRate)
+      ? Math.floor(result.sampleRate)
+      : 0;
+  if (!result.success || !audioBuffer || sampleRate <= 0) {
+    throw new Error(result.error ?? "Claw Cast speech synthesis failed");
+  }
+
+  return {
+    audioBuffer,
+    sampleRate,
+    provider: normalizeOptionalString(result.provider) ?? null,
+  };
 }
 
 function isValidChatAttachmentInput(value: unknown): value is VideoChatChatAttachmentInput {
@@ -1160,7 +1347,10 @@ function validateVideoChatRoomName(roomName: string): string {
   return normalizedRoomName;
 }
 
-function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigResponse {
+function buildVideoChatConfigResponse(
+  config: OpenClawConfig,
+  runtime?: OpenClawPluginApi["runtime"],
+): VideoChatConfigResponse {
   const effective = resolveEffectiveVideoChatConfig(config);
   const provider = effective.videoChat?.provider === "lemonslice" ? "lemonslice" : null;
   const lemonSlice = effective.videoChat?.lemonSlice;
@@ -1189,8 +1379,21 @@ function buildVideoChatConfigResponse(config: OpenClawConfig): VideoChatConfigRe
   if (!hasConfiguredSecretInput(livekit?.apiSecret)) {
     missing.push("videoChat.livekit.apiSecret");
   }
-  if (!hasConfiguredSecretInput(elevenLabs?.apiKey)) {
-    missing.push("messages.tts.elevenlabs.apiKey");
+  if (
+    runtime &&
+    !hasVideoChatVideoAvatarSpeechRuntime(runtime) &&
+    !getVideoChatSpeechRuntime(runtime) &&
+    !hasConfiguredSecretInput(elevenLabs?.apiKey)
+  ) {
+    missing.push("messages.tts");
+  }
+  if (
+    runtime &&
+    !hasVideoChatVideoAvatarTranscriptionRuntime(runtime) &&
+    !getVideoChatMediaUnderstandingRuntime(runtime) &&
+    !hasConfiguredSecretInput(elevenLabs?.apiKey)
+  ) {
+    missing.push("tools.media.audio");
   }
 
   return {
@@ -1288,6 +1491,57 @@ async function verifyLiveKitSetupConfig(params: {
       "setup.verify.livekit.failed",
       {
         livekitUrl: params.livekitUrl,
+        code: requestError.code,
+        error: requestError.message,
+      },
+    );
+    throw requestError;
+  }
+}
+
+async function verifyCoreSpeechSetupConfig(params: {
+  logger: VideoChatLogger;
+  runtime: OpenClawPluginApi["runtime"];
+  config: OpenClawConfig;
+}): Promise<void> {
+  logVideoChatEvent(params.logger, "info", "setup.verify.core-speech.begin");
+  try {
+    const synthesized = await synthesizeVideoChatSpeechWithRuntime({
+      runtime: params.runtime,
+      cfg: params.config,
+      text: VIDEO_CHAT_RUNTIME_SPEECH_VERIFY_TEXT,
+    });
+    const waveBuffer = createPcmWaveBuffer({
+      pcmAudioBuffer: synthesized.audioBuffer,
+      sampleRate: synthesized.sampleRate,
+    });
+    const transcription = await transcribeAudioBufferWithRuntime({
+      runtime: params.runtime,
+      cfg: params.config,
+      audioBuffer: waveBuffer,
+      mimeType: "audio/wav",
+    });
+    const text = normalizeOptionalString(transcription.text);
+    if (!text) {
+      throw new Error(
+        "Claw Cast speech-to-text could not be verified through OpenClaw's media runtime",
+      );
+    }
+    logVideoChatEvent(params.logger, "info", "setup.verify.core-speech.succeeded", {
+      provider: synthesized.provider ?? "runtime",
+      transcriptChars: text.length,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const requestError = classifySetupVerificationError(
+      `Claw Cast core speech runtime could not be verified: ${message}`,
+      error,
+    );
+    logVideoChatEvent(
+      params.logger,
+      requestError.code === "INVALID_REQUEST" ? "warn" : "error",
+      "setup.verify.core-speech.failed",
+      {
         code: requestError.code,
         error: requestError.message,
       },
@@ -1616,6 +1870,7 @@ async function writeConfigFile(api: OpenClawPluginApi, config: OpenClawConfig): 
 
 async function verifyVideoChatSetupConfig(params: {
   logger: VideoChatLogger;
+  runtime: OpenClawPluginApi["runtime"];
   config: OpenClawConfig;
 }): Promise<void> {
   const effective = resolveEffectiveVideoChatConfig(params.config);
@@ -1640,6 +1895,12 @@ async function verifyVideoChatSetupConfig(params: {
     : undefined;
   const elevenLabsVoiceId = normalizeOptionalString(effective.messages?.tts?.elevenlabs?.voiceId);
   const elevenLabsModelId = normalizeOptionalString(effective.messages?.tts?.elevenlabs?.modelId);
+  const speechRuntime = getVideoChatSpeechRuntime(params.runtime);
+  const mediaUnderstandingRuntime = getVideoChatMediaUnderstandingRuntime(params.runtime);
+  const hasVideoAvatarSpeechRuntime = hasVideoChatVideoAvatarSpeechRuntime(params.runtime);
+  const hasVideoAvatarTranscriptionRuntime = hasVideoChatVideoAvatarTranscriptionRuntime(
+    params.runtime,
+  );
 
   const checks: Promise<void>[] = [];
   if (livekitUrl && livekitApiKey && livekitApiSecret) {
@@ -1652,7 +1913,18 @@ async function verifyVideoChatSetupConfig(params: {
       }),
     );
   }
-  if (elevenLabsApiKey) {
+  if (
+    (hasVideoAvatarSpeechRuntime || speechRuntime) &&
+    (hasVideoAvatarTranscriptionRuntime || mediaUnderstandingRuntime)
+  ) {
+    checks.push(
+      verifyCoreSpeechSetupConfig({
+        logger: params.logger,
+        runtime: params.runtime,
+        config: params.config,
+      }),
+    );
+  } else if (elevenLabsApiKey) {
     checks.push(
       verifyElevenLabsSetupConfig({
         logger: params.logger,
@@ -1692,21 +1964,47 @@ async function transcribeVideoChatAudio(params: {
     throw new Error("audio payload is too large");
   }
 
+  const mimeType = normalizeMimeType(params.mimeType);
+  logVideoChatEvent(params.logger, "info", "transcription.requested", {
+    bytes: audioBuffer.length,
+    mimeType: mimeType ?? "application/octet-stream",
+  });
+
+  if (
+    hasVideoChatVideoAvatarTranscriptionRuntime(params.runtime) ||
+    getVideoChatMediaUnderstandingRuntime(params.runtime)
+  ) {
+    const runtimeTranscription = await transcribeAudioBufferWithRuntime({
+      runtime: params.runtime,
+      cfg: params.cfg,
+      audioBuffer,
+      mimeType: mimeType ?? "audio/wav",
+    });
+    const transcript = normalizeOptionalString(runtimeTranscription.text) ?? "";
+    logVideoChatEvent(
+      params.logger,
+      "info",
+      transcript ? "transcription.succeeded" : "transcription.ignored",
+      {
+        bytes: audioBuffer.length,
+        mimeType: mimeType ?? "application/octet-stream",
+        transcriptChars: transcript.length,
+        provider: "runtime",
+      },
+    );
+    return { transcript };
+  }
+
   const effectiveConfig = resolveEffectiveVideoChatConfig(params.cfg);
   const elevenLabsApiKey = normalizeResolvedSecretInputString({
     value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
     path: "messages.tts.elevenlabs.apiKey",
   });
   if (!elevenLabsApiKey) {
-    throw new Error("Claw Cast transcription is unavailable: missing ElevenLabs API key");
+    throw new Error("Claw Cast transcription is unavailable: missing OpenClaw speech runtime or ElevenLabs API key");
   }
 
-  const mimeType = normalizeMimeType(params.mimeType);
   const fileName = `input${extensionForAudioMimeType(mimeType)}`;
-  logVideoChatEvent(params.logger, "info", "transcription.requested", {
-    bytes: audioBuffer.length,
-    mimeType: mimeType ?? "application/octet-stream",
-  });
 
   for (let attempt = 1; attempt <= ELEVENLABS_SPEECH_TO_TEXT_MAX_ATTEMPTS; attempt += 1) {
     const form = new FormData();
@@ -1790,6 +2088,37 @@ async function transcribeVideoChatAudio(params: {
   }
 
   throw new Error("Claw Cast transcription failed after retries");
+}
+
+async function synthesizeVideoChatAudio(params: {
+  runtime: OpenClawPluginApi["runtime"];
+  logger: OpenClawPluginApi["logger"];
+  cfg: OpenClawConfig;
+  text: string;
+}): Promise<{ audioBase64: string; sampleRate: number; provider: string | null }> {
+  const text = params.text.trim();
+  if (!text) {
+    throw new Error("speech text is required");
+  }
+
+  logVideoChatEvent(params.logger, "info", "speech.synthesize.requested", {
+    textChars: text.length,
+  });
+  const result = await synthesizeVideoChatSpeechWithRuntime({
+    runtime: params.runtime,
+    cfg: params.cfg,
+    text,
+  });
+  logVideoChatEvent(params.logger, "info", "speech.synthesize.succeeded", {
+    textChars: text.length,
+    sampleRate: result.sampleRate,
+    provider: result.provider ?? "runtime",
+  });
+  return {
+    audioBase64: result.audioBuffer.toString("base64"),
+    sampleRate: result.sampleRate,
+    provider: result.provider,
+  };
 }
 
 async function createRealtimeVideoChatTranscriptionToken(params: {
@@ -1949,7 +2278,11 @@ async function runVideoChatSetupCli(api: OpenClawPluginApi, options: unknown): P
 
   const nextConfig = applyVideoChatSetupToConfig(currentConfig, setupInput);
   if (shouldVerifyVideoChatSetupConfig(currentConfig, nextConfig)) {
-    await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+    await verifyVideoChatSetupConfig({
+      logger: api.logger,
+      runtime: api.runtime,
+      config: nextConfig,
+    });
   }
   await writeConfigFile(api, nextConfig);
   const status = buildVideoChatConfigResponse(nextConfig);
@@ -2800,7 +3133,7 @@ function registerVideoChatHttpRoutes(
               res,
               asJsonResponse({
                 success: true,
-                setup: buildVideoChatConfigResponse(cfg),
+                setup: buildVideoChatConfigResponse(cfg, api.runtime),
               }),
             );
             return true;
@@ -2811,14 +3144,18 @@ function registerVideoChatHttpRoutes(
             const currentConfig = api.runtime.config.loadConfig();
             const nextConfig = applyVideoChatSetupToConfig(currentConfig, setupInput);
             if (shouldVerifyVideoChatSetupConfig(currentConfig, nextConfig)) {
-              await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+              await verifyVideoChatSetupConfig({
+                logger: api.logger,
+                runtime: api.runtime,
+                config: nextConfig,
+              });
             }
             await writeConfigFile(api, nextConfig);
             sendHttpResponse(
               res,
               asJsonResponse({
                 success: true,
-                setup: buildVideoChatConfigResponse(nextConfig),
+                setup: buildVideoChatConfigResponse(nextConfig, api.runtime),
               }),
             );
             return true;
@@ -3472,10 +3809,6 @@ async function createVideoChatSession(params: {
   }
 
   const livekit = effectiveConfig.videoChat?.livekit;
-  const elevenLabsApiKey = normalizeResolvedSecretInputString({
-    value: effectiveConfig.messages?.tts?.elevenlabs?.apiKey,
-    path: "messages.tts.elevenlabs.apiKey",
-  });
   const avatarImageUrl = normalizeOptionalString(params.avatarImageUrl);
   const avatarTimeoutSeconds = normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds);
   const aspectRatio = normalizeAvatarAspectRatio(params.aspectRatio);
@@ -3493,8 +3826,8 @@ async function createVideoChatSession(params: {
       "invalid videoChat.session.create params: avatarImageUrl is required",
     );
   }
-  if (!livekitUrl || !apiKey || !apiSecret || !elevenLabsApiKey) {
-    throw new Error("Claw Cast session creation is unavailable: missing LiveKit or ElevenLabs credentials");
+  if (!livekitUrl || !apiKey || !apiSecret) {
+    throw new Error("Claw Cast session creation is unavailable: missing LiveKit credentials");
   }
   const imageUrlValidationError = await validateAvatarImageUrl(avatarImageUrl);
   if (imageUrlValidationError) {
@@ -3567,26 +3900,28 @@ function resolveVideoChatAgentCredentials(config: OpenClawConfig): SidecarCreden
     value: effective.videoChat?.livekit?.apiSecret,
     path: "videoChat.livekit.apiSecret",
   });
-  const elevenLabsApiKey = normalizeResolvedSecretInputString({
-    value: effective.messages?.tts?.elevenlabs?.apiKey,
-    path: "messages.tts.elevenlabs.apiKey",
-  });
   if (
     !lemonSliceApiKey ||
     !livekitUrl ||
     !livekitApiKey ||
-    !livekitApiSecret ||
-    !elevenLabsApiKey
+    !livekitApiSecret
   ) {
     return null;
   }
 
+  const elevenLabsApiKey = hasConfiguredSecretInput(effective.messages?.tts?.elevenlabs?.apiKey)
+    ? normalizeResolvedSecretInputString({
+        value: effective.messages?.tts?.elevenlabs?.apiKey,
+        path: "messages.tts.elevenlabs.apiKey",
+      })
+    : undefined;
+
   return {
     lemonSliceApiKey,
-    elevenLabsApiKey,
     livekitUrl,
     livekitApiKey,
     livekitApiSecret,
+    ...(elevenLabsApiKey ? { elevenLabsApiKey } : {}),
     elevenLabsVoiceId: normalizeOptionalString(effective.messages?.tts?.elevenlabs?.voiceId),
     elevenLabsModelId: normalizeOptionalString(effective.messages?.tts?.elevenlabs?.modelId),
   };
@@ -4050,7 +4385,6 @@ function buildWorkerEnv(params: {
     LIVEKIT_API_SECRET: params.credentials.livekitApiSecret,
     OPENCLAW_VIDEO_CHAT_GATEWAY_URL: `ws://127.0.0.1:${params.gateway.port}`,
     OPENCLAW_VIDEO_CHAT_LEMONSLICE_API_KEY: params.credentials.lemonSliceApiKey,
-    OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY: params.credentials.elevenLabsApiKey,
     OPENCLAW_VIDEO_CHAT_INSTANCE_ARG: instanceArg,
     [VIDEO_CHAT_SIDECAR_AGENT_NAME_ENV]: params.agentName,
   };
@@ -4060,6 +4394,9 @@ function buildWorkerEnv(params: {
   }
   if (params.gateway.auth.mode === "password" && params.gateway.auth.password) {
     env.OPENCLAW_VIDEO_CHAT_GATEWAY_PASSWORD = params.gateway.auth.password;
+  }
+  if (params.credentials.elevenLabsApiKey) {
+    env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY = params.credentials.elevenLabsApiKey;
   }
   if (params.credentials.elevenLabsVoiceId) {
     env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_VOICE_ID = params.credentials.elevenLabsVoiceId;
@@ -4087,7 +4424,7 @@ async function startVideoChatAgentSidecar(params: {
   const credentials = resolveVideoChatAgentCredentials(params.config);
   if (!credentials) {
     params.log.info(
-      "Claw Cast agent sidecar disabled: missing LiveKit, LemonSlice, or ElevenLabs credentials",
+      "Claw Cast agent sidecar disabled: missing LiveKit or LemonSlice credentials",
     );
     return null;
   }
@@ -5237,7 +5574,7 @@ const videoChatPlugin = {
             return;
           }
           const cfg = api.runtime.config.loadConfig();
-          respond(true, { config: buildVideoChatConfigResponse(cfg) });
+          respond(true, { config: buildVideoChatConfigResponse(cfg, api.runtime) });
         } catch (error) {
           respondGatewayError(
             respond,
@@ -5256,7 +5593,7 @@ const videoChatPlugin = {
             return;
           }
           const cfg = api.runtime.config.loadConfig();
-          respond(true, { setup: buildVideoChatConfigResponse(cfg) });
+          respond(true, { setup: buildVideoChatConfigResponse(cfg, api.runtime) });
         } catch (error) {
           respondGatewayError(
             respond,
@@ -5278,10 +5615,14 @@ const videoChatPlugin = {
           const currentConfig = api.runtime.config.loadConfig();
           const nextConfig = applyVideoChatSetupToConfig(currentConfig, setupInput);
           if (shouldVerifyVideoChatSetupConfig(currentConfig, nextConfig)) {
-            await verifyVideoChatSetupConfig({ logger: api.logger, config: nextConfig });
+            await verifyVideoChatSetupConfig({
+              logger: api.logger,
+              runtime: api.runtime,
+              config: nextConfig,
+            });
           }
           await writeConfigFile(api, nextConfig);
-          respond(true, { setup: buildVideoChatConfigResponse(nextConfig) });
+          respond(true, { setup: buildVideoChatConfigResponse(nextConfig, api.runtime) });
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "failed to save Claw Cast setup";
@@ -5508,6 +5849,41 @@ const videoChatPlugin = {
             respond,
             invalidMessages.has(message) ? "INVALID_REQUEST" : "UNAVAILABLE",
             message,
+          );
+        }
+      },
+    );
+
+    api.registerGatewayMethod(
+      VIDEO_CHAT_GATEWAY_SYNTHESIZE_METHOD,
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          if (!assertMethodParams(params, VIDEO_CHAT_GATEWAY_SYNTHESIZE_METHOD, respond)) {
+            return;
+          }
+          if (typeof params.text !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.audio.synthesize params",
+            );
+            return;
+          }
+          const cfg = api.runtime.config.loadConfig();
+          const result = await synthesizeVideoChatAudio({
+            runtime: api.runtime,
+            logger: api.logger,
+            cfg,
+            text: params.text,
+          });
+          respond(true, result);
+        } catch (error) {
+          respondGatewayError(
+            respond,
+            error instanceof Error && error.message === "speech text is required"
+              ? "INVALID_REQUEST"
+              : "UNAVAILABLE",
+            error instanceof Error ? error.message : "Claw Cast speech synthesis failed",
           );
         }
       },

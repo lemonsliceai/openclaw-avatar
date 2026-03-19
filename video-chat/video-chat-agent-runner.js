@@ -61,6 +61,14 @@ async function importFromCandidates(baseRunnerPaths, specifier) {
   return import(pathToFileURL(resolveSpecifierFromCandidates(baseRunnerPaths, specifier)).href);
 }
 
+async function importOptionalFromCandidates(baseRunnerPaths, specifier) {
+  try {
+    return await importFromCandidates(baseRunnerPaths, specifier);
+  } catch {
+    return null;
+  }
+}
+
 async function loadDeps() {
   const runnerPath = process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim();
   const baseRunnerPath = resolveDepsBaseRunnerPath();
@@ -73,7 +81,7 @@ async function loadDeps() {
   );
   const [agentsModule, elevenlabsModule, lemonsliceModule, wsModule] = await Promise.all([
     importFromCandidates(resolutionPaths, "@livekit/agents"),
-    importFromCandidates(resolutionPaths, "@livekit/agents-plugin-elevenlabs"),
+    importOptionalFromCandidates(resolutionPaths, "@livekit/agents-plugin-elevenlabs"),
     importFromCandidates(resolutionPaths, "@livekit/agents-plugin-lemonslice"),
     importFromCandidates(resolutionPaths, "ws"),
   ]);
@@ -592,6 +600,136 @@ async function connectGatewayBridge(params) {
   return client;
 }
 
+function decodeGatewaySpeechAudioBuffer(value) {
+  if (typeof value !== "string") {
+    throw new Error("gateway speech response did not include audio");
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("gateway speech response returned empty audio");
+  }
+  return Buffer.from(trimmed, "base64");
+}
+
+function normalizeGatewaySpeechPayload(payload) {
+  const sampleRate =
+    typeof payload?.sampleRate === "number" && Number.isFinite(payload.sampleRate)
+      ? Math.floor(payload.sampleRate)
+      : 0;
+  if (sampleRate <= 0) {
+    throw new Error("gateway speech response did not include a valid sample rate");
+  }
+  return {
+    audioBuffer: decodeGatewaySpeechAudioBuffer(payload?.audioBase64),
+    sampleRate,
+    provider:
+      typeof payload?.provider === "string" && payload.provider.trim() ? payload.provider.trim() : "",
+  };
+}
+
+function createGatewaySpeechTts(params) {
+  const { deps, getGatewayClient, fallbackTts } = params;
+
+  class GatewaySpeechChunkedStream extends deps.agents.tts.ChunkedStream {
+    label = "openclaw.GatewaySpeechChunkedStream";
+
+    constructor(tts, text, connOptions, abortSignal) {
+      super(text, tts, connOptions, abortSignal);
+    }
+
+    async run() {
+      try {
+        const gatewayClient = getGatewayClient();
+        if (!gatewayClient) {
+          throw new Error("gateway speech runtime unavailable");
+        }
+        const payload = normalizeGatewaySpeechPayload(
+          await gatewayClient.request("videoChat.audio.synthesize", {
+            text: this.inputText,
+          }),
+        );
+        const frameStream = new deps.agents.AudioByteStream(payload.sampleRate, 1);
+        const arrayBuffer = payload.audioBuffer.buffer.slice(
+          payload.audioBuffer.byteOffset,
+          payload.audioBuffer.byteOffset + payload.audioBuffer.byteLength,
+        );
+        const frames = [...frameStream.write(arrayBuffer), ...frameStream.flush()];
+        if (frames.length === 0) {
+          throw new Error("gateway speech response returned no audio frames");
+        }
+        const requestId = randomUUID();
+        const segmentId = randomUUID();
+        for (let index = 0; index < frames.length; index += 1) {
+          if (this.abortSignal.aborted) {
+            return;
+          }
+          this.queue.put({
+            requestId,
+            segmentId,
+            frame: frames[index],
+            final: index === frames.length - 1,
+            ...(index === 0 ? { deltaText: this.inputText } : {}),
+          });
+        }
+      } catch (error) {
+        if (!fallbackTts) {
+          throw error;
+        }
+        console.warn(
+          `[video-chat-agent] gateway speech runtime failed, falling back to ElevenLabs: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        for await (const audio of fallbackTts.synthesize(this.inputText, undefined, this.abortSignal)) {
+          if (this.abortSignal.aborted) {
+            return;
+          }
+          this.queue.put(audio);
+        }
+      }
+    }
+  }
+
+  class GatewaySpeechTTS extends deps.agents.tts.TTS {
+    label = "openclaw.GatewaySpeechTTS";
+
+    constructor() {
+      super(16_000, 1, { streaming: false });
+    }
+
+    synthesize(text, connOptions, abortSignal) {
+      return new GatewaySpeechChunkedStream(this, text, connOptions, abortSignal);
+    }
+
+    stream(options) {
+      return new deps.agents.tts.StreamAdapter(
+        this,
+        new deps.agents.tokenize.basic.SentenceTokenizer(),
+      ).stream(options);
+    }
+  }
+
+  return new GatewaySpeechTTS();
+}
+
+function createLegacyElevenLabsTts(deps) {
+  if (!deps.elevenlabs) {
+    return null;
+  }
+  const elevenLabsApiKey = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY?.trim();
+  if (!elevenLabsApiKey) {
+    return null;
+  }
+  const elevenLabsVoiceId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_VOICE_ID?.trim();
+  const elevenLabsModelId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_MODEL_ID?.trim();
+  return new deps.elevenlabs.TTS({
+    apiKey: elevenLabsApiKey,
+    ...(elevenLabsVoiceId ? { voiceId: elevenLabsVoiceId } : {}),
+    ...(elevenLabsModelId ? { modelId: elevenLabsModelId } : {}),
+    autoMode: false,
+    wordTokenizer: new deps.agents.tokenize.basic.WordTokenizer(false),
+    streamingLatency: 1,
+  });
+}
+
 async function runVideoChatAgentTestMode(ctx, metadata) {
   const roomName = typeof ctx?.room?.name === "string" ? ctx.room.name : "";
   console.log(
@@ -677,18 +815,11 @@ async function runVideoChatAgentEntry(ctx) {
     return;
   }
   const deps = await loadDeps();
-  const elevenLabsApiKey = requireEnv("OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY");
   const lemonSliceApiKey = requireEnv("OPENCLAW_VIDEO_CHAT_LEMONSLICE_API_KEY");
-  const elevenLabsVoiceId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_VOICE_ID?.trim();
-  const elevenLabsModelId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_MODEL_ID?.trim();
-
-  const tts = new deps.elevenlabs.TTS({
-    apiKey: elevenLabsApiKey,
-    ...(elevenLabsVoiceId ? { voiceId: elevenLabsVoiceId } : {}),
-    ...(elevenLabsModelId ? { modelId: elevenLabsModelId } : {}),
-    autoMode: false,
-    wordTokenizer: new deps.agents.tokenize.basic.WordTokenizer(false),
-    streamingLatency: 1,
+  const tts = createGatewaySpeechTts({
+    deps,
+    getGatewayClient: () => gatewayClient,
+    fallbackTts: createLegacyElevenLabsTts(deps),
   });
 
   const session = new deps.agents.voice.AgentSession({

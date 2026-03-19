@@ -14,6 +14,11 @@ declare module "openclaw/plugin-sdk" {
     session?: {
       mainKey?: string;
     };
+    tools?: {
+      media?: {
+        audio?: Record<string, unknown>;
+      };
+    };
     videoChat?: {
       provider?: "lemonslice" | string;
       lemonSlice?: {
@@ -54,6 +59,43 @@ declare module "openclaw/plugin-sdk" {
       config: {
         loadConfig: () => OpenClawConfig;
         writeConfigFile?: (config: OpenClawConfig) => Promise<void>;
+      };
+      tts?: {
+        textToSpeechTelephony: (input: {
+          text: string;
+          cfg: OpenClawConfig;
+          prefsPath?: string;
+        }) => Promise<{
+          success: boolean;
+          audioBuffer?: Buffer | Uint8Array | ArrayBuffer;
+          sampleRate?: number;
+          provider?: string;
+          error?: string;
+        }>;
+      };
+      videoAvatar?: {
+        synthesizeSpeech: (input: {
+          text: string;
+          cfg: OpenClawConfig;
+          prefsPath?: string;
+        }) => Promise<{
+          audioBuffer?: Buffer | Uint8Array | ArrayBuffer;
+          sampleRate?: number;
+          provider?: string;
+        }>;
+        transcribeAudio: (input: {
+          audioBuffer: Buffer | Uint8Array | ArrayBuffer;
+          cfg: OpenClawConfig;
+          mime?: string;
+          agentDir?: string;
+        }) => Promise<{ text?: string }>;
+      };
+      mediaUnderstanding?: {
+        transcribeAudioFile: (input: {
+          filePath: string;
+          cfg: OpenClawConfig;
+          mime?: string;
+        }) => Promise<{ text?: string }>;
       };
       stt: {
         transcribeAudioFile: (input: {
