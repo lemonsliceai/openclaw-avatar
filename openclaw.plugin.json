@@ -8,11 +8,130 @@
     "properties": {
       "videoChat": {
         "type": "object",
-        "additionalProperties": true
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["lemonslice"]
+          },
+          "lemonSlice": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "apiKey": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "env": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                ]
+              },
+              "imageUrl": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "livekit": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "type": "string",
+                "minLength": 1
+              },
+              "apiKey": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "env": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                ]
+              },
+              "apiSecret": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "env": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                ]
+              }
+            }
+          }
+        }
       },
       "messages": {
         "type": "object",
         "additionalProperties": true
+      },
+      "tools": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "media": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "audio": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "models": {
+                    "type": "array"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

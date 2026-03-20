@@ -22,6 +22,9 @@ export function createPluginRuntimeMock() {
         provider: "video-avatar",
         sampleRate: 24000,
       }),
+      transcribeAudio: vi.fn().mockResolvedValue({
+        text: "hello from microphone",
+      }),
     },
     stt: {
       transcribeAudioFile: vi.fn(),

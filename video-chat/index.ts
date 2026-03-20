@@ -708,6 +708,73 @@ function asObjectRecord(value: unknown): Record<string, unknown> {
   return isObjectRecord(value) ? value : {};
 }
 
+function sanitizeVideoChatSecretConfigInput(
+  value: unknown,
+): string | { value?: string; env?: string } | undefined {
+  const directValue = normalizeOptionalString(value);
+  if (directValue) {
+    return directValue;
+  }
+  if (!isObjectRecord(value)) {
+    return undefined;
+  }
+  const nestedValue = normalizeOptionalString(value.value);
+  const env = normalizeOptionalString(value.env);
+  if (!nestedValue && !env) {
+    return undefined;
+  }
+  return {
+    ...(nestedValue ? { value: nestedValue } : {}),
+    ...(env ? { env } : {}),
+  };
+}
+
+function sanitizeVideoChatConfigValue(
+  value: unknown,
+): OpenClawConfig["videoChat"] | undefined {
+  if (!isObjectRecord(value)) {
+    return undefined;
+  }
+
+  const record = asObjectRecord(value);
+  const lemonSlice = asObjectRecord(record.lemonSlice);
+  const livekit = asObjectRecord(record.livekit);
+
+  const provider = normalizeOptionalString(record.provider) === "lemonslice" ? "lemonslice" : undefined;
+  const lemonSliceApiKey = sanitizeVideoChatSecretConfigInput(lemonSlice.apiKey);
+  const lemonSliceImageUrl = normalizeOptionalString(lemonSlice.imageUrl);
+  const livekitUrl = normalizeOptionalString(livekit.url);
+  const livekitApiKey = sanitizeVideoChatSecretConfigInput(livekit.apiKey);
+  const livekitApiSecret = sanitizeVideoChatSecretConfigInput(livekit.apiSecret);
+
+  const sanitized: Record<string, unknown> = {
+    ...(provider ? { provider } : {}),
+    ...(
+      lemonSliceApiKey || lemonSliceImageUrl
+        ? {
+            lemonSlice: {
+              ...(lemonSliceApiKey !== undefined ? { apiKey: lemonSliceApiKey } : {}),
+              ...(lemonSliceImageUrl ? { imageUrl: lemonSliceImageUrl } : {}),
+            },
+          }
+        : {}
+    ),
+    ...(
+      livekitUrl || livekitApiKey || livekitApiSecret
+        ? {
+            livekit: {
+              ...(livekitUrl ? { url: livekitUrl } : {}),
+              ...(livekitApiKey !== undefined ? { apiKey: livekitApiKey } : {}),
+              ...(livekitApiSecret !== undefined ? { apiSecret: livekitApiSecret } : {}),
+            },
+          }
+        : {}
+    ),
+  };
+
+  return Object.keys(sanitized).length > 0 ? (sanitized as OpenClawConfig["videoChat"]) : undefined;
+}
+
 function readVideoChatPluginConfig(config: OpenClawConfig): Record<string, unknown> | null {
   const plugins = asObjectRecord(config.plugins);
   const entries = asObjectRecord(plugins.entries);
@@ -724,8 +791,9 @@ function resolveEffectiveVideoChatConfig(config: OpenClawConfig): OpenClawConfig
   // Plugin-owned setup is persisted under plugins.entries.video-chat.config, but Claw Cast only
   // owns the videoChat branch now. Shared speech/media config must come from the gateway root.
   const effective: OpenClawConfig = { ...config };
-  if (isObjectRecord(pluginConfig.videoChat)) {
-    effective.videoChat = pluginConfig.videoChat as OpenClawConfig["videoChat"];
+  const sanitizedPluginVideoChat = sanitizeVideoChatConfigValue(pluginConfig.videoChat);
+  if (sanitizedPluginVideoChat) {
+    effective.videoChat = sanitizedPluginVideoChat;
   }
   return effective;
 }
@@ -1599,7 +1667,7 @@ function applyVideoChatSetupToConfig(
   const pluginEntry = asObjectRecord(entries[VIDEO_CHAT_PLUGIN_ID]);
   const existingPluginConfig = asObjectRecord(pluginEntry.config);
 
-  const videoChatRecord = asObjectRecord(effective.videoChat);
+  const videoChatRecord = asObjectRecord(sanitizeVideoChatConfigValue(effective.videoChat));
   const lemonSliceRecord = asObjectRecord(videoChatRecord.lemonSlice);
   const livekitRecord = asObjectRecord(videoChatRecord.livekit);
 

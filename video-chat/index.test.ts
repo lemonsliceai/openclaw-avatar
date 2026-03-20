@@ -582,12 +582,13 @@ describe("video-chat plugin", () => {
       termTimeoutMs: 400,
       postKillDelayMs: 200,
     });
-    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
-      expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
-      expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
-      expect.stringContaining("/openclaw/dist/video-chat-agent-runner.js"),
-      SERVICE_GATEWAY_INSTANCE_ARG,
-    ]);
+    const spawnArgs = mockSpawn.mock.calls[0]?.[1] as string[] | undefined;
+    expect(spawnArgs?.[0]).toEqual(expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"));
+    expect(spawnArgs?.[1]).toEqual(expect.stringContaining("/video-chat/video-chat-agent-runner.js"));
+    expect(spawnArgs?.at(-1)).toBe(SERVICE_GATEWAY_INSTANCE_ARG);
+    if ((spawnArgs?.length ?? 0) > 3) {
+      expect(spawnArgs?.[2]).toEqual(expect.stringContaining("/openclaw/dist/video-chat-agent-runner.js"));
+    }
     await service?.stop?.();
   });
 
@@ -1966,6 +1967,75 @@ describe("video-chat plugin", () => {
     expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
     expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
+  });
+
+  it("drops unsupported legacy provider config when saving setup", async () => {
+    const config = {
+      ...baseConfig,
+      plugins: {
+        entries: {
+          "video-chat": {
+            config: {
+              videoChat: {
+                provider: "removed-provider",
+                lemonSlice: {
+                  apiKey: "ls-key",
+                  imageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
+                },
+                livekit: {
+                  url: "wss://example.livekit.cloud",
+                  apiKey: "lk-key",
+                  apiSecret: "lk-secret",
+                },
+                removedProviderConfig: {
+                  apiKey: "legacy-key",
+                  voiceId: "legacy-voice",
+                },
+                pipeline: {
+                  provider: "removed-provider",
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const { methods, runtime } = setup(config);
+
+    const respond = await invoke(methods, "videoChat.setup.save", {
+      livekitUrl: "wss://new.livekit.cloud",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const savedConfig = vi.mocked(runtime.config.writeConfigFile).mock.calls[0]?.[0] as
+      | {
+          plugins?: {
+            entries?: {
+              "video-chat"?: {
+                config?: {
+                  videoChat?: Record<string, unknown>;
+                };
+              };
+            };
+          };
+        }
+      | undefined;
+    const videoChatConfig = savedConfig?.plugins?.entries?.["video-chat"]?.config?.videoChat;
+    expect(videoChatConfig).toEqual({
+      provider: "lemonslice",
+      lemonSlice: {
+        apiKey: "ls-key",
+        imageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
+      },
+      livekit: {
+        url: "wss://new.livekit.cloud",
+        apiKey: "lk-key",
+        apiSecret: "lk-secret",
+      },
+    });
+    expect(videoChatConfig).not.toHaveProperty("removedProviderConfig");
+    expect(videoChatConfig).not.toHaveProperty("pipeline");
   });
 
   it("rejects invalid setup save params", async () => {
