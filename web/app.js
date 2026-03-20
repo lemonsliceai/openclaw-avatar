@@ -219,6 +219,7 @@ let serverSpeechRecorderPcmChunks = [];
 let serverSpeechRecorderPrerollChunks = [];
 let serverSpeechRecorderSpeechFrameStreak = 0;
 let serverSpeechRecorderVoicedFrameCount = 0;
+let serverSpeechRecorderBargeInActive = false;
 let serverSpeechRecorderNoiseFloor = 0;
 let serverSpeechRecorderVadPrevInput = 0;
 let serverSpeechRecorderVadPrevOutput = 0;
@@ -2362,6 +2363,7 @@ function resetServerSpeechCaptureState() {
   serverSpeechRecorderPrerollChunks = [];
   serverSpeechRecorderSpeechFrameStreak = 0;
   serverSpeechRecorderVoicedFrameCount = 0;
+  serverSpeechRecorderBargeInActive = false;
 }
 
 function isMicrophoneMuted() {
@@ -2478,7 +2480,7 @@ function queueServerSpeechCaptureUpload(audioBytes, mimeType, options = {}) {
 }
 
 function flushServerSpeechCapture() {
-  if (shouldBlockServerSpeechTranscription()) {
+  if (shouldBlockServerSpeechTranscription() && !serverSpeechRecorderBargeInActive) {
     discardServerSpeechCapture();
     return;
   }
@@ -2802,6 +2804,7 @@ async function startServerSpeechTranscription() {
         serverSpeechRecorderSpeechStartedAt = now;
         serverSpeechRecorderSilenceStartedAt = 0;
         serverSpeechRecorderVoicedFrameCount = serverSpeechRecorderSpeechFrameStreak;
+        serverSpeechRecorderBargeInActive = shouldBlockServerSpeechTranscription(now);
         serverSpeechRecorderPcmChunks = serverSpeechRecorderPrerollChunks.slice();
         serverSpeechRecorderPrerollChunks = [];
         serverSpeechRecorderSpeechFrameStreak = 0;
