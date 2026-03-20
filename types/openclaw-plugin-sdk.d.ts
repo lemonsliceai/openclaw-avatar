@@ -33,11 +33,7 @@ declare module "openclaw/plugin-sdk" {
     };
     messages?: {
       tts?: {
-        elevenlabs?: {
-          apiKey?: unknown;
-          voiceId?: string;
-          modelId?: string;
-        };
+        provider?: string;
       };
     };
     [key: string]: unknown;
@@ -59,6 +55,9 @@ declare module "openclaw/plugin-sdk" {
       config: {
         loadConfig: () => OpenClawConfig;
         writeConfigFile?: (config: OpenClawConfig) => Promise<void>;
+      };
+      agent?: {
+        resolveAgentDir?: (cfg: OpenClawConfig, agentId: string) => string;
       };
       tts?: {
         textToSpeechTelephony: (input: {
@@ -95,6 +94,7 @@ declare module "openclaw/plugin-sdk" {
           filePath: string;
           cfg: OpenClawConfig;
           mime?: string;
+          agentDir?: string;
         }) => Promise<{ text?: string }>;
       };
       stt: {
@@ -102,6 +102,7 @@ declare module "openclaw/plugin-sdk" {
           filePath: string;
           cfg: OpenClawConfig;
           mime?: string;
+          agentDir?: string;
         }) => Promise<{ text?: string }>;
       };
     };

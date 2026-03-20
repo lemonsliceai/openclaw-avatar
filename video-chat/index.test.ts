@@ -163,11 +163,6 @@ function setup(
   if (options.disableVideoAvatarRuntime) {
     delete (runtime as { videoAvatar?: unknown }).videoAvatar;
   }
-  if (runtime.videoAvatar) {
-    vi.mocked(runtime.videoAvatar.transcribeAudio).mockResolvedValue({
-      text: "hello from microphone",
-    });
-  }
   vi.mocked(runtime.stt.transcribeAudioFile).mockResolvedValue({
     text: "hello from microphone",
   });
@@ -691,6 +686,30 @@ describe("video-chat plugin", () => {
 
   it("returns redacted Claw Cast config state", async () => {
     const { methods } = setup();
+    const respond = await invoke(methods, "videoChat.config", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(
+      (call?.[1] as { config?: { configured?: boolean } } | undefined)?.config?.configured,
+    ).toBe(true);
+  });
+
+  it("treats runtime stt as a valid transcription capability in config status", async () => {
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
+    (runtime as typeof runtime & {
+      tts?: {
+        textToSpeechTelephony: ReturnType<typeof vi.fn>;
+      };
+    }).tts = {
+      textToSpeechTelephony: vi.fn().mockResolvedValue({
+        success: true,
+        audioBuffer: Buffer.from("pcm-audio"),
+        sampleRate: 24000,
+        provider: "runtime-tts",
+      }),
+    };
+
     const respond = await invoke(methods, "videoChat.config", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -2055,13 +2074,6 @@ describe("video-chat plugin", () => {
 
   it("transcribes uploaded browser audio", async () => {
     const { methods, runtime } = setup();
-    expect(runtime.videoAvatar).toBeDefined();
-    vi.mocked(runtime.videoAvatar!.transcribeAudio).mockResolvedValue({
-      text: "hello from microphone",
-    });
-    vi.mocked(runtime.stt.transcribeAudioFile).mockRejectedValue(
-      new Error("runtime STT should not be used"),
-    );
     const respond = await invoke(methods, "videoChat.audio.transcribe", {
       sessionKey: "agent:main/main",
       mimeType: "audio/webm;codecs=opus",
@@ -2073,9 +2085,66 @@ describe("video-chat plugin", () => {
     expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
       "hello from microphone",
     );
-    expect(runtime.videoAvatar?.transcribeAudio).toHaveBeenCalledTimes(1);
-    expect(runtime.stt.transcribeAudioFile).not.toHaveBeenCalled();
+    expect(runtime.stt.transcribeAudioFile).toHaveBeenCalledTimes(1);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards agentDir to STT capabilities when a session key is provided", async () => {
+    const { methods, runtime } = setup({}, { disableVideoAvatarRuntime: true });
+
+    const respond = await invoke(methods, "videoChat.audio.transcribe", {
+      sessionKey: "agent:main:main",
+      mimeType: "audio/wav",
+      data: Buffer.from("audio-bytes").toString("base64"),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(runtime.agent?.resolveAgentDir).toHaveBeenCalledWith(expect.anything(), "main");
+    expect(runtime.stt.transcribeAudioFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentDir: "/tmp/agents/main/agent",
+      }),
+    );
+  });
+
+  it("normalizes human-readable audio language names before calling STT capabilities", async () => {
+    const config = {
+      ...baseConfig,
+      tools: {
+        media: {
+          audio: {
+            enabled: true,
+            language: "English",
+            models: [{ provider: "openai", model: "gpt-4o-mini-transcribe", language: "English" }],
+          },
+        },
+      },
+    };
+    const { methods, runtime } = setup(config, { disableVideoAvatarRuntime: true });
+
+    const respond = await invoke(methods, "videoChat.audio.transcribe", {
+      sessionKey: "agent:main:main",
+      mimeType: "audio/wav",
+      data: Buffer.from("audio-bytes").toString("base64"),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(runtime.stt.transcribeAudioFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg: expect.objectContaining({
+          tools: expect.objectContaining({
+            media: expect.objectContaining({
+              audio: expect.objectContaining({
+                language: "en",
+                models: [expect.objectContaining({ language: "en" })],
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
   });
 
   it("serves the shipped browser shell and setup API routes", async () => {

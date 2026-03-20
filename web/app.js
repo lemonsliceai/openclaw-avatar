@@ -149,6 +149,12 @@ const SERVER_SPEECH_BUFFER_SIZE = 4_096;
 const SERVER_SPEECH_SILENCE_MS = 300;
 const SERVER_SPEECH_MIN_DURATION_MS = 120;
 const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
+const SERVER_SPEECH_CAPTURE_MIME_TYPES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4;codecs=mp4a.40.2",
+  "audio/mp4",
+];
 const SERVER_SPEECH_START_RETRY_BASE_DELAY_MS = 500;
 const SERVER_SPEECH_START_RETRY_MAX_DELAY_MS = 4_000;
 const SERVER_SPEECH_START_RETRY_MAX_ATTEMPTS = 5;
@@ -185,6 +191,15 @@ let serverSpeechRecorderAudioContext = null;
 let serverSpeechRecorderSourceNode = null;
 let serverSpeechRecorderProcessorNode = null;
 let serverSpeechRecorderSilenceNode = null;
+let serverSpeechRecorderCaptureTrack = null;
+let serverSpeechRecorderMediaRecorder = null;
+let serverSpeechRecorderMimeType = "";
+let serverSpeechRecorderCaptureSource = "";
+let serverSpeechRecorderRoomTrackMuted = false;
+let serverSpeechRecorderCaptureError = "";
+let serverSpeechRecorderDiscardNextCapture = false;
+let serverSpeechRecorderEncodedChunks = [];
+let serverSpeechRecorderPendingFallbackWavBytes = null;
 let serverSpeechRecorderStartPromise = null;
 let serverSpeechRecorderSpeechActive = false;
 let serverSpeechRecorderSpeechStartedAt = 0;
@@ -2030,16 +2045,16 @@ function browserSpeechRecognitionSupported() {
 
 function serverSpeechTranscriptionSupported() {
   const AudioContextCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
-  const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
   return Boolean(
     typeof AudioContextCtor === "function" &&
-      mediaStreamTrack &&
+      navigator?.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === "function" &&
       typeof MediaStream === "function",
   );
 }
 
 function shouldRunVoiceTranscription() {
-  return Boolean(activeSession && activeRoom && localAudioTrack && !localAudioTrack.isMuted);
+  return Boolean(activeSession && activeRoom);
 }
 
 function shouldPreferBrowserSpeechRecognition() {
@@ -2137,6 +2152,21 @@ function base64EncodeBytes(bytes) {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
+}
+
+function resolveServerSpeechCaptureMimeType() {
+  const MediaRecorderCtor = globalThis.MediaRecorder;
+  if (typeof MediaRecorderCtor !== "function") {
+    return "";
+  }
+  if (typeof MediaRecorderCtor.isTypeSupported !== "function") {
+    return SERVER_SPEECH_CAPTURE_MIME_TYPES[0];
+  }
+  return (
+    SERVER_SPEECH_CAPTURE_MIME_TYPES.find((candidate) =>
+      MediaRecorderCtor.isTypeSupported(candidate),
+    ) || ""
+  );
 }
 
 function downsampleAudioForRealtimeTranscription(samples, inputRate, outputRate) {
@@ -2262,15 +2292,13 @@ function resetServerSpeechCaptureState() {
   serverSpeechRecorderPrerollChunks = [];
 }
 
-function flushServerSpeechCapture() {
+function buildServerSpeechFallbackWavBytes() {
   if (serverSpeechRecorderPcmChunks.length === 0) {
-    resetServerSpeechCaptureState();
-    return;
+    return null;
   }
   const totalBytes = serverSpeechRecorderPcmChunks.reduce((sum, chunk) => sum + chunk.length, 0);
   if (totalBytes === 0) {
-    resetServerSpeechCaptureState();
-    return;
+    return null;
   }
   const pcmBytes = new Uint8Array(totalBytes);
   let offset = 0;
@@ -2278,21 +2306,49 @@ function flushServerSpeechCapture() {
     pcmBytes.set(chunk, offset);
     offset += chunk.length;
   }
-  resetServerSpeechCaptureState();
-  const wavBytes = buildWaveBytesFromPcm(pcmBytes, SERVER_SPEECH_SAMPLE_RATE);
-  const base64Data = base64EncodeBytes(wavBytes);
+  return buildWaveBytesFromPcm(pcmBytes, SERVER_SPEECH_SAMPLE_RATE);
+}
+
+async function requestServerSpeechTranscript(audioBytes, mimeType) {
+  const base64Data = base64EncodeBytes(audioBytes);
+  const sessionKey = resolveChatSessionKey();
+  const payload = await requestJson("/plugins/video-chat/api/transcribe", {
+    method: "POST",
+    body: JSON.stringify({
+      data: base64Data,
+      mimeType,
+      ...(serverSpeechRecorderCaptureSource
+        ? { captureSource: serverSpeechRecorderCaptureSource }
+        : {}),
+      ...(serverSpeechRecorderRoomTrackMuted ? { roomTrackMuted: true } : {}),
+      ...(serverSpeechRecorderCaptureError
+        ? { captureError: serverSpeechRecorderCaptureError }
+        : {}),
+      ...(sessionKey ? { sessionKey } : {}),
+    }),
+  });
+  return stripRealtimeTranscriptionCaptionCues(extractServerSpeechTranscript(payload));
+}
+
+function queueServerSpeechCaptureUpload(audioBytes, mimeType, options = {}) {
   serverSpeechSubmissionQueue = serverSpeechSubmissionQueue
     .then(async () => {
-      const payload = await requestJson("/plugins/video-chat/api/transcribe", {
-        method: "POST",
-        body: JSON.stringify({
-          data: base64Data,
-          mimeType: "audio/wav",
-        }),
-      });
-      const transcript = stripRealtimeTranscriptionCaptionCues(
-        extractServerSpeechTranscript(payload),
-      );
+      let transcript = await requestServerSpeechTranscript(audioBytes, mimeType);
+      let transcriptMimeType = mimeType;
+
+      if (!transcript && options.fallbackAudioBytes && options.fallbackMimeType) {
+        setOutput({
+          action: "server-speech-transcription-retrying",
+          primaryMimeType: mimeType,
+          fallbackMimeType: options.fallbackMimeType,
+        });
+        transcript = await requestServerSpeechTranscript(
+          options.fallbackAudioBytes,
+          options.fallbackMimeType,
+        );
+        transcriptMimeType = options.fallbackMimeType;
+      }
+
       if (!transcript) {
         clearVoiceTranscriptionPending();
         return;
@@ -2304,12 +2360,38 @@ function flushServerSpeechCapture() {
       setOutput({
         action: "server-speech-transcribed",
         transcriptChars: transcript.length,
+        mimeType: transcriptMimeType,
       });
     })
     .catch((error) => {
       clearVoiceTranscriptionPending();
       setOutput({ action: "voice-chat-transcript-submit-failed", error: String(error) });
     });
+}
+
+function flushServerSpeechCapture() {
+  const fallbackWavBytes = buildServerSpeechFallbackWavBytes();
+  if (!fallbackWavBytes && serverSpeechRecorderMediaRecorder?.state !== "recording") {
+    resetServerSpeechCaptureState();
+    return;
+  }
+  if (serverSpeechRecorderMediaRecorder?.state === "recording") {
+    serverSpeechRecorderPendingFallbackWavBytes = fallbackWavBytes;
+    resetServerSpeechCaptureState();
+    try {
+      serverSpeechRecorderMediaRecorder.requestData?.();
+    } catch {}
+    try {
+      serverSpeechRecorderMediaRecorder.stop();
+      return;
+    } catch {
+      serverSpeechRecorderPendingFallbackWavBytes = null;
+    }
+  }
+  resetServerSpeechCaptureState();
+  if (fallbackWavBytes) {
+    queueServerSpeechCaptureUpload(fallbackWavBytes, "audio/wav");
+  }
 }
 
 function stopServerSpeechTranscription(options = {}) {
@@ -2327,6 +2409,16 @@ function cleanupServerSpeechTranscriptionResources(options = {}) {
   }
   clearVoiceTranscriptionPending();
   resetServerSpeechCaptureState();
+  serverSpeechRecorderEncodedChunks = [];
+  serverSpeechRecorderPendingFallbackWavBytes = null;
+  serverSpeechRecorderDiscardNextCapture = false;
+  const mediaRecorder = options.mediaRecorder ?? serverSpeechRecorderMediaRecorder;
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    serverSpeechRecorderDiscardNextCapture = true;
+    try {
+      mediaRecorder.stop();
+    } catch {}
+  }
   const processorNode = options.processorNode ?? serverSpeechRecorderProcessorNode;
   if (processorNode) {
     processorNode.onaudioprocess = null;
@@ -2362,6 +2454,19 @@ function cleanupServerSpeechTranscriptionResources(options = {}) {
   if (serverSpeechRecorderSilenceNode === silenceNode) {
     serverSpeechRecorderSilenceNode = null;
   }
+  if (serverSpeechRecorderMediaRecorder === mediaRecorder) {
+    serverSpeechRecorderMediaRecorder = null;
+  }
+  serverSpeechRecorderMimeType = "";
+  const captureTrack = options.captureTrack ?? serverSpeechRecorderCaptureTrack;
+  if (captureTrack) {
+    try {
+      captureTrack.stop();
+    } catch {}
+  }
+  if (serverSpeechRecorderCaptureTrack === captureTrack) {
+    serverSpeechRecorderCaptureTrack = null;
+  }
   serverSpeechRecorderStartPromise = null;
 }
 
@@ -2378,20 +2483,16 @@ function cleanupServerSpeechRecorderStartupResources(resources = {}) {
     sourceNode: resources.sourceNode,
     processorNode: resources.processorNode,
     silenceNode: resources.silenceNode,
+    mediaRecorder: resources.mediaRecorder,
+    captureTrack: resources.captureTrack,
   });
-  const stream = resources.stream;
-  if (stream && typeof stream.getTracks === "function") {
-    for (const track of stream.getTracks()) {
-      try {
-        track.stop();
-      } catch {}
-    }
-  }
   resources.stream = null;
   resources.audioContext = null;
   resources.sourceNode = null;
   resources.processorNode = null;
   resources.silenceNode = null;
+  resources.mediaRecorder = null;
+  resources.captureTrack = null;
 }
 
 async function startServerSpeechTranscription() {
@@ -2403,20 +2504,19 @@ async function startServerSpeechTranscription() {
     return;
   }
   clearServerSpeechStartRetryTimer();
-  const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
-  if (!mediaStreamTrack) {
-    return;
-  }
   let audioContext = null;
   let sourceNode = null;
   let processorNode = null;
   let silenceNode = null;
   let stream = null;
+  let captureTrack = null;
+  let mediaRecorder = null;
   serverSpeechRecorderStartPromise = (async () => {
     const AudioContextCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
     if (typeof AudioContextCtor !== "function") {
       throw new Error("AudioContext is unavailable for server speech transcription.");
     }
+    const publishedTrack = localAudioTrack?.mediaStreamTrack;
     resetServerSpeechCaptureState();
     if (shouldAbortServerSpeechRecorderStartup()) {
       cleanupServerSpeechRecorderStartupResources({
@@ -2428,11 +2528,102 @@ async function startServerSpeechTranscription() {
       });
       return;
     }
-    stream = new MediaStream([mediaStreamTrack]);
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      captureTrack = stream.getAudioTracks?.()[0] ?? null;
+      if (!captureTrack) {
+        throw new Error("Microphone capture track unavailable for server speech transcription.");
+      }
+      serverSpeechRecorderCaptureSource = "direct-mic";
+      serverSpeechRecorderRoomTrackMuted = Boolean(captureTrack?.muted);
+      serverSpeechRecorderCaptureError = "";
+    } catch (error) {
+      if (!publishedTrack) {
+        throw error;
+      }
+      captureTrack =
+        typeof publishedTrack.clone === "function" ? publishedTrack.clone() : publishedTrack;
+      stream = new MediaStream([captureTrack]);
+      serverSpeechRecorderCaptureSource = "room-track-fallback";
+      serverSpeechRecorderRoomTrackMuted = Boolean(publishedTrack?.muted);
+      serverSpeechRecorderCaptureError = error instanceof Error ? error.message : String(error);
+      setOutput({
+        action: "server-speech-using-room-track-fallback",
+        error: String(error),
+      });
+    }
     audioContext = new AudioContextCtor();
     sourceNode = audioContext.createMediaStreamSource(stream);
     processorNode = audioContext.createScriptProcessor(SERVER_SPEECH_BUFFER_SIZE, 1, 1);
     silenceNode = audioContext.createGain();
+    const encodedCaptureMimeType = resolveServerSpeechCaptureMimeType();
+    if (encodedCaptureMimeType && typeof globalThis.MediaRecorder === "function") {
+      try {
+        mediaRecorder = new globalThis.MediaRecorder(stream, {
+          mimeType: encodedCaptureMimeType,
+        });
+        mediaRecorder.addEventListener("dataavailable", (event) => {
+          if (
+            serverSpeechRecorderDiscardNextCapture ||
+            !event?.data ||
+            typeof event.data.size !== "number" ||
+            event.data.size <= 0
+          ) {
+            return;
+          }
+          serverSpeechRecorderEncodedChunks.push(event.data);
+        });
+        mediaRecorder.addEventListener("stop", () => {
+          const discardCapture = serverSpeechRecorderDiscardNextCapture;
+          const encodedChunks = serverSpeechRecorderEncodedChunks.slice();
+          const fallbackBytes = serverSpeechRecorderPendingFallbackWavBytes;
+          const mimeType =
+            serverSpeechRecorderMimeType || mediaRecorder?.mimeType || encodedCaptureMimeType;
+          serverSpeechRecorderDiscardNextCapture = false;
+          serverSpeechRecorderEncodedChunks = [];
+          serverSpeechRecorderPendingFallbackWavBytes = null;
+          if (discardCapture) {
+            clearVoiceTranscriptionPending();
+            return;
+          }
+          if (fallbackBytes) {
+            queueServerSpeechCaptureUpload(fallbackBytes, "audio/wav");
+            return;
+          }
+          if (encodedChunks.length > 0) {
+            const captureBlob = new Blob(encodedChunks, { type: mimeType });
+            void captureBlob
+              .arrayBuffer()
+              .then((arrayBuffer) => {
+                queueServerSpeechCaptureUpload(new Uint8Array(arrayBuffer), mimeType);
+              })
+              .catch((error) => {
+                clearVoiceTranscriptionPending();
+                setOutput({
+                  action: "voice-chat-transcript-submit-failed",
+                  error: String(error),
+                });
+              });
+            return;
+          }
+          clearVoiceTranscriptionPending();
+        });
+      } catch (error) {
+        mediaRecorder = null;
+        setOutput({
+          action: "server-speech-recorder-encoding-unavailable",
+          error: String(error),
+          mimeType: encodedCaptureMimeType,
+        });
+      }
+    }
     silenceNode.gain.value = 0;
     processorNode.connect(silenceNode);
     silenceNode.connect(audioContext.destination);
@@ -2472,6 +2663,20 @@ async function startServerSpeechTranscription() {
         serverSpeechRecorderSilenceStartedAt = 0;
         serverSpeechRecorderPcmChunks = serverSpeechRecorderPrerollChunks.slice();
         serverSpeechRecorderPrerollChunks = [];
+        if (mediaRecorder?.state === "inactive") {
+          serverSpeechRecorderDiscardNextCapture = false;
+          serverSpeechRecorderEncodedChunks = [];
+          serverSpeechRecorderPendingFallbackWavBytes = null;
+          try {
+            mediaRecorder.start();
+          } catch (error) {
+            setOutput({
+              action: "server-speech-recorder-encoding-start-failed",
+              error: String(error),
+              mimeType: serverSpeechRecorderMimeType || encodedCaptureMimeType || "",
+            });
+          }
+        }
         requestAvatarInterruptForVoiceTranscription("voice-transcription");
       }
       if (pcmBytes.length) {
@@ -2508,9 +2713,15 @@ async function startServerSpeechTranscription() {
     serverSpeechRecorderSourceNode = sourceNode;
     serverSpeechRecorderProcessorNode = processorNode;
     serverSpeechRecorderSilenceNode = silenceNode;
+    serverSpeechRecorderCaptureTrack = captureTrack;
+    serverSpeechRecorderMediaRecorder = mediaRecorder;
+    serverSpeechRecorderMimeType = mediaRecorder?.mimeType || encodedCaptureMimeType;
     setOutput({
       action: "server-speech-transcription-ready",
-      mode: "runtime-chunked",
+      mode: mediaRecorder ? "runtime-encoded" : "runtime-chunked",
+      mimeType: mediaRecorder?.mimeType || encodedCaptureMimeType || "audio/wav",
+      captureSource: serverSpeechRecorderCaptureSource || "unknown",
+      roomTrackMuted: serverSpeechRecorderRoomTrackMuted,
     });
   })()
     .catch((error) => {

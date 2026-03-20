@@ -180,13 +180,6 @@ describeRuntime("video-chat LiveKit runtime integration", () => {
             apiSecret: runtimeEnv.livekitApiSecret,
           },
         },
-        messages: {
-          tts: {
-            elevenlabs: {
-              apiKey: "elevenlabs-test-key",
-            },
-          },
-        },
       };
 
       const { methods, services } = setupIntegrationPlugin(config);

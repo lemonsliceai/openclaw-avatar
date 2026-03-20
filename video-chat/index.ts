@@ -15,7 +15,6 @@ import type {
   OpenClawPluginServiceContext,
   RespondFn,
 } from "openclaw/plugin-sdk";
-import { hasConfiguredSecretInput, normalizeResolvedSecretInputString } from "openclaw/plugin-sdk";
 import {
   resetProcessGroupChildren,
   stopChildProcess,
@@ -301,6 +300,7 @@ type VideoChatAudioTranscriptionRuntime = {
     filePath: string;
     cfg: OpenClawConfig;
     mime?: string;
+    agentDir?: string;
   }) => Promise<{ text?: string }>;
 };
 type VideoChatSpeechSynthesisResult = {
@@ -315,6 +315,123 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeResolvedSecretInputString(params: { value: unknown; path: string }): string {
+  const direct = normalizeOptionalString(params.value);
+  if (direct) {
+    return direct;
+  }
+  if (params.value && typeof params.value === "object" && !Array.isArray(params.value)) {
+    const nested = normalizeOptionalString((params.value as Record<string, unknown>).value);
+    if (nested) {
+      return nested;
+    }
+  }
+  throw new Error(`missing required config: ${params.path}`);
+}
+
+function hasConfiguredSecretInput(value: unknown): boolean {
+  if (normalizeOptionalString(value)) {
+    return true;
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const candidate = value as Record<string, unknown>;
+    if (normalizeOptionalString(candidate.value)) {
+      return true;
+    }
+    if (normalizeOptionalString(candidate.env)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const VIDEO_CHAT_TRANSCRIPTION_LANGUAGE_ALIASES: Record<string, string> = {
+  arabic: "ar",
+  chinese: "zh",
+  dutch: "nl",
+  english: "en",
+  french: "fr",
+  german: "de",
+  hindi: "hi",
+  italian: "it",
+  japanese: "ja",
+  korean: "ko",
+  portuguese: "pt",
+  russian: "ru",
+  spanish: "es",
+};
+
+function normalizeVideoChatTranscriptionLanguage(value: unknown): string | undefined {
+  const raw = normalizeOptionalString(value);
+  if (!raw) {
+    return undefined;
+  }
+  const trimmed = raw.replace(/_/g, "-").trim();
+  if (/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(trimmed)) {
+    return trimmed;
+  }
+  return VIDEO_CHAT_TRANSCRIPTION_LANGUAGE_ALIASES[trimmed.toLowerCase()];
+}
+
+function normalizeVideoChatTranscriptionConfig(cfg: OpenClawConfig): OpenClawConfig {
+  const audioConfig = cfg.tools?.media?.audio;
+  if (!audioConfig || typeof audioConfig !== "object") {
+    return cfg;
+  }
+
+  const nextAudioConfig = { ...audioConfig } as Record<string, unknown>;
+  let changed = false;
+
+  const normalizedLanguage = normalizeVideoChatTranscriptionLanguage(nextAudioConfig.language);
+  if (normalizedLanguage !== nextAudioConfig.language) {
+    if (normalizedLanguage) {
+      nextAudioConfig.language = normalizedLanguage;
+    } else {
+      delete nextAudioConfig.language;
+    }
+    changed = true;
+  }
+
+  const rawModels = Array.isArray(nextAudioConfig.models) ? nextAudioConfig.models : null;
+  if (rawModels) {
+    const nextModels = rawModels.map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return entry;
+      }
+      const nextEntry = { ...(entry as Record<string, unknown>) };
+      const normalizedEntryLanguage = normalizeVideoChatTranscriptionLanguage(nextEntry.language);
+      if (normalizedEntryLanguage === nextEntry.language) {
+        return entry;
+      }
+      if (normalizedEntryLanguage) {
+        nextEntry.language = normalizedEntryLanguage;
+      } else {
+        delete nextEntry.language;
+      }
+      changed = true;
+      return nextEntry;
+    });
+    if (changed) {
+      nextAudioConfig.models = nextModels;
+    }
+  }
+
+  if (!changed) {
+    return cfg;
+  }
+
+  return {
+    ...cfg,
+    tools: {
+      ...(cfg.tools ?? {}),
+      media: {
+        ...(cfg.tools?.media ?? {}),
+        audio: nextAudioConfig,
+      },
+    },
+  };
 }
 
 function summarizeIdempotencyKeyForLog(value: unknown): {
@@ -684,11 +801,7 @@ function getVideoChatVideoAvatarRuntime(
   runtime: OpenClawPluginApi["runtime"],
 ): Partial<VideoChatVideoAvatarRuntime> | null {
   const candidate = runtime.videoAvatar;
-  if (
-    !candidate ||
-    (typeof candidate.synthesizeSpeech !== "function" &&
-      typeof candidate.transcribeAudio !== "function")
-  ) {
+  if (!candidate || typeof candidate.synthesizeSpeech !== "function") {
     return null;
   }
   return candidate;
@@ -698,13 +811,7 @@ function hasVideoChatVideoAvatarSpeechRuntime(runtime: OpenClawPluginApi["runtim
   return typeof getVideoChatVideoAvatarRuntime(runtime)?.synthesizeSpeech === "function";
 }
 
-function hasVideoChatVideoAvatarTranscriptionRuntime(
-  runtime: OpenClawPluginApi["runtime"],
-): boolean {
-  return typeof getVideoChatVideoAvatarRuntime(runtime)?.transcribeAudio === "function";
-}
-
-function getVideoChatMediaUnderstandingRuntime(
+function getVideoChatSttRuntime(
   runtime: OpenClawPluginApi["runtime"],
 ): VideoChatAudioTranscriptionRuntime | null {
   const sttRuntime = (runtime as OpenClawPluginApi["runtime"] & {
@@ -713,7 +820,12 @@ function getVideoChatMediaUnderstandingRuntime(
   if (sttRuntime && typeof sttRuntime.transcribeAudioFile === "function") {
     return sttRuntime;
   }
+  return null;
+}
 
+function getVideoChatMediaUnderstandingRuntime(
+  runtime: OpenClawPluginApi["runtime"],
+): VideoChatAudioTranscriptionRuntime | null {
   const mediaUnderstanding = (runtime as OpenClawPluginApi["runtime"] & {
     mediaUnderstanding?: VideoChatAudioTranscriptionRuntime;
   }).mediaUnderstanding;
@@ -721,6 +833,37 @@ function getVideoChatMediaUnderstandingRuntime(
     return mediaUnderstanding;
   }
   return null;
+}
+
+function resolveVideoChatAgentDir(params: {
+  runtime: OpenClawPluginApi["runtime"];
+  cfg: OpenClawConfig;
+  sessionKey?: string;
+}): string | undefined {
+  const rawSessionKey = normalizeOptionalString(params.sessionKey);
+  if (!rawSessionKey) {
+    return undefined;
+  }
+  const agentSessionKey = resolveVideoChatChatSessionKey({
+    requestedSessionKey: rawSessionKey,
+    config: params.cfg,
+  });
+  const match = /^agent:([^:]+):/i.exec(agentSessionKey);
+  const agentId = normalizeOptionalString(match?.[1]);
+  if (!agentId) {
+    return undefined;
+  }
+  const resolver = (params.runtime as OpenClawPluginApi["runtime"] & {
+    agent?: { resolveAgentDir?: (cfg: OpenClawConfig, agentId: string) => string };
+  }).agent?.resolveAgentDir;
+  if (typeof resolver !== "function") {
+    return undefined;
+  }
+  try {
+    return normalizeOptionalString(resolver(params.cfg, agentId));
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeRuntimeAudioBuffer(value: unknown): Buffer | null {
@@ -765,35 +908,134 @@ function createPcmWaveBuffer(params: {
 
 async function transcribeAudioBufferWithRuntime(params: {
   runtime: OpenClawPluginApi["runtime"];
+  logger: VideoChatLogger;
   cfg: OpenClawConfig;
   audioBuffer: Buffer;
   mimeType: string;
-}): Promise<{ text?: string }> {
-  const videoAvatar = getVideoChatVideoAvatarRuntime(params.runtime);
-  if (videoAvatar && typeof videoAvatar.transcribeAudio === "function") {
-    return await videoAvatar.transcribeAudio({
-      audioBuffer: params.audioBuffer,
-      cfg: params.cfg,
-      mime: params.mimeType,
-    });
-  }
-
-  const mediaUnderstanding = getVideoChatMediaUnderstandingRuntime(params.runtime);
-  if (!mediaUnderstanding) {
+  sessionKey?: string;
+}): Promise<{ text?: string; provider?: string }> {
+  const transcriptionConfig = normalizeVideoChatTranscriptionConfig(params.cfg);
+  const sttRuntime = getVideoChatSttRuntime(params.runtime);
+  const mediaUnderstandingRuntime = getVideoChatMediaUnderstandingRuntime(params.runtime);
+  const agentDir = resolveVideoChatAgentDir({
+    runtime: params.runtime,
+    cfg: transcriptionConfig,
+    sessionKey: params.sessionKey,
+  });
+  if (!sttRuntime && !mediaUnderstandingRuntime) {
     throw new Error("Claw Cast transcription runtime unavailable");
   }
 
-  const extension = extensionForAudioMimeType(params.mimeType) || ".wav";
-  const filePath = path.join(tmpdir(), `openclaw-video-chat-${randomUUID()}${extension}`);
-  await writeFile(filePath, params.audioBuffer);
-  try {
-    return await mediaUnderstanding.transcribeAudioFile({
-      filePath,
-      cfg: params.cfg,
-      mime: params.mimeType,
+  const tryNormalizeTranscript = (
+    result: { text?: string } | null | undefined,
+    provider: string,
+  ): { text?: string; provider?: string } | null => {
+    const text = normalizeOptionalString(result?.text);
+    if (!text) {
+      return null;
+    }
+    return { text, provider };
+  };
+
+  const runtimeErrors: Array<{ provider: string; error: unknown }> = [];
+  const rememberRuntimeError = (provider: string, error: unknown): void => {
+    runtimeErrors.push({ provider, error });
+    logVideoChatEvent(params.logger, "warn", "transcription.runtime.failed", {
+      provider,
+      mimeType: params.mimeType,
+      ...(normalizeOptionalString(params.sessionKey)
+        ? { sessionKey: normalizeOptionalString(params.sessionKey) }
+        : {}),
+      error: error instanceof Error ? error.message : String(error),
     });
+  };
+
+  let filePath: string | null = null;
+  const ensureAudioFilePath = async (): Promise<string> => {
+    if (filePath) {
+      return filePath;
+    }
+    const extension = extensionForAudioMimeType(params.mimeType) || ".wav";
+    filePath = path.join(tmpdir(), `openclaw-video-chat-${randomUUID()}${extension}`);
+    await writeFile(filePath, params.audioBuffer);
+    return filePath;
+  };
+
+  try {
+    if (sttRuntime) {
+      const handoffPath = await ensureAudioFilePath();
+      const handoffStat = await stat(handoffPath);
+      logVideoChatEvent(params.logger, "info", "transcription.runtime.handoff", {
+        provider: "stt",
+        fileBytes: handoffStat.size,
+        mimeType: params.mimeType,
+        ...(normalizeOptionalString(params.sessionKey)
+          ? { sessionKey: normalizeOptionalString(params.sessionKey) }
+          : {}),
+      });
+      try {
+        const result = tryNormalizeTranscript(
+          await sttRuntime.transcribeAudioFile({
+            filePath: handoffPath,
+            cfg: transcriptionConfig,
+            mime: params.mimeType,
+            ...(agentDir ? { agentDir } : {}),
+          }),
+          "stt",
+        );
+        if (result) {
+          return result;
+        }
+      } catch (error) {
+        rememberRuntimeError("stt", error);
+      }
+    }
+
+    if (mediaUnderstandingRuntime) {
+      const handoffPath = await ensureAudioFilePath();
+      const handoffStat = await stat(handoffPath);
+      logVideoChatEvent(params.logger, "info", "transcription.runtime.handoff", {
+        provider: "media-understanding",
+        fileBytes: handoffStat.size,
+        mimeType: params.mimeType,
+        ...(normalizeOptionalString(params.sessionKey)
+          ? { sessionKey: normalizeOptionalString(params.sessionKey) }
+          : {}),
+      });
+      try {
+        const result = tryNormalizeTranscript(
+          await mediaUnderstandingRuntime.transcribeAudioFile({
+            filePath: handoffPath,
+            cfg: transcriptionConfig,
+            mime: params.mimeType,
+            ...(agentDir ? { agentDir } : {}),
+          }),
+          "media-understanding",
+        );
+        if (result) {
+          return result;
+        }
+      } catch (error) {
+        rememberRuntimeError("media-understanding", error);
+      }
+    }
+
+    if (runtimeErrors.length > 0) {
+      const lastError = runtimeErrors.at(-1)?.error;
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    }
+
+    return {
+      text: "",
+      provider:
+        (sttRuntime && "stt") ||
+        (mediaUnderstandingRuntime && "media-understanding") ||
+        undefined,
+    };
   } finally {
-    await unlink(filePath).catch(() => {});
+    if (filePath) {
+      await unlink(filePath).catch(() => {});
+    }
   }
 }
 
@@ -979,7 +1221,12 @@ function normalizeMimeType(value: unknown): string | undefined {
     return undefined;
   }
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed.toLowerCase() : undefined;
+  if (!trimmed) {
+    return undefined;
+  }
+  const [baseMimeType] = trimmed.split(";");
+  const normalized = baseMimeType?.trim().toLowerCase();
+  return normalized || undefined;
 }
 
 function extensionForAudioMimeType(mimeType: string | undefined): string {
@@ -1183,7 +1430,7 @@ function buildVideoChatConfigResponse(
   }
   if (
     runtime &&
-    !hasVideoChatVideoAvatarTranscriptionRuntime(runtime) &&
+    !getVideoChatSttRuntime(runtime) &&
     !getVideoChatMediaUnderstandingRuntime(runtime)
   ) {
     missing.push("tools.media.audio");
@@ -1306,6 +1553,7 @@ async function verifyCoreSpeechSetupConfig(params: {
     });
     const transcription = await transcribeAudioBufferWithRuntime({
       runtime: params.runtime,
+      logger: params.logger,
       cfg: params.config,
       audioBuffer: waveBuffer,
       mimeType: "audio/wav",
@@ -1486,11 +1734,9 @@ async function verifyVideoChatSetupConfig(params: {
       })
     : undefined;
   const speechRuntime = getVideoChatSpeechRuntime(params.runtime);
+  const sttRuntime = getVideoChatSttRuntime(params.runtime);
   const mediaUnderstandingRuntime = getVideoChatMediaUnderstandingRuntime(params.runtime);
   const hasVideoAvatarSpeechRuntime = hasVideoChatVideoAvatarSpeechRuntime(params.runtime);
-  const hasVideoAvatarTranscriptionRuntime = hasVideoChatVideoAvatarTranscriptionRuntime(
-    params.runtime,
-  );
 
   const checks: Promise<void>[] = [];
   if (livekitUrl && livekitApiKey && livekitApiSecret) {
@@ -1505,7 +1751,7 @@ async function verifyVideoChatSetupConfig(params: {
   }
   if (
     (hasVideoAvatarSpeechRuntime || speechRuntime) &&
-    (hasVideoAvatarTranscriptionRuntime || mediaUnderstandingRuntime) &&
+    (sttRuntime || mediaUnderstandingRuntime) &&
     isVideoChatTtsConfigured(params.config) &&
     isVideoChatAudioTranscriptionConfigured(params.config)
   ) {
@@ -1527,6 +1773,10 @@ async function transcribeVideoChatAudio(params: {
   cfg: OpenClawConfig;
   base64Data: string;
   mimeType?: unknown;
+  sessionKey?: string;
+  captureSource?: string;
+  roomTrackMuted?: boolean;
+  captureError?: string;
 }): Promise<{ transcript: string }> {
   const base64 = params.base64Data.trim();
   if (!base64) {
@@ -1551,13 +1801,25 @@ async function transcribeVideoChatAudio(params: {
   logVideoChatEvent(params.logger, "info", "transcription.requested", {
     bytes: audioBuffer.length,
     mimeType: mimeType ?? "application/octet-stream",
+    ...(normalizeOptionalString(params.sessionKey)
+      ? { sessionKey: normalizeOptionalString(params.sessionKey) }
+      : {}),
+    ...(normalizeOptionalString(params.captureSource)
+      ? { captureSource: normalizeOptionalString(params.captureSource) }
+      : {}),
+    ...(params.roomTrackMuted === true ? { roomTrackMuted: true } : {}),
+    ...(normalizeOptionalString(params.captureError)
+      ? { captureError: normalizeOptionalString(params.captureError) }
+      : {}),
   });
 
   const runtimeTranscription = await transcribeAudioBufferWithRuntime({
     runtime: params.runtime,
+    logger: params.logger,
     cfg: params.cfg,
     audioBuffer,
     mimeType: mimeType ?? "audio/wav",
+    sessionKey: params.sessionKey,
   });
   const transcript = normalizeOptionalString(runtimeTranscription.text) ?? "";
   logVideoChatEvent(
@@ -1568,7 +1830,7 @@ async function transcribeVideoChatAudio(params: {
       bytes: audioBuffer.length,
       mimeType: mimeType ?? "application/octet-stream",
       transcriptChars: transcript.length,
-      provider: "runtime",
+      provider: normalizeOptionalString(runtimeTranscription.provider) ?? "runtime",
     },
   );
   return { transcript };
@@ -2797,11 +3059,33 @@ function registerVideoChatHttpRoutes(
           if (params.mimeType !== undefined && typeof params.mimeType !== "string") {
             throw new Error("invalid videoChat.audio.transcribe params");
           }
+          if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
+            throw new Error("invalid videoChat.audio.transcribe params");
+          }
+          if (params.captureSource !== undefined && typeof params.captureSource !== "string") {
+            throw new Error("invalid videoChat.audio.transcribe params");
+          }
+          if (params.roomTrackMuted !== undefined && typeof params.roomTrackMuted !== "boolean") {
+            throw new Error("invalid videoChat.audio.transcribe params");
+          }
+          if (params.captureError !== undefined && typeof params.captureError !== "string") {
+            throw new Error("invalid videoChat.audio.transcribe params");
+          }
           const cfg = api.runtime.config.loadConfig();
           const base64Length = params.data.length;
           logVideoChatEvent(api.logger, "info", "http.transcribe.requested", {
             mimeType: params.mimeType ?? "application/octet-stream",
             base64Chars: base64Length,
+            ...(typeof params.sessionKey === "string" && params.sessionKey.trim()
+              ? { sessionKey: params.sessionKey.trim() }
+              : {}),
+            ...(typeof params.captureSource === "string" && params.captureSource.trim()
+              ? { captureSource: params.captureSource.trim() }
+              : {}),
+            ...(params.roomTrackMuted === true ? { roomTrackMuted: true } : {}),
+            ...(typeof params.captureError === "string" && params.captureError.trim()
+              ? { captureError: params.captureError.trim() }
+              : {}),
           });
           const result = await transcribeVideoChatAudio({
             runtime: api.runtime,
@@ -2809,6 +3093,10 @@ function registerVideoChatHttpRoutes(
             cfg,
             base64Data: params.data,
             mimeType: params.mimeType,
+            sessionKey: params.sessionKey,
+            captureSource: params.captureSource,
+            roomTrackMuted: params.roomTrackMuted,
+            captureError: params.captureError,
           });
           logVideoChatEvent(api.logger, "info", "http.transcribe.completed", {
             mimeType: params.mimeType ?? "application/octet-stream",
@@ -5220,6 +5508,30 @@ const videoChatPlugin = {
             );
             return;
           }
+          if (params.captureSource !== undefined && typeof params.captureSource !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.audio.transcribe params",
+            );
+            return;
+          }
+          if (params.roomTrackMuted !== undefined && typeof params.roomTrackMuted !== "boolean") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.audio.transcribe params",
+            );
+            return;
+          }
+          if (params.captureError !== undefined && typeof params.captureError !== "string") {
+            respondGatewayError(
+              respond,
+              "INVALID_REQUEST",
+              "invalid videoChat.audio.transcribe params",
+            );
+            return;
+          }
           const cfg = api.runtime.config.loadConfig();
           const result = await transcribeVideoChatAudio({
             runtime: api.runtime,
@@ -5227,6 +5539,10 @@ const videoChatPlugin = {
             cfg,
             base64Data: params.data,
             mimeType: params.mimeType,
+            sessionKey: params.sessionKey,
+            captureSource: params.captureSource,
+            roomTrackMuted: params.roomTrackMuted,
+            captureError: params.captureError,
           });
           respond(true, result);
         } catch (error) {
