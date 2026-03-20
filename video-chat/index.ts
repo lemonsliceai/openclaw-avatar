@@ -300,7 +300,6 @@ type VideoChatAudioTranscriptionRuntime = {
     filePath: string;
     cfg: OpenClawConfig;
     mime?: string;
-    agentDir?: string;
   }) => Promise<{ text?: string }>;
 };
 type VideoChatSpeechSynthesisResult = {
@@ -835,37 +834,6 @@ function getVideoChatMediaUnderstandingRuntime(
   return null;
 }
 
-function resolveVideoChatAgentDir(params: {
-  runtime: OpenClawPluginApi["runtime"];
-  cfg: OpenClawConfig;
-  sessionKey?: string;
-}): string | undefined {
-  const rawSessionKey = normalizeOptionalString(params.sessionKey);
-  if (!rawSessionKey) {
-    return undefined;
-  }
-  const agentSessionKey = resolveVideoChatChatSessionKey({
-    requestedSessionKey: rawSessionKey,
-    config: params.cfg,
-  });
-  const match = /^agent:([^:]+):/i.exec(agentSessionKey);
-  const agentId = normalizeOptionalString(match?.[1]);
-  if (!agentId) {
-    return undefined;
-  }
-  const resolver = (params.runtime as OpenClawPluginApi["runtime"] & {
-    agent?: { resolveAgentDir?: (cfg: OpenClawConfig, agentId: string) => string };
-  }).agent?.resolveAgentDir;
-  if (typeof resolver !== "function") {
-    return undefined;
-  }
-  try {
-    return normalizeOptionalString(resolver(params.cfg, agentId));
-  } catch {
-    return undefined;
-  }
-}
-
 function normalizeRuntimeAudioBuffer(value: unknown): Buffer | null {
   if (Buffer.isBuffer(value)) {
     return value;
@@ -917,11 +885,6 @@ async function transcribeAudioBufferWithRuntime(params: {
   const transcriptionConfig = normalizeVideoChatTranscriptionConfig(params.cfg);
   const sttRuntime = getVideoChatSttRuntime(params.runtime);
   const mediaUnderstandingRuntime = getVideoChatMediaUnderstandingRuntime(params.runtime);
-  const agentDir = resolveVideoChatAgentDir({
-    runtime: params.runtime,
-    cfg: transcriptionConfig,
-    sessionKey: params.sessionKey,
-  });
   if (!sttRuntime && !mediaUnderstandingRuntime) {
     throw new Error("Claw Cast transcription runtime unavailable");
   }
@@ -979,7 +942,6 @@ async function transcribeAudioBufferWithRuntime(params: {
             filePath: handoffPath,
             cfg: transcriptionConfig,
             mime: params.mimeType,
-            ...(agentDir ? { agentDir } : {}),
           }),
           "stt",
         );
@@ -1008,7 +970,6 @@ async function transcribeAudioBufferWithRuntime(params: {
             filePath: handoffPath,
             cfg: transcriptionConfig,
             mime: params.mimeType,
-            ...(agentDir ? { agentDir } : {}),
           }),
           "media-understanding",
         );

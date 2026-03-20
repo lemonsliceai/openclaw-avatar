@@ -138,6 +138,7 @@ const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
 const VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH = 12;
 const AVATAR_ECHO_RECENT_REPLY_RETENTION_MS = 30_000;
 const AVATAR_ECHO_ACTIVE_WINDOW_MS = 4_000;
+const SERVER_SPEECH_AVATAR_COOLDOWN_MS = 2_500;
 const AVATAR_ECHO_MIN_TRANSCRIPT_CHARS = 18;
 const AVATAR_ECHO_MIN_TRANSCRIPT_TOKENS = 4;
 const AVATAR_ECHO_TOKEN_OVERLAP_THRESHOLD = 0.8;
@@ -148,7 +149,17 @@ const SERVER_SPEECH_SAMPLE_RATE = 16_000;
 const SERVER_SPEECH_BUFFER_SIZE = 4_096;
 const SERVER_SPEECH_SILENCE_MS = 300;
 const SERVER_SPEECH_MIN_DURATION_MS = 120;
-const SERVER_SPEECH_LEVEL_THRESHOLD = 0.05;
+const SERVER_SPEECH_MIN_RMS_THRESHOLD = 0.02;
+const SERVER_SPEECH_HIGH_PASS_COEFFICIENT = 0.97;
+const SERVER_SPEECH_HIGH_PASS_LEVEL_THRESHOLD = 0.012;
+const SERVER_SPEECH_NOISE_FLOOR_MULTIPLIER = 2.2;
+const SERVER_SPEECH_NOISE_FLOOR_RISE_SMOOTHING = 0.2;
+const SERVER_SPEECH_NOISE_FLOOR_FALL_SMOOTHING = 0.03;
+const SERVER_SPEECH_ZERO_CROSSING_MIN = 0.015;
+const SERVER_SPEECH_ZERO_CROSSING_MAX = 0.25;
+const SERVER_SPEECH_START_CONSECUTIVE_FRAMES = 2;
+const SERVER_SPEECH_MIN_VOICED_FRAMES = 3;
+const SERVER_SPEECH_MAX_PREROLL_CHUNKS = 3;
 const SERVER_SPEECH_CAPTURE_MIME_TYPES = [
   "audio/webm;codecs=opus",
   "audio/webm",
@@ -206,6 +217,11 @@ let serverSpeechRecorderSpeechStartedAt = 0;
 let serverSpeechRecorderSilenceStartedAt = 0;
 let serverSpeechRecorderPcmChunks = [];
 let serverSpeechRecorderPrerollChunks = [];
+let serverSpeechRecorderSpeechFrameStreak = 0;
+let serverSpeechRecorderVoicedFrameCount = 0;
+let serverSpeechRecorderNoiseFloor = 0;
+let serverSpeechRecorderVadPrevInput = 0;
+let serverSpeechRecorderVadPrevOutput = 0;
 let serverSpeechSubmissionQueue = Promise.resolve();
 let serverSpeechStartRetryTimer = null;
 let serverSpeechStartRetryCount = 0;
@@ -407,6 +423,13 @@ function isAvatarSpeechRecent(now = Date.now()) {
   return Boolean(
     avatarSpeechActive ||
       (avatarSpeechLastDetectedAt > 0 && now - avatarSpeechLastDetectedAt <= AVATAR_ECHO_ACTIVE_WINDOW_MS),
+  );
+}
+
+function shouldBlockServerSpeechTranscription(now = Date.now()) {
+  return Boolean(
+    avatarSpeechActive ||
+      (avatarSpeechLastDetectedAt > 0 && now - avatarSpeechLastDetectedAt <= SERVER_SPEECH_AVATAR_COOLDOWN_MS),
   );
 }
 
@@ -2247,15 +2270,62 @@ function buildWaveBytesFromPcm(pcmBytes, sampleRate, numChannels = 1) {
   return wavBytes;
 }
 
-function measureRealtimeSpeechLevel(samples) {
+function resetServerSpeechDetectorState() {
+  serverSpeechRecorderNoiseFloor = 0;
+  serverSpeechRecorderVadPrevInput = 0;
+  serverSpeechRecorderVadPrevOutput = 0;
+}
+
+function updateServerSpeechNoiseFloor(level) {
+  if (!Number.isFinite(level) || level <= 0) {
+    return serverSpeechRecorderNoiseFloor;
+  }
+  if (serverSpeechRecorderNoiseFloor <= 0) {
+    serverSpeechRecorderNoiseFloor = level;
+    return serverSpeechRecorderNoiseFloor;
+  }
+  const smoothing =
+    level > serverSpeechRecorderNoiseFloor
+      ? SERVER_SPEECH_NOISE_FLOOR_RISE_SMOOTHING
+      : SERVER_SPEECH_NOISE_FLOOR_FALL_SMOOTHING;
+  serverSpeechRecorderNoiseFloor += (level - serverSpeechRecorderNoiseFloor) * smoothing;
+  return serverSpeechRecorderNoiseFloor;
+}
+
+function measureRealtimeSpeechMetrics(samples) {
   if (!samples?.length) {
-    return 0;
+    return {
+      rms: 0,
+      filteredRms: 0,
+      zeroCrossingRate: 0,
+    };
   }
   let total = 0;
+  let filteredTotal = 0;
+  let zeroCrossings = 0;
+  let prevInput = serverSpeechRecorderVadPrevInput;
+  let prevOutput = serverSpeechRecorderVadPrevOutput;
+  let priorSign = prevOutput >= 0 ? 1 : -1;
   for (const sample of samples) {
     total += sample * sample;
+    const filtered =
+      sample - prevInput + SERVER_SPEECH_HIGH_PASS_COEFFICIENT * prevOutput;
+    prevInput = sample;
+    prevOutput = filtered;
+    filteredTotal += filtered * filtered;
+    const sign = filtered >= 0 ? 1 : -1;
+    if (sign !== priorSign) {
+      zeroCrossings += 1;
+      priorSign = sign;
+    }
   }
-  return Math.sqrt(total / samples.length);
+  serverSpeechRecorderVadPrevInput = prevInput;
+  serverSpeechRecorderVadPrevOutput = prevOutput;
+  return {
+    rms: Math.sqrt(total / samples.length),
+    filteredRms: Math.sqrt(filteredTotal / samples.length),
+    zeroCrossingRate: zeroCrossings / samples.length,
+  };
 }
 
 function extractServerSpeechTranscript(payload) {
@@ -2290,6 +2360,44 @@ function resetServerSpeechCaptureState() {
   serverSpeechRecorderSilenceStartedAt = 0;
   serverSpeechRecorderPcmChunks = [];
   serverSpeechRecorderPrerollChunks = [];
+  serverSpeechRecorderSpeechFrameStreak = 0;
+  serverSpeechRecorderVoicedFrameCount = 0;
+}
+
+function isMicrophoneMuted() {
+  return localAudioTrack ? Boolean(localAudioTrack.isMuted) : preferredMicMuted;
+}
+
+function discardServerSpeechCapture() {
+  clearVoiceTranscriptionPending();
+  resetServerSpeechCaptureState();
+  serverSpeechRecorderPendingFallbackWavBytes = null;
+  serverSpeechRecorderEncodedChunks = [];
+  const mediaRecorder = serverSpeechRecorderMediaRecorder;
+  if (mediaRecorder?.state === "recording") {
+    serverSpeechRecorderDiscardNextCapture = true;
+    try {
+      mediaRecorder.requestData?.();
+    } catch {}
+    try {
+      mediaRecorder.stop();
+      return;
+    } catch {}
+  }
+  serverSpeechRecorderDiscardNextCapture = false;
+}
+
+function syncServerSpeechRecorderMuteState(options = {}) {
+  const micMuted = isMicrophoneMuted();
+  serverSpeechRecorderRoomTrackMuted = micMuted;
+  const captureTrack = options.captureTrack ?? serverSpeechRecorderCaptureTrack;
+  if (captureTrack && typeof captureTrack.enabled === "boolean") {
+    captureTrack.enabled = !micMuted;
+  }
+  if (micMuted && options.discardActiveCapture !== false) {
+    discardServerSpeechCapture();
+  }
+  return micMuted;
 }
 
 function buildServerSpeechFallbackWavBytes() {
@@ -2370,6 +2478,14 @@ function queueServerSpeechCaptureUpload(audioBytes, mimeType, options = {}) {
 }
 
 function flushServerSpeechCapture() {
+  if (shouldBlockServerSpeechTranscription()) {
+    discardServerSpeechCapture();
+    return;
+  }
+  if (serverSpeechRecorderVoicedFrameCount < SERVER_SPEECH_MIN_VOICED_FRAMES) {
+    discardServerSpeechCapture();
+    return;
+  }
   const fallbackWavBytes = buildServerSpeechFallbackWavBytes();
   if (!fallbackWavBytes && serverSpeechRecorderMediaRecorder?.state !== "recording") {
     resetServerSpeechCaptureState();
@@ -2409,6 +2525,7 @@ function cleanupServerSpeechTranscriptionResources(options = {}) {
   }
   clearVoiceTranscriptionPending();
   resetServerSpeechCaptureState();
+  resetServerSpeechDetectorState();
   serverSpeechRecorderEncodedChunks = [];
   serverSpeechRecorderPendingFallbackWavBytes = null;
   serverSpeechRecorderDiscardNextCapture = false;
@@ -2518,6 +2635,7 @@ async function startServerSpeechTranscription() {
     }
     const publishedTrack = localAudioTrack?.mediaStreamTrack;
     resetServerSpeechCaptureState();
+    resetServerSpeechDetectorState();
     if (shouldAbortServerSpeechRecorderStartup()) {
       cleanupServerSpeechRecorderStartupResources({
         stream,
@@ -2559,6 +2677,10 @@ async function startServerSpeechTranscription() {
         error: String(error),
       });
     }
+    syncServerSpeechRecorderMuteState({
+      captureTrack,
+      discardActiveCapture: false,
+    });
     audioContext = new AudioContextCtor();
     sourceNode = audioContext.createMediaStreamSource(stream);
     processorNode = audioContext.createScriptProcessor(SERVER_SPEECH_BUFFER_SIZE, 1, 1);
@@ -2642,27 +2764,48 @@ async function startServerSpeechTranscription() {
     }
 
     processorNode.onaudioprocess = (event) => {
+      if (syncServerSpeechRecorderMuteState()) {
+        return;
+      }
       const channelSamples = event.inputBuffer.getChannelData(0);
       const pcmBytes = convertSamplesToPcmBytes(channelSamples, audioContext.sampleRate);
       const now = Date.now();
-      const level = measureRealtimeSpeechLevel(channelSamples);
-      const isSpeech = level >= SERVER_SPEECH_LEVEL_THRESHOLD;
+      const metrics = measureRealtimeSpeechMetrics(channelSamples);
+      const adaptiveLevelThreshold = Math.max(
+        SERVER_SPEECH_HIGH_PASS_LEVEL_THRESHOLD,
+        serverSpeechRecorderNoiseFloor * SERVER_SPEECH_NOISE_FLOOR_MULTIPLIER,
+      );
+      const isSpeech =
+        metrics.rms >= SERVER_SPEECH_MIN_RMS_THRESHOLD &&
+        metrics.filteredRms >= adaptiveLevelThreshold &&
+        metrics.zeroCrossingRate >= SERVER_SPEECH_ZERO_CROSSING_MIN &&
+        metrics.zeroCrossingRate <= SERVER_SPEECH_ZERO_CROSSING_MAX;
+      let justActivatedSpeechCapture = false;
 
       if (!serverSpeechRecorderSpeechActive) {
         if (pcmBytes.length) {
           serverSpeechRecorderPrerollChunks.push(pcmBytes);
-          if (serverSpeechRecorderPrerollChunks.length > 3) {
+          if (serverSpeechRecorderPrerollChunks.length > SERVER_SPEECH_MAX_PREROLL_CHUNKS) {
             serverSpeechRecorderPrerollChunks.shift();
           }
         }
         if (!isSpeech) {
+          updateServerSpeechNoiseFloor(metrics.filteredRms);
+          serverSpeechRecorderSpeechFrameStreak = 0;
+          return;
+        }
+        serverSpeechRecorderSpeechFrameStreak += 1;
+        if (serverSpeechRecorderSpeechFrameStreak < SERVER_SPEECH_START_CONSECUTIVE_FRAMES) {
           return;
         }
         serverSpeechRecorderSpeechActive = true;
         serverSpeechRecorderSpeechStartedAt = now;
         serverSpeechRecorderSilenceStartedAt = 0;
+        serverSpeechRecorderVoicedFrameCount = serverSpeechRecorderSpeechFrameStreak;
         serverSpeechRecorderPcmChunks = serverSpeechRecorderPrerollChunks.slice();
         serverSpeechRecorderPrerollChunks = [];
+        serverSpeechRecorderSpeechFrameStreak = 0;
+        justActivatedSpeechCapture = true;
         if (mediaRecorder?.state === "inactive") {
           serverSpeechRecorderDiscardNextCapture = false;
           serverSpeechRecorderEncodedChunks = [];
@@ -2679,10 +2822,11 @@ async function startServerSpeechTranscription() {
         }
         requestAvatarInterruptForVoiceTranscription("voice-transcription");
       }
-      if (pcmBytes.length) {
+      if (pcmBytes.length && !justActivatedSpeechCapture) {
         serverSpeechRecorderPcmChunks.push(pcmBytes);
       }
       if (isSpeech) {
+        serverSpeechRecorderVoicedFrameCount += justActivatedSpeechCapture ? 0 : 1;
         serverSpeechRecorderSilenceStartedAt = 0;
         return;
       }
@@ -5554,13 +5698,15 @@ async function applyPreferredMicMuteState() {
     return;
   }
   if (Boolean(localAudioTrack.isMuted) === preferredMicMuted) {
+    syncServerSpeechRecorderMuteState();
     return;
   }
   if (preferredMicMuted) {
     await localAudioTrack.mute();
-    return;
+  } else {
+    await localAudioTrack.unmute();
   }
-  await localAudioTrack.unmute();
+  syncServerSpeechRecorderMuteState();
 }
 
 function clearChatLog() {
@@ -8586,6 +8732,7 @@ async function toggleMicrophone() {
     }
     preferredMicMuted = nextMuted;
     persistBooleanPreference(MIC_MUTED_STORAGE_KEY, nextMuted);
+    syncServerSpeechRecorderMuteState();
     updateRoomButtons();
   } catch (error) {
     setOutput({ action: "mic-toggle-failed", error: String(error) });

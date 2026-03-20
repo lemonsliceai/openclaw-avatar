@@ -2089,7 +2089,7 @@ describe("video-chat plugin", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("forwards agentDir to STT capabilities when a session key is provided", async () => {
+  it("does not forward agentDir to STT capabilities", async () => {
     const { methods, runtime } = setup({}, { disableVideoAvatarRuntime: true });
 
     const respond = await invoke(methods, "videoChat.audio.transcribe", {
@@ -2100,10 +2100,9 @@ describe("video-chat plugin", () => {
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
-    expect(runtime.agent?.resolveAgentDir).toHaveBeenCalledWith(expect.anything(), "main");
     expect(runtime.stt.transcribeAudioFile).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentDir: "/tmp/agents/main/agent",
+      expect.not.objectContaining({
+        agentDir: expect.any(String),
       }),
     );
   });
