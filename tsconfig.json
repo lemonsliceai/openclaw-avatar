@@ -11,5 +11,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["video-chat/**/*.ts", "test-utils/**/*.ts", "types/**/*.d.ts", "vitest.config.ts"]
+  "include": ["avatar/**/*.ts", "test-utils/**/*.ts", "types/**/*.d.ts", "vitest.config.ts"]
 }

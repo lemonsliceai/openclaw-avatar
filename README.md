@@ -1,17 +1,17 @@
-# Openclaw - Claw Cast Plugin
+# Openclaw - Avatar Plugin
 
-Give your Openclaw agents a face! Claw Cast enables a real time video avatar for any of your Openclaw agents. Now you can speak directly with your agent and bring them anywhere on your desktop!
+Give your Openclaw agents a face! Avatar enables a real time video avatar for any of your Openclaw agents. Now you can speak directly with your agent and bring them anywhere on your desktop!
 
-Claw Cast is an OpenClaw plugin that integrates LemonSlice and LiveKit to deliver a real-time avatar experience with plugin-managed setup, browser session controls, text chat, and avatar speech routed through OpenClaw's shared speech/media runtime.
+Avatar is an OpenClaw plugin that integrates LemonSlice and LiveKit to deliver a real-time avatar experience with plugin-managed setup, browser session controls, text chat, and avatar speech routed through OpenClaw's shared speech/media runtime.
 
 <div>
   <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
-    <p>Claw Cast Demo - Watch Video</p>
+    <p>Avatar Demo - Watch Video</p>
   </a>
   <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
     <img
       src="https://cdn.loom.com/sessions/thumbnails/307a34384a0b4dc4a5391d8bbc9accf7-5fbac2c9d95c536d-full-play.gif#t=0.1"
-      alt="Claw Cast demo video thumbnail"
+      alt="Avatar demo video thumbnail"
     />
   </a>
 </div>
@@ -56,10 +56,10 @@ http://127.0.0.1:18789/agents
 
 You will also need accounts with the following service providers:
 
-- **LemonSlice** — provides the avatar/character rendering for the video chat experience.
+- **LemonSlice** — provides the avatar/character rendering for the avatar experience.
   Sign up at https://www.lemonslice.com
 
-- **OpenClaw speech/media providers** — Claw Cast now prefers whatever TTS and audio-transcription capabilities you have already configured in OpenClaw for your agents.
+- **OpenClaw speech/media providers** — Avatar now prefers whatever TTS and audio-transcription capabilities you have already configured in OpenClaw for your agents.
   Configure those first in OpenClaw so avatar reply speech and browser voice transcription can use the shared runtime contracts.
 
 - **LiveKit** — provides the real-time video/audio room infrastructure.
@@ -80,14 +80,14 @@ If you want the shortest path from install to first conversation, follow these s
 2. Install and enable the plugin:
 
 ```bash
-openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
-openclaw plugins enable video-chat
+openclaw plugins install openclaw-avatar-do-not-install-7f3c9d1@latest
+openclaw plugins enable avatar
 ```
 
-3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Claw Cast:
+3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Avatar:
 
 ```bash
-openclaw video-chat-setup
+openclaw avatar-setup
 ```
 
 4. Start the OpenClaw gateway:
@@ -99,7 +99,7 @@ openclaw gateway run
 5. Open the session UI:
 
 ```text
-http://127.0.0.1:18789/plugins/video-chat/
+http://127.0.0.1:18789/plugins/avatar/
 ```
 
 6. Paste a public avatar image URL, leave the session key as `main` unless you already use a different OpenClaw session, and start the session.
@@ -107,7 +107,7 @@ http://127.0.0.1:18789/plugins/video-chat/
 When setup is complete, the plugin config page should show green `OK` indicators for both Gateway and Config:
 
 ```text
-http://127.0.0.1:18789/plugins/video-chat/config
+http://127.0.0.1:18789/plugins/avatar/config
 ```
 
 <a id="install"></a>
@@ -116,12 +116,12 @@ http://127.0.0.1:18789/plugins/video-chat/config
 Plugin installation:
 
 ```bash
-openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
-openclaw plugins enable video-chat
+openclaw plugins install openclaw-avatar-do-not-install-7f3c9d1@latest
+openclaw plugins enable avatar
 openclaw plugins list
 ```
 
-Verify that ClawCast is listed. 
+Verify that Avatar is listed. 
 
 <a id="configure"></a>
 ## Configure
@@ -131,7 +131,7 @@ The plugin can be configured with either the CLI (recommended) or the browser UI
 ### CLI Config 
 
 ```bash
-openclaw video-chat-setup
+openclaw avatar-setup
 ```
 
 This command is the recommended setup flow because it walks you through the required plugin credentials in one place.
@@ -140,7 +140,7 @@ This command is the recommended setup flow because it walks you through the requ
 
 1. [Run the gateway](#run-gateway)
 
-2. [Open the plugin UI](http://127.0.0.1:18789/plugins/video-chat/config)
+2. [Open the plugin UI](http://127.0.0.1:18789/plugins/avatar/config)
 
 3. Set gateway token, click "Use Token"
 
@@ -148,7 +148,7 @@ This command is the recommended setup flow because it walks you through the requ
 
 Browser Config link
 ```text
-http://127.0.0.1:18789/plugins/video-chat/config
+http://127.0.0.1:18789/plugins/avatar/config
 ```
 
 **Once the plugin is properly configured the Gateway and Config status indicators (top bar of plugin web UI) will read "OK" and show green lights.**
@@ -182,13 +182,13 @@ openclaw gateway run --force
 Open the session UI, fill in the form, and start your avatar session:
 
 ```text
-http://127.0.0.1:18789/plugins/video-chat/
+http://127.0.0.1:18789/plugins/avatar/
 ```
 
 Plugin documentation is also available in the web UI at:
 
 ```text
-http://127.0.0.1:18789/plugins/video-chat/readme
+http://127.0.0.1:18789/plugins/avatar/readme
 ```
 
 If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
@@ -237,7 +237,7 @@ Best image sizes:
 The plugin can be updated to the latest version using:
 
 ```bash
-openclaw plugins update video-chat  
+openclaw plugins update avatar  
 ```
 
 <a id="about-the-install-warning"></a>
@@ -246,25 +246,25 @@ openclaw plugins update video-chat
 OpenClaw may show a warning like this during install:
 
 ```text
-WARNING: Plugin "video-chat" contains dangerous code patterns: Shell command execution detected (child_process) (.../video-chat/index.ts:1727); Environment variable access combined with network send — possible credential harvesting (.../video-chat/index.ts:212)
+WARNING: Plugin "avatar" contains dangerous code patterns: Shell command execution detected (child_process) (.../avatar/index.ts:1727); Environment variable access combined with network send — possible credential harvesting (.../avatar/index.ts:212)
 ```
 
 That warning is expected for this plugin. It is flagging two real implementation details:
 
-- `child_process` in `video-chat/index.ts` is used to start a local sidecar worker for the `video-chat-agent` service. That worker runs the long-lived LiveKit agent runtime in a separate process so it can be started, stopped, restarted, and isolated from the main gateway process.
-- `process.env` plus network activity in `video-chat/index.ts` is used to read setup defaults and plugin-specific runtime variables, then connect to the local OpenClaw gateway and the configured LiveKit, LemonSlice, and OpenClaw speech/media runtime services that power the plugin.
+- `child_process` in `avatar/index.ts` is used to start a local sidecar worker for the `avatar-agent` service. That worker runs the long-lived LiveKit agent runtime in a separate process so it can be started, stopped, restarted, and isolated from the main gateway process.
+- `process.env` plus network activity in `avatar/index.ts` is used to read setup defaults and plugin-specific runtime variables, then connect to the local OpenClaw gateway and the configured LiveKit, LemonSlice, and OpenClaw speech/media runtime services that power the plugin.
 
 What this plugin is not doing:
 
 - It does not execute arbitrary shell snippets from user input.
 - The plugin does not scan unrelated environment variables and send them to a third-party endpoint.
-- Outbound connections are limited to the services required for the video chat flow and the local OpenClaw gateway bridge.
+- Outbound connections are limited to the services required for the avatar flow and the local OpenClaw gateway bridge.
 
 What it does do:
 
 - Launch a local worker process for the avatar agent runtime.
 - Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
-- Send audio, transcript, and session traffic only to the configured providers needed for Claw Cast to function.
+- Send audio, transcript, and session traffic only to the configured providers needed for Avatar to function.
 
 <a id="license"></a>
 ## License

@@ -1,6 +1,6 @@
 import {
-  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT as SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
-  VIDEO_CHAT_AVATAR_ASPECT_RATIOS as SESSION_AVATAR_ASPECT_RATIO_VALUES,
+  AVATAR_ASPECT_RATIO_DEFAULT as SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
+  AVATAR_ASPECT_RATIOS as SESSION_AVATAR_ASPECT_RATIO_VALUES,
 } from "./avatar-aspect-ratio.js";
 
 const statusEl = document.getElementById("status");
@@ -33,7 +33,7 @@ const chatPaneCloseButton = document.getElementById("chat-pane-close");
 const chatPaneBackdropEl = document.getElementById("chat-pane-backdrop");
 const chatPaneResizerEl = document.getElementById("chat-pane-resizer");
 const chatPaneEl = document.getElementById("chat-pane");
-const contentEl = document.querySelector(".content.video-chat-layout");
+const contentEl = document.querySelector(".content.avatar-layout");
 const shellEl = document.querySelector(".shell");
 const navEl = document.getElementById("plugin-nav") || document.querySelector(".nav");
 const themeToggleEl = document.getElementById("theme-toggle");
@@ -74,17 +74,17 @@ const chatSendButton = document.getElementById("chat-send");
 const chatTokenEstimateEl = document.getElementById("chat-token-estimate");
 
 const OPENCLAW_SETTINGS_STORAGE_KEY = "openclaw.control.settings.v1";
-const LEGACY_TOKEN_STORAGE_KEY = "videoChat.gatewayToken";
-const THEME_STORAGE_KEY = "videoChat.themePreference";
-const NAV_COLLAPSE_STORAGE_KEY = "videoChat.navCollapsed";
-const CHAT_PANE_STORAGE_KEY = "videoChat.chatPaneOpen";
-const CHAT_PANE_WIDTH_STORAGE_KEY = "videoChat.chatPaneWidth";
-const MIC_MUTED_STORAGE_KEY = "videoChat.microphoneMuted";
-const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "videoChat.avatarSpeakerMuted";
-const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "videoChat.avatarAutoStartInPictureInPicture";
-const SESSION_IMAGE_URL_STORAGE_KEY = "videoChat.sessionImageUrl";
-const SESSION_ASPECT_RATIO_STORAGE_KEY = "videoChat.sessionAspectRatio";
-const SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY = "videoChat.sessionAvatarTimeoutSeconds";
+const LEGACY_TOKEN_STORAGE_KEY = "avatar.gatewayToken";
+const THEME_STORAGE_KEY = "avatar.themePreference";
+const NAV_COLLAPSE_STORAGE_KEY = "avatar.navCollapsed";
+const CHAT_PANE_STORAGE_KEY = "avatar.chatPaneOpen";
+const CHAT_PANE_WIDTH_STORAGE_KEY = "avatar.chatPaneWidth";
+const MIC_MUTED_STORAGE_KEY = "avatar.microphoneMuted";
+const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "avatar.avatarSpeakerMuted";
+const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "avatar.avatarAutoStartInPictureInPicture";
+const SESSION_IMAGE_URL_STORAGE_KEY = "avatar.sessionImageUrl";
+const SESSION_ASPECT_RATIO_STORAGE_KEY = "avatar.sessionAspectRatio";
+const SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY = "avatar.sessionAvatarTimeoutSeconds";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -93,21 +93,21 @@ const BROWSER_SPEECH_RECOGNITION =
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_WS_CLIENT = {
   id: "test",
-  version: "video-chat-plugin-ui",
+  version: "avatar-plugin-ui",
   platform: "web",
   mode: "test",
 };
 const GATEWAY_WS_SCOPES = ["operator.read", "operator.write"];
 const CHAT_PANE_MIN_WIDTH = 300;
 const CHAT_PANE_MAX_WIDTH = 640;
-const AVATAR_PANE_WIDTH_STORAGE_KEY = "videoChat.avatarPaneWidth";
+const AVATAR_PANE_WIDTH_STORAGE_KEY = "avatar.avatarPaneWidth";
 const AVATAR_PANE_MIN_WIDTH = 0;
 const AVATAR_PANE_MAX_WIDTH = 1200;
 // Debug logging is opt-in because even sanitized entries can still expose session timing and flow details.
-// Enable with `?videoChatDebug=1` or `localStorage.setItem("videoChat.debugLogging", "true")`.
-const VIDEO_CHAT_DEBUG_LOGGING = false;
-const VIDEO_CHAT_DEBUG_LOGGING_QUERY_PARAM = "videoChatDebug";
-const VIDEO_CHAT_DEBUG_LOGGING_STORAGE_KEY = "videoChat.debugLogging";
+// Enable with `?avatarDebug=1` or `localStorage.setItem("avatar.debugLogging", "true")`.
+const AVATAR_DEBUG_LOGGING = false;
+const AVATAR_DEBUG_LOGGING_QUERY_PARAM = "avatarDebug";
+const AVATAR_DEBUG_LOGGING_STORAGE_KEY = "avatar.debugLogging";
 const AVATAR_PIP_DEFAULT_ASPECT_RATIO = 16 / 9;
 const AVATAR_PIP_HORIZONTAL_PADDING = 20;
 const AVATAR_PIP_VERTICAL_PADDING = 20;
@@ -129,11 +129,11 @@ const AVATAR_AUTO_RECOVERY_MAX_ATTEMPTS = 3;
 const SESSION_STARTING_STATUS = "Starting session...";
 const AVATAR_LOADING_STATUS = "Avatar loading...";
 const AVATAR_RECONNECTING_STATUS = "Reconnecting avatar...";
-const VOICE_CHAT_RUN_ID_PREFIX = "video-chat-agent-";
-const VOICE_TRANSCRIPT_EVENT_TOPIC = "video-chat.user-transcript";
-const VOICE_TRANSCRIPT_EVENT_TYPE = "video-chat.user-transcript";
-const AVATAR_CONTROL_EVENT_TOPIC = "video-chat.avatar-control";
-const AVATAR_CONTROL_ACK_EVENT_TOPIC = "video-chat.avatar-control-ack";
+const VOICE_CHAT_RUN_ID_PREFIX = "avatar-agent-";
+const VOICE_TRANSCRIPT_EVENT_TOPIC = "avatar.user-transcript";
+const VOICE_TRANSCRIPT_EVENT_TYPE = "avatar.user-transcript";
+const AVATAR_CONTROL_EVENT_TOPIC = "avatar.avatar-control";
+const AVATAR_CONTROL_ACK_EVENT_TOPIC = "avatar.avatar-control-ack";
 const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
 const VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH = 12;
 const AVATAR_ECHO_RECENT_REPLY_RETENTION_MS = 30_000;
@@ -1206,7 +1206,7 @@ function presentRelevantSetupError(message, options = {}) {
 }
 
 function reportSetupUiError(context, error) {
-  console.error("[video-chat-ui]", context, error);
+  console.error("[avatar-ui]", context, error);
   const sectionKey = classifySetupErrorSection(error);
   const safeMessage = sanitizeSetupErrorMessage(error, sectionKey);
   return {
@@ -1338,7 +1338,7 @@ function updateSetupHealthStatusForError(error, options = {}) {
 }
 
 function debugLog(event, details = {}) {
-  if (!isVideoChatDebugLoggingEnabled()) {
+  if (!isAvatarDebugLoggingEnabled()) {
     return;
   }
   const entry = {
@@ -1350,7 +1350,7 @@ function debugLog(event, details = {}) {
   if (debugLogEntries.length > 30) {
     debugLogEntries.splice(0, debugLogEntries.length - 30);
   }
-  console.log("[video-chat-ui]", entry);
+  console.log("[avatar-ui]", entry);
   setOutput({
     debug: debugLogEntries,
   });
@@ -1431,9 +1431,9 @@ function debugLogRoomState(event, room = activeRoom, details = {}) {
   });
 }
 
-function syncVideoChatDebugGlobals() {
+function syncAvatarDebugGlobals() {
   try {
-    globalThis.__videoChatDebug = {
+    globalThis.__avatarDebug = {
       get entries() {
         return debugLogEntries.slice();
       },
@@ -1442,20 +1442,20 @@ function syncVideoChatDebugGlobals() {
       },
       dumpRoomState() {
         const snapshot = summarizeRoomState();
-        console.log("[video-chat-ui]", { event: "manual-room-state", roomState: snapshot });
+        console.log("[avatar-ui]", { event: "manual-room-state", roomState: snapshot });
         return snapshot;
       },
     };
   } catch {}
 }
 
-function isVideoChatDebugLoggingEnabled() {
-  if (VIDEO_CHAT_DEBUG_LOGGING) {
+function isAvatarDebugLoggingEnabled() {
+  if (AVATAR_DEBUG_LOGGING) {
     return true;
   }
   try {
     const params = new URLSearchParams(globalThis.location?.search || "");
-    const queryValue = params.get(VIDEO_CHAT_DEBUG_LOGGING_QUERY_PARAM);
+    const queryValue = params.get(AVATAR_DEBUG_LOGGING_QUERY_PARAM);
     if (typeof queryValue === "string") {
       const normalized = queryValue.trim().toLowerCase();
       if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
@@ -1464,7 +1464,7 @@ function isVideoChatDebugLoggingEnabled() {
     }
   } catch {}
   try {
-    const storedValue = globalThis.localStorage?.getItem(VIDEO_CHAT_DEBUG_LOGGING_STORAGE_KEY);
+    const storedValue = globalThis.localStorage?.getItem(AVATAR_DEBUG_LOGGING_STORAGE_KEY);
     if (typeof storedValue === "string") {
       const normalized = storedValue.trim().toLowerCase();
       return (
@@ -1475,7 +1475,7 @@ function isVideoChatDebugLoggingEnabled() {
   return false;
 }
 
-syncVideoChatDebugGlobals();
+syncAvatarDebugGlobals();
 
 function sanitizeDebugLogValue(key, value) {
   if (value === null || value === undefined) {
@@ -1905,7 +1905,7 @@ function hydrateOpenClawCompatibility(payload) {
 }
 
 async function requestBrowserBootstrapPayload() {
-  const response = await fetch("/plugins/video-chat/bootstrap");
+  const response = await fetch("/plugins/avatar/bootstrap");
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     throw new Error("Failed to load browser bootstrap payload.");
@@ -2032,7 +2032,7 @@ async function submitVoiceTranscript(rawTranscript) {
     setAvatarMutedForPendingChatReply(true);
     await requestAvatarInterrupt("voice-transcript");
     const liveUpdatesReady = await primeGatewaySocketForChat();
-    const payload = await requestJson("/plugins/video-chat/api/chat/send", {
+    const payload = await requestJson("/plugins/avatar/api/chat/send", {
       method: "POST",
       body: JSON.stringify({
         sessionKey,
@@ -2422,7 +2422,7 @@ function buildServerSpeechFallbackWavBytes() {
 async function requestServerSpeechTranscript(audioBytes, mimeType) {
   const base64Data = base64EncodeBytes(audioBytes);
   const sessionKey = resolveChatSessionKey();
-  const payload = await requestJson("/plugins/video-chat/api/transcribe", {
+  const payload = await requestJson("/plugins/avatar/api/transcribe", {
     method: "POST",
     body: JSON.stringify({
       data: base64Data,
@@ -4045,7 +4045,7 @@ function applyChatPaneWidth(nextWidth, options = {}) {
   const shouldPersist = options.persist !== false;
   const { min, max } = getChatPaneWidthBounds();
   const clamped = Math.min(max, Math.max(min, Math.round(nextWidth)));
-  shellEl.style.setProperty("--video-chat-pane-width", `${clamped}px`);
+  shellEl.style.setProperty("--avatar-pane-width", `${clamped}px`);
   if (!shouldPersist) {
     return;
   }
@@ -4123,9 +4123,9 @@ async function doInitChatPane() {
   applyChatPaneWidth(storedWidth, { persist: false });
   setChatPaneOpen(isOpen, { persist: false });
   shellEl?.classList.add("shell--chat-pane-ready");
-  document.documentElement.classList.remove("video-chat-preload-layout-pending");
-  document.documentElement.classList.remove("video-chat-preload-chat-pane-pending");
-  document.documentElement.classList.remove("video-chat-preload-chat-pane-closed");
+  document.documentElement.classList.remove("avatar-preload-layout-pending");
+  document.documentElement.classList.remove("avatar-preload-chat-pane-pending");
+  document.documentElement.classList.remove("avatar-preload-chat-pane-closed");
 
   chatPaneToggleButton?.addEventListener("click", () => {
     const nextOpen = shellEl ? shellEl.classList.contains("shell--chat-pane-closed") : true;
@@ -4145,7 +4145,7 @@ async function doInitChatPane() {
 
   mobileChatPaneMedia?.addEventListener("change", () => {
     const open = shellEl ? shellEl.classList.contains("shell--chat-pane-open") : true;
-    applyChatPaneWidth(parseInt(shellEl?.style.getPropertyValue("--video-chat-pane-width") || "360", 10), {
+    applyChatPaneWidth(parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "360", 10), {
       persist: false,
     });
     setChatPaneOpen(open, { persist: false });
@@ -4190,14 +4190,14 @@ async function doInitChatPane() {
         return;
       }
       event.preventDefault();
-      const currentWidth = parseInt(shellEl?.style.getPropertyValue("--video-chat-pane-width") || "360", 10);
+      const currentWidth = parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "360", 10);
       const delta = event.key === "ArrowLeft" ? 24 : -24;
       applyChatPaneWidth(currentWidth + delta);
     });
   }
 
   window.addEventListener("resize", () => {
-    const currentWidth = parseInt(shellEl?.style.getPropertyValue("--video-chat-pane-width") || "360", 10);
+    const currentWidth = parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "360", 10);
     applyChatPaneWidth(currentWidth, { persist: false });
   });
 
@@ -5361,8 +5361,8 @@ async function enterAvatarDocumentPictureInPicture() {
   avatarDocumentPictureInPictureCleanup = cleanupAvatarDocumentPictureInPicture;
 
   pictureInPictureDocument.documentElement.lang = document.documentElement.lang || "en";
-  pictureInPictureDocument.title = "Claw Cast";
-  pictureInPictureDocument.body.className = "video-chat-pip";
+  pictureInPictureDocument.title = "Avatar";
+  pictureInPictureDocument.body.className = "avatar-pip";
   pictureInPictureDocument.body.textContent = "";
 
   const styleEl = pictureInPictureDocument.createElement("style");
@@ -6830,7 +6830,7 @@ function updateChatControls() {
 
 function nextGatewayRequestId() {
   gatewayRequestCounter += 1;
-  return `video-chat-ui-${Date.now()}-${gatewayRequestCounter}`;
+  return `avatar-ui-${Date.now()}-${gatewayRequestCounter}`;
 }
 
 function clearGatewayPendingRequests(error) {
@@ -7231,7 +7231,7 @@ async function loadChatHistory() {
   if (!sessionKey) {
     return;
   }
-  const history = await requestJson("/plugins/video-chat/api/chat/history", {
+  const history = await requestJson("/plugins/avatar/api/chat/history", {
     method: "POST",
     body: JSON.stringify({
       sessionKey,
@@ -7317,7 +7317,7 @@ function historyHasAssistantReplyAfterIdempotencyKey(messages, idempotencyKey) {
 
 async function refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey) {
   try {
-    const history = await requestJson("/plugins/video-chat/api/chat/history", {
+    const history = await requestJson("/plugins/avatar/api/chat/history", {
       method: "POST",
       body: JSON.stringify({
         sessionKey,
@@ -7368,7 +7368,7 @@ async function backfillAssistantMessageMetadataFromHistory(params = {}) {
     return;
   }
 
-  const history = await requestJson("/plugins/video-chat/api/chat/history", {
+  const history = await requestJson("/plugins/avatar/api/chat/history", {
     method: "POST",
     body: JSON.stringify({
       sessionKey,
@@ -7676,7 +7676,7 @@ async function fetchAvatarSessionStatus(roomName, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : AVATAR_STATUS_REQUEST_TIMEOUT_MS;
   try {
     const payload = await requestJsonWithTimeout(
-      `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName.trim())}`,
+      `/plugins/avatar/api/session/status?roomName=${encodeURIComponent(roomName.trim())}`,
       {},
       timeoutMs,
     );
@@ -7780,8 +7780,8 @@ async function waitForAvatarParticipant(room, options = {}) {
   );
 }
 
-async function restartVideoChatSidecar() {
-  const payload = await requestJson("/plugins/video-chat/api/sidecar/restart", {
+async function restartAvatarSidecar() {
+  const payload = await requestJson("/plugins/avatar/api/sidecar/restart", {
     method: "POST",
     body: JSON.stringify({}),
   });
@@ -7797,8 +7797,8 @@ async function restartVideoChatSidecar() {
   return payload;
 }
 
-async function stopVideoChatSidecar() {
-  const payload = await requestJson("/plugins/video-chat/api/sidecar/stop", {
+async function stopAvatarSidecar() {
+  const payload = await requestJson("/plugins/avatar/api/sidecar/stop", {
     method: "POST",
     body: JSON.stringify({}),
   });
@@ -8235,17 +8235,17 @@ async function reconnectAvatarSession(options = {}) {
     disconnectRoom({
       keepDocumentPictureInPicture,
     });
-    await requestJson("/plugins/video-chat/api/session/stop", {
+    await requestJson("/plugins/avatar/api/session/stop", {
       method: "POST",
       body: JSON.stringify({
         roomName: priorRoomName,
       }),
     });
     if (options.restartSidecar !== false) {
-      setAvatarLoadingState(true, "Restarting Claw Cast worker...");
-      await restartVideoChatSidecar();
+      setAvatarLoadingState(true, "Restarting Avatar worker...");
+      await restartAvatarSidecar();
     }
-    const payload = await requestJson("/plugins/video-chat/api/session", {
+    const payload = await requestJson("/plugins/avatar/api/session", {
       method: "POST",
       body: JSON.stringify(
         buildSessionCreatePayload(priorSessionKey, {
@@ -8323,7 +8323,7 @@ async function stopActiveSession() {
     sessionOutput = { action: "session-stopped" };
   } else {
     try {
-      await requestJson("/plugins/video-chat/api/session/stop", {
+      await requestJson("/plugins/avatar/api/session/stop", {
         method: "POST",
         body: JSON.stringify({ roomName: session.roomName }),
       });
@@ -8340,7 +8340,7 @@ async function stopActiveSession() {
   setOutput(sessionOutput);
 
   try {
-    await stopVideoChatSidecarForSession();
+    await stopAvatarSidecarForSession();
     setOutput({
       ...sessionOutput,
       sidecar: {
@@ -8358,8 +8358,8 @@ async function stopActiveSession() {
   }
 }
 
-async function stopVideoChatSidecarForSession() {
-  await stopVideoChatSidecar();
+async function stopAvatarSidecarForSession() {
+  await stopAvatarSidecar();
 }
 
 async function requestJson(path, options = {}) {
@@ -8429,7 +8429,7 @@ function syncSetupEditorsFromCurrentForm() {
 }
 
 async function saveSetupPayload(body) {
-  const payload = await requestJson("/plugins/video-chat/api/setup", {
+  const payload = await requestJson("/plugins/avatar/api/setup", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -8465,7 +8465,7 @@ async function refreshSetupStatus() {
   setKeysHealthStatus("warn", "Checking");
   try {
     const [payload] = await Promise.all([
-      requestJson("/plugins/video-chat/api/setup"),
+      requestJson("/plugins/avatar/api/setup"),
       refreshOpenClawCompatibility(),
     ]);
     clearAllSetupSectionErrors();
@@ -8665,9 +8665,9 @@ if (sessionForm) {
     setAvatarLoadingState(true, SESSION_STARTING_STATUS);
     try {
       await validateSessionImageUrl(avatarImageUrl);
-      setAvatarLoadingState(true, "Restarting Claw Cast worker...");
-      await restartVideoChatSidecar();
-      const payload = await requestJson("/plugins/video-chat/api/session", {
+      setAvatarLoadingState(true, "Restarting Avatar worker...");
+      await restartAvatarSidecar();
+      const payload = await requestJson("/plugins/avatar/api/session", {
         method: "POST",
         body: JSON.stringify(
           buildSessionCreatePayload(sessionKey, {
@@ -8852,7 +8852,7 @@ async function submitChatMessage(rawMessage, options = {}) {
     return false;
   }
 
-  const idempotencyKey = `video-chat-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  const idempotencyKey = `avatar-ui-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   const rpcAttachments = hasAttachments ? buildChatSendAttachments(attachments) : [];
   setAvatarMutedForPendingChatReply(true);
   setChatPaneOpen(true);
@@ -8883,7 +8883,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   try {
     await requestAvatarInterrupt("chat-send");
     const liveUpdatesReady = await primeGatewaySocketForChat();
-    const payload = await requestJson("/plugins/video-chat/api/chat/send", {
+    const payload = await requestJson("/plugins/avatar/api/chat/send", {
       method: "POST",
       body: JSON.stringify({
         sessionKey,

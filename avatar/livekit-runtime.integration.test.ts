@@ -15,11 +15,11 @@ type RegisteredService = {
 };
 
 const runtimeEnv = {
-  livekitUrl: process.env.OPENCLAW_VIDEO_CHAT_RUNTIME_LIVEKIT_URL?.trim() || process.env.LIVEKIT_URL?.trim() || "",
+  livekitUrl: process.env.OPENCLAW_AVATAR_RUNTIME_LIVEKIT_URL?.trim() || process.env.LIVEKIT_URL?.trim() || "",
   livekitApiKey:
-    process.env.OPENCLAW_VIDEO_CHAT_RUNTIME_LIVEKIT_API_KEY?.trim() || process.env.LIVEKIT_API_KEY?.trim() || "",
+    process.env.OPENCLAW_AVATAR_RUNTIME_LIVEKIT_API_KEY?.trim() || process.env.LIVEKIT_API_KEY?.trim() || "",
   livekitApiSecret:
-    process.env.OPENCLAW_VIDEO_CHAT_RUNTIME_LIVEKIT_API_SECRET?.trim() ||
+    process.env.OPENCLAW_AVATAR_RUNTIME_LIVEKIT_API_SECRET?.trim() ||
     process.env.LIVEKIT_API_SECRET?.trim() ||
     "",
 };
@@ -33,8 +33,8 @@ function setupIntegrationPlugin(config: unknown) {
   vi.mocked(runtime.config.loadConfig).mockReturnValue(config as never);
 
   plugin.register({
-    id: "video-chat",
-    name: "Claw Cast",
+    id: "avatar",
+    name: "Avatar",
     source: "integration-test",
     config,
     pluginConfig: {},
@@ -65,7 +65,7 @@ function setupIntegrationPlugin(config: unknown) {
 
 async function invokeGatewayMethod(
   methods: Map<string, unknown>,
-  method: "videoChat.session.create" | "videoChat.session.stop",
+  method: "avatar.session.create" | "avatar.session.stop",
   params: Record<string, unknown>,
 ) {
   const handler = methods.get(method) as
@@ -117,28 +117,28 @@ async function waitForCondition<T>(
   throw new Error(lastError ? `${label}: ${lastError}` : `${label}: timed out after ${timeoutMs}ms`);
 }
 
-describeRuntime("video-chat LiveKit runtime integration", () => {
-  const originalCustomRunner = process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
-  const originalSignalFile = process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE;
-  const originalTestMode = process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE;
+describeRuntime("avatar LiveKit runtime integration", () => {
+  const originalCustomRunner = process.env.OPENCLAW_AVATAR_AGENT_RUNNER;
+  const originalSignalFile = process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE;
+  const originalTestMode = process.env.OPENCLAW_AVATAR_TEST_MODE;
   let tmpDir = "";
   let signalFile = "";
 
   afterEach(async () => {
     if (originalCustomRunner === undefined) {
-      delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
+      delete process.env.OPENCLAW_AVATAR_AGENT_RUNNER;
     } else {
-      process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER = originalCustomRunner;
+      process.env.OPENCLAW_AVATAR_AGENT_RUNNER = originalCustomRunner;
     }
     if (originalSignalFile === undefined) {
-      delete process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE;
+      delete process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE;
     } else {
-      process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE = originalSignalFile;
+      process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE = originalSignalFile;
     }
     if (originalTestMode === undefined) {
-      delete process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE;
+      delete process.env.OPENCLAW_AVATAR_TEST_MODE;
     } else {
-      process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE = originalTestMode;
+      process.env.OPENCLAW_AVATAR_TEST_MODE = originalTestMode;
     }
     try {
       dispose();
@@ -153,11 +153,11 @@ describeRuntime("video-chat LiveKit runtime integration", () => {
   it(
     "dispatches the sidecar worker across repeated real room joins",
     async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "video-chat-livekit-runtime-"));
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "avatar-livekit-runtime-"));
       signalFile = path.join(tmpDir, "runner-signals.ndjson");
-      delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
-      process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE = signalFile;
-      process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE = "connect-only";
+      delete process.env.OPENCLAW_AVATAR_AGENT_RUNNER;
+      process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE = signalFile;
+      process.env.OPENCLAW_AVATAR_TEST_MODE = "connect-only";
 
       const config = {
         gateway: {
@@ -168,7 +168,7 @@ describeRuntime("video-chat LiveKit runtime integration", () => {
           },
         },
         session: { mainKey: "main" },
-        videoChat: {
+        avatar: {
           provider: "lemonslice" as const,
           lemonSlice: {
             apiKey: "lemonslice-test-key",
@@ -183,7 +183,7 @@ describeRuntime("video-chat LiveKit runtime integration", () => {
       };
 
       const { methods, services } = setupIntegrationPlugin(config);
-      const sidecarService = services.find((service) => service?.id === "video-chat-agent");
+      const sidecarService = services.find((service) => service?.id === "avatar-agent");
       const roomServiceClient = new RoomServiceClient(
         runtimeEnv.livekitUrl,
         runtimeEnv.livekitApiKey,
@@ -200,7 +200,7 @@ describeRuntime("video-chat LiveKit runtime integration", () => {
           let room: Room | null = null;
           let roomName = "";
           try {
-            const createRespond = await invokeGatewayMethod(methods, "videoChat.session.create", {
+            const createRespond = await invokeGatewayMethod(methods, "avatar.session.create", {
               sessionKey: `runtime-${attempt}`,
               avatarImageUrl: "https://example.com/runtime-avatar.png",
             });
@@ -241,7 +241,7 @@ describeRuntime("video-chat LiveKit runtime integration", () => {
                 const dispatch = dispatches.find(
                   (candidate) =>
                     candidate?.room === roomName &&
-                    candidate?.agentName === (session?.agentName ?? "openclaw-video-chat"),
+                    candidate?.agentName === (session?.agentName ?? "openclaw-avatar"),
                 );
                 const dispatchJobs = Array.isArray(dispatch?.state?.jobs) ? dispatch.state.jobs : [];
                 const dispatchJobCount = dispatchJobs.length;
@@ -285,7 +285,7 @@ describeRuntime("video-chat LiveKit runtime integration", () => {
               await room.disconnect().catch(() => {});
             }
             if (roomName) {
-              await invokeGatewayMethod(methods, "videoChat.session.stop", { roomName });
+              await invokeGatewayMethod(methods, "avatar.session.stop", { roomName });
               await waitForCondition(
                 `room ${roomName} was not deleted`,
                 async () => {

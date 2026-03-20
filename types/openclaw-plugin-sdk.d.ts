@@ -19,7 +19,7 @@ declare module "openclaw/plugin-sdk" {
         audio?: Record<string, unknown>;
       };
     };
-    videoChat?: {
+    avatar?: {
       provider?: "lemonslice" | string;
       lemonSlice?: {
         apiKey?: unknown;

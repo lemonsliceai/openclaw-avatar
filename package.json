@@ -1,7 +1,7 @@
 {
-  "name": "openclaw-video-chat-do-not-install-7f3c9d1",
+  "name": "openclaw-avatar-do-not-install-7f3c9d1",
   "version": "0.1.36",
-  "description": "OpenClaw Claw Cast plugin",
+  "description": "OpenClaw Avatar plugin",
   "license": "MIT",
   "type": "module",
   "files": [
@@ -9,12 +9,12 @@
     "assets",
     "openclaw.plugin.json",
     "styles",
-    "video-chat/avatar-aspect-ratio.js",
-    "video-chat/index.ts",
-    "video-chat/sidecar-process-control.ts",
-    "video-chat/video-chat-agent-bridge.mjs",
-    "video-chat/video-chat-agent-runner-wrapper.mjs",
-    "video-chat/video-chat-agent-runner.js",
+    "avatar/avatar-aspect-ratio.js",
+    "avatar/index.ts",
+    "avatar/sidecar-process-control.ts",
+    "avatar/avatar-agent-bridge.mjs",
+    "avatar/avatar-agent-runner-wrapper.mjs",
+    "avatar/avatar-agent-runner.js",
     "web/app.js",
     "web/shared-shell.js",
     "web/index.html",
@@ -23,7 +23,7 @@
   ],
   "openclaw": {
     "extensions": [
-      "./video-chat/index.ts"
+      "./avatar/index.ts"
     ]
   },
   "peerDependencies": {
