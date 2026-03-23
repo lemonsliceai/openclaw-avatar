@@ -1,19 +1,170 @@
 {
-  "id": "video-chat",
-  "name": "Claw Cast",
-  "description": "Claw Cast gateway methods and sidecar worker",
+  "id": "openclaw-avatar",
+  "name": "Avatar",
+  "description": "Avatar gateway methods and sidecar worker",
+  "version": "0.1.36",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
     "properties": {
-      "videoChat": {
+      "avatar": {
         "type": "object",
-        "additionalProperties": true
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["lemonslice"]
+          },
+          "verbose": {
+            "type": "boolean"
+          },
+          "lemonSlice": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "apiKey": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "env": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                ]
+              },
+              "imageUrl": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "livekit": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "type": "string",
+                "minLength": 1
+              },
+              "apiKey": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "env": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                ]
+              },
+              "apiSecret": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "env": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                ]
+              }
+            }
+          }
+        }
       },
       "messages": {
         "type": "object",
         "additionalProperties": true
+      },
+      "tools": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "media": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "audio": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "models": {
+                    "type": "array"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
+    }
+  },
+  "uiHints": {
+    "avatar.provider": {
+      "label": "Provider"
+    },
+    "avatar.verbose": {
+      "label": "Verbose Avatar Logs"
+    },
+    "avatar.lemonSlice.apiKey": {
+      "label": "LemonSlice API Key",
+      "sensitive": true
+    },
+    "avatar.lemonSlice.imageUrl": {
+      "label": "Avatar Image URL",
+      "placeholder": "https://example.com/avatar.png"
+    },
+    "avatar.livekit.url": {
+      "label": "LiveKit URL",
+      "placeholder": "wss://your-project.livekit.cloud"
+    },
+    "avatar.livekit.apiKey": {
+      "label": "LiveKit API Key",
+      "sensitive": true
+    },
+    "avatar.livekit.apiSecret": {
+      "label": "LiveKit API Secret",
+      "sensitive": true
     }
   }
 }

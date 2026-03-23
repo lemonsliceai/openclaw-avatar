@@ -3,27 +3,27 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenClaw Claw Cast Config</title>
-    <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
-    <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
-    <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
-    <link rel="stylesheet" href="/plugins/video-chat/styles/components.css" />
-    <link rel="stylesheet" href="/plugins/video-chat/styles/config.css" />
+    <title>OpenClaw Avatar Config</title>
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/base.css" />
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/layout.css" />
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/layout.mobile.css" />
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/components.css" />
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/config.css" />
     <style>
-      .video-chat-shell .content {
+      .avatar-shell .content {
         max-width: 100%;
         margin: 0;
       }
 
       @media (min-width: 769px) {
-        .video-chat-shell .content {
+        .avatar-shell .content {
           display: flex;
           flex-direction: column;
           gap: 16px;
           overflow: hidden;
         }
 
-        .video-chat-shell .content > * + * {
+        .avatar-shell .content > * + * {
           margin-top: 0;
         }
 
@@ -39,25 +39,25 @@
         }
       }
 
-      .video-chat-shell .nav {
+      .avatar-shell .nav {
         border-right: 1px solid var(--border);
       }
 
-      .video-chat-shell .nav-item {
+      .avatar-shell .nav-item {
         text-decoration: none;
       }
 
-      .video-chat-head {
+      .avatar-head {
         display: grid;
         gap: 6px;
       }
 
-      .video-chat-head h2,
-      .video-chat-head p {
+      .avatar-head h2,
+      .avatar-head p {
         margin: 0;
       }
 
-      .video-chat-form {
+      .avatar-form {
         display: grid;
         gap: 12px;
       }
@@ -80,12 +80,12 @@
         scroll-margin-top: 18px;
       }
 
-      .video-chat-grid {
+      .avatar-grid {
         display: grid;
         gap: 16px;
       }
 
-      .video-chat-grid.cols-2 {
+      .avatar-grid.cols-2 {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
@@ -135,7 +135,7 @@
         color: var(--muted);
       }
 
-      .video-chat-status {
+      .avatar-status {
         margin: 0 0 16px;
       }
 
@@ -144,13 +144,13 @@
       }
 
       @media (max-width: 900px) {
-        .video-chat-grid.cols-2 {
+        .avatar-grid.cols-2 {
           grid-template-columns: 1fr;
         }
       }
     </style>
   </head>
-  <body class="video-chat-shell">
+  <body class="avatar-shell">
     <div class="shell">
       <header
         class="topbar"
@@ -185,9 +185,6 @@
               <button class="config-nav__item" type="button" data-section-filter="livekit">
                 <span class="config-nav__label">LiveKit</span>
               </button>
-              <button class="config-nav__item" type="button" data-section-filter="elevenlabs">
-                <span class="config-nav__label">11Labs</span>
-              </button>
               <button class="config-nav__item" type="button" data-section-filter="output">
                 <span class="config-nav__label">Output</span>
               </button>
@@ -220,16 +217,16 @@
                 </div>
               </div>
 
-              <p id="status" class="callout info video-chat-status">Loading setup status...</p>
+              <p id="status" class="callout info avatar-status">Loading setup status...</p>
 
               <section class="config-section-card stack" id="gateway-token-section" data-config-section="gateway-token">
-                <header class="config-section-card__header video-chat-head">
+                <header class="config-section-card__header avatar-head">
                   <h2 class="card-title">Gateway Token</h2>
                   <p class="card-sub">This page will auto-load the configured gateway token when available, or you can enter one manually.</p>
                 </header>
                 <div class="config-section-card__content">
                   <p id="gateway-token-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
-                  <form id="token-form" class="video-chat-form">
+                  <form id="token-form" class="avatar-form">
                     <label class="field full">
                       <span>Gateway token</span>
                       <div class="secret-row">
@@ -269,9 +266,9 @@
                 </div>
               </section>
 
-              <form id="setup-form" class="video-chat-form">
+              <form id="setup-form" class="avatar-form">
                 <section class="config-section-card stack" id="lemonslice-section" data-config-section="lemonslice">
-                  <header class="config-section-card__header video-chat-head">
+                  <header class="config-section-card__header avatar-head">
                     <h2 class="card-title">LemonSlice</h2>
                     <p class="card-sub">Configure LemonSlice credentials.</p>
                   </header>
@@ -279,7 +276,7 @@
                     <p id="lemonslice-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                     <div class="provider-group" id="lemonslice">
                       <h3>LemonSlice</h3>
-                      <div class="video-chat-grid cols-2">
+                      <div class="avatar-grid cols-2">
                         <label class="field secret-field">
                           <span>API key</span>
                           <div class="secret-row">
@@ -324,7 +321,7 @@
                 </section>
 
                 <section class="config-section-card stack" id="livekit-section" data-config-section="livekit">
-                  <header class="config-section-card__header video-chat-head">
+                  <header class="config-section-card__header avatar-head">
                     <h2 class="card-title">LiveKit</h2>
                     <p class="card-sub">Configure LiveKit URL and API credentials.</p>
                   </header>
@@ -332,7 +329,7 @@
                     <p id="livekit-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                     <div class="provider-group" id="livekit">
                       <h3>LiveKit</h3>
-                      <div class="video-chat-grid cols-2">
+                      <div class="avatar-grid cols-2">
                         <label class="field">
                           <span>URL</span>
                           <input type="url" name="livekitUrl" placeholder="wss://..." />
@@ -418,67 +415,11 @@
                   </div>
                 </section>
 
-                <section class="config-section-card stack" id="elevenlabs-section" data-config-section="elevenlabs">
-                  <header class="config-section-card__header video-chat-head">
-                    <h2 class="card-title">11Labs</h2>
-                    <p class="card-sub">Configure ElevenLabs voice settings for avatar speech.</p>
-                  </header>
-                  <div class="config-section-card__content">
-                    <p id="elevenlabs-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
-                    <div class="provider-group" id="elevenlabs">
-                      <h3>11Labs</h3>
-                      <div class="video-chat-grid cols-2">
-                        <label class="field secret-field">
-                          <span>API key</span>
-                          <div class="secret-row">
-                            <input
-                              type="password"
-                              name="elevenLabsApiKey"
-                              autocomplete="off"
-                              data-sensitive-field="elevenLabsApiKey"
-                            />
-                            <button
-                              class="btn btn--sm secret-toggle"
-                              type="button"
-                              data-toggle-secret-visibility="elevenLabsApiKey"
-                              data-secret-label="ElevenLabs API key"
-                              aria-label="Show ElevenLabs API key"
-                              aria-pressed="false"
-                              title="Show ElevenLabs API key"
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"></path>
-                                <circle cx="12" cy="12" r="3"></circle>
-                              </svg>
-                            </button>
-                            <button
-                              class="btn btn--sm secret-copy"
-                              type="button"
-                              data-copy-secret="elevenLabsApiKey"
-                              data-secret-label="ElevenLabs API key"
-                              aria-label="Copy ElevenLabs API key"
-                              title="Copy ElevenLabs API key"
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
-                              </svg>
-                            </button>
-                          </div>
-                        </label>
-                        <label class="field">
-                          <span>Voice ID</span>
-                          <input type="text" name="elevenLabsVoiceId" autocomplete="off" />
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                </section>
               </form>
 
-              <form id="setup-raw-form" class="video-chat-form is-mode-hidden" novalidate>
+              <form id="setup-raw-form" class="avatar-form is-mode-hidden" novalidate>
                 <section class="config-section-card stack" id="setup-raw-section">
-                  <header class="config-section-card__header video-chat-head">
+                  <header class="config-section-card__header avatar-head">
                     <h2 class="card-title">Raw Setup Payload</h2>
                     <p class="card-sub">Edit the setup payload as JSON and save directly.</p>
                   </header>
@@ -490,15 +431,14 @@
                     <p id="setup-raw-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
                     <p class="setup-raw-help">
                       Supported keys: lemonSliceApiKey, livekitUrl, livekitApiKey,
-                      livekitApiSecret, elevenLabsApiKey, elevenLabsVoiceId. Use <code>_REDACTED_</code> for secret keys to keep
-                      existing values.
+                      livekitApiSecret. Legacy provider fields are ignored. Use <code>_REDACTED_</code> for secret keys to keep existing values.
                     </p>
                   </div>
                 </section>
               </form>
 
               <section class="config-section-card stack" id="output-section" data-config-section="output">
-                <header class="config-section-card__header video-chat-head">
+                <header class="config-section-card__header avatar-head">
                   <h2 class="card-title">Output</h2>
                   <p class="card-sub">Recent setup responses and validation feedback.</p>
                 </header>
@@ -514,6 +454,6 @@
     <script>
       __SHARED_SHELL_BOOTSTRAP__
     </script>
-    <script type="module" src="/plugins/video-chat/app.js?v=__PACKAGE_VERSION__"></script>
+    <script type="module" src="/plugins/openclaw-avatar/app.js?v=__PACKAGE_VERSION__"></script>
   </body>
 </html>

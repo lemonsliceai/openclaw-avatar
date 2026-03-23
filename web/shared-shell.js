@@ -68,8 +68,8 @@ const TOPBAR_STATUS_VARIANTS = {
 const NAV_ITEMS = [
   {
     key: "home",
-    href: "/plugins/video-chat",
-    label: "Claw Cast",
+    href: "/plugins/openclaw-avatar",
+    label: "Avatar",
     icon: `
       <svg viewBox="0 0 24 24">
         <path d="m22 8-6 4 6 4V8z"></path>
@@ -79,7 +79,7 @@ const NAV_ITEMS = [
   },
   {
     key: "config",
-    href: "/plugins/video-chat/config",
+    href: "/plugins/openclaw-avatar/config",
     label: "Config",
     icon: `
       <svg viewBox="0 0 24 24">
@@ -92,7 +92,7 @@ const NAV_ITEMS = [
   },
   {
     key: "readme",
-    href: "/plugins/video-chat/readme",
+    href: "/plugins/openclaw-avatar/readme",
     label: "README",
     icon: `
       <svg viewBox="0 0 24 24">
@@ -139,7 +139,7 @@ function renderTopbar(element) {
       }
       <div class="brand">
         <div class="brand-text">
-          <span class="brand-title">Claw Cast Plugin</span>
+          <span class="brand-title">Avatar Plugin</span>
           <span class="brand-sub"></span>
         </div>
       </div>

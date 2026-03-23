@@ -2,8 +2,8 @@ import path from "node:path";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const INSTANCE_ARG_PREFIX = "--openclaw-video-chat-instance=";
-const DEFAULT_AGENT_NAME = "openclaw-video-chat";
+const INSTANCE_ARG_PREFIX = "--openclaw-avatar-instance=";
+const DEFAULT_AGENT_NAME = "openclaw-avatar";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -14,7 +14,7 @@ function requireEnv(name) {
 }
 
 function resolveAgentName() {
-  return process.env.OPENCLAW_VIDEO_CHAT_AGENT_NAME?.trim() || DEFAULT_AGENT_NAME;
+  return process.env.OPENCLAW_AVATAR_AGENT_NAME?.trim() || DEFAULT_AGENT_NAME;
 }
 
 function resolveInstanceArg(argv) {
@@ -35,7 +35,7 @@ function filterInstanceArgs(argv) {
 function resolveRunnerPath(argv) {
   const candidate = argv[2]?.trim();
   if (!candidate) {
-    throw new Error("Missing Claw Cast agent runner path");
+    throw new Error("Missing Avatar agent runner path");
   }
   return path.resolve(candidate);
 }
@@ -138,7 +138,7 @@ function attachChildLineLogger(stream, logger) {
 function patchJobProcessForkLogging() {
   const require = createRequire(import.meta.url);
   const childProcess = require("node:child_process");
-  if (childProcess.__openclawVideoChatForkLoggingPatched) {
+  if (childProcess.__openclawAvatarForkLoggingPatched) {
     return;
   }
   const originalFork = childProcess.fork.bind(childProcess);
@@ -161,7 +161,7 @@ function patchJobProcessForkLogging() {
         : options;
     const child = originalFork(modulePath, args, nextOptions);
     if (isJobProcess) {
-      const label = `[video-chat-agent/job pid=${child.pid ?? "unknown"}]`;
+      const label = `[avatar-agent/job pid=${child.pid ?? "unknown"}]`;
       attachChildLineLogger(child.stdout, (line) => {
         console.log(`${label} ${line}`);
       });
@@ -173,7 +173,7 @@ function patchJobProcessForkLogging() {
           return;
         }
         const caseName = message.case;
-        if (caseName !== "openclawVideoChatDebug") {
+        if (caseName !== "openclawAvatarDebug") {
           return;
         }
         const value = message.value && typeof message.value === "object" ? message.value : {};
@@ -190,14 +190,14 @@ function patchJobProcessForkLogging() {
     }
     return child;
   };
-  childProcess.__openclawVideoChatForkLoggingPatched = true;
+  childProcess.__openclawAvatarForkLoggingPatched = true;
   syncBuiltinESMExports();
 }
 
 async function main() {
   const instanceArg = resolveInstanceArg(process.argv);
   if (instanceArg) {
-    process.env.OPENCLAW_VIDEO_CHAT_INSTANCE_ARG = instanceArg;
+    process.env.OPENCLAW_AVATAR_INSTANCE_ARG = instanceArg;
     process.title = `${fileURLToPath(import.meta.url)} ${instanceArg}`;
   }
   const positionalArgv = filterInstanceArgs(process.argv);
@@ -205,7 +205,7 @@ async function main() {
   const depsBaseRunnerPath = resolveDepsBaseRunnerPath(positionalArgv, runnerPath);
   const wrapperPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
-    "video-chat-agent-runner-wrapper.mjs",
+    "avatar-agent-runner-wrapper.mjs",
   );
   const agentName = resolveAgentName();
   const depResolutionPaths = Array.from(new Set([runnerPath, depsBaseRunnerPath]));
@@ -217,8 +217,8 @@ async function main() {
 
   const logLevel = process.env.LOG_LEVEL?.trim() || "info";
   initializeLogger({ pretty: true, level: logLevel });
-  process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH = runnerPath;
-  process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER = depsBaseRunnerPath;
+  process.env.OPENCLAW_AVATAR_RUNNER_PATH = runnerPath;
+  process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER = depsBaseRunnerPath;
   const worker = new AgentServer(
     new ServerOptions({
       agent: wrapperPath,
@@ -227,11 +227,11 @@ async function main() {
         const roomName = typeof jobRequest?.room?.name === "string" ? jobRequest.room.name : "";
         const jobId = typeof jobRequest?.id === "string" ? jobRequest.id : "";
         console.log(
-          `[video-chat-agent] request func accepting job jobId=${jobId} roomName=${roomName} agentName=${agentName}`,
+          `[avatar-agent] request func accepting job jobId=${jobId} roomName=${roomName} agentName=${agentName}`,
         );
         await jobRequest.accept();
         console.log(
-          `[video-chat-agent] request func accepted job jobId=${jobId} roomName=${roomName} agentName=${agentName}`,
+          `[avatar-agent] request func accepted job jobId=${jobId} roomName=${roomName} agentName=${agentName}`,
         );
       },
       wsURL: requireEnv("LIVEKIT_URL"),
@@ -242,7 +242,7 @@ async function main() {
     }),
   );
   worker.event.once("worker_registered", (workerId) => {
-    console.log(`[video-chat-agent] worker registered and ready id=${workerId} agentName=${agentName}`);
+    console.log(`[avatar-agent] worker registered and ready id=${workerId} agentName=${agentName}`);
   });
 
   let shuttingDown = false;
@@ -251,7 +251,7 @@ async function main() {
       return;
     }
     shuttingDown = true;
-    console.warn(`[video-chat-agent] ${reason}`);
+    console.warn(`[avatar-agent] ${reason}`);
     try {
       if (drain) {
         await worker.drain();
@@ -279,7 +279,7 @@ async function main() {
   if (process.platform !== "win32") {
     process.on("SIGUSR2", () => {
       console.warn(
-        "[video-chat-agent] received SIGUSR2; preserving bridge while sidecar child jobs reset",
+        "[avatar-agent] received SIGUSR2; preserving bridge while sidecar child jobs reset",
       );
     });
   }
@@ -292,7 +292,7 @@ async function main() {
     });
   });
 
-  console.log(`[video-chat-agent] starting LiveKit agent server agentName=${agentName}`);
+  console.log(`[avatar-agent] starting LiveKit agent server agentName=${agentName}`);
   try {
     await worker.run();
   } finally {
@@ -302,6 +302,6 @@ async function main() {
 
 main().catch((error) => {
   const message = error instanceof Error ? error.stack ?? error.message : String(error);
-  console.error(`[video-chat-agent] ${message}`);
+  console.error(`[avatar-agent] ${message}`);
   process.exit(1);
 });

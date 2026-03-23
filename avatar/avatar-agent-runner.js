@@ -1,18 +1,19 @@
+/** Canonical avatar aspect ratio exports live in `./avatar-aspect-ratio.js`. */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
-  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
-  VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+  AVATAR_ASPECT_RATIO_DEFAULT,
+  AVATAR_ASPECT_RATIO_LOOKUP,
+  AVATAR_ASPECT_RATIOS,
 } from "./avatar-aspect-ratio.js";
 
 const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
-const AVATAR_CONTROL_EVENT_TOPIC = "video-chat.avatar-control";
-const AVATAR_CONTROL_ACK_EVENT_TOPIC = "video-chat.avatar-control-ack";
-const VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP = new Set(VIDEO_CHAT_AVATAR_ASPECT_RATIOS);
+const AVATAR_CONTROL_EVENT_TOPIC = "avatar.avatar-control";
+const AVATAR_CONTROL_ACK_EVENT_TOPIC = "avatar.avatar-control-ack";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -22,18 +23,28 @@ function requireEnv(name) {
   return value;
 }
 
+function normalizeAspectRatio(rawAspectRatio) {
+  if (typeof rawAspectRatio !== "string") {
+    return AVATAR_ASPECT_RATIO_DEFAULT;
+  }
+  const normalized = rawAspectRatio.trim();
+  return AVATAR_ASPECT_RATIO_LOOKUP.has(normalized)
+    ? normalized
+    : AVATAR_ASPECT_RATIO_DEFAULT;
+}
+
 function resolveDepsBaseRunnerPath() {
   const value =
-    process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER?.trim() ||
-    process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim();
+    process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER?.trim() ||
+    process.env.OPENCLAW_AVATAR_RUNNER_PATH?.trim();
   if (!value) {
-    throw new Error("Missing OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER");
+    throw new Error("Missing OPENCLAW_AVATAR_DEPS_BASE_RUNNER");
   }
   return path.resolve(value);
 }
 
 function createBaseResolver(baseRunnerPath) {
-  return createRequire(path.join(path.dirname(baseRunnerPath), "__openclaw_video_chat__.js"));
+  return createRequire(path.join(path.dirname(baseRunnerPath), "__openclaw_avatar__.js"));
 }
 
 function resolveSpecifierFromBase(baseRunnerPath, specifier) {
@@ -62,7 +73,7 @@ async function importFromCandidates(baseRunnerPaths, specifier) {
 }
 
 async function loadDeps() {
-  const runnerPath = process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim();
+  const runnerPath = process.env.OPENCLAW_AVATAR_RUNNER_PATH?.trim();
   const baseRunnerPath = resolveDepsBaseRunnerPath();
   const resolutionPaths = Array.from(
     new Set(
@@ -71,21 +82,19 @@ async function loadDeps() {
       ),
     ),
   );
-  const [agentsModule, elevenlabsModule, lemonsliceModule, wsModule] = await Promise.all([
+  const [agentsModule, lemonsliceModule, wsModule] = await Promise.all([
     importFromCandidates(resolutionPaths, "@livekit/agents"),
-    importFromCandidates(resolutionPaths, "@livekit/agents-plugin-elevenlabs"),
     importFromCandidates(resolutionPaths, "@livekit/agents-plugin-lemonslice"),
     importFromCandidates(resolutionPaths, "ws"),
   ]);
 
   const WebSocket = wsModule?.WebSocket ?? wsModule?.default ?? wsModule;
   if (!WebSocket) {
-    throw new Error("Failed to load ws dependency for Claw Cast agent");
+    throw new Error("Failed to load ws dependency for Avatar agent");
   }
 
   return {
     agents: agentsModule,
-    elevenlabs: elevenlabsModule,
     lemonslice: lemonsliceModule,
     WebSocket,
   };
@@ -93,7 +102,7 @@ async function loadDeps() {
 
 function parseJobMetadata(raw) {
   if (typeof raw !== "string" || !raw.trim()) {
-    throw new Error("LiveKit Claw Cast job metadata is missing");
+    throw new Error("LiveKit Avatar job metadata is missing");
   }
   const parsed = JSON.parse(raw);
   const sessionKey = typeof parsed.sessionKey === "string" ? parsed.sessionKey.trim() : "";
@@ -102,16 +111,16 @@ function parseJobMetadata(raw) {
     typeof parsed.avatarTimeoutSeconds === "number" && Number.isFinite(parsed.avatarTimeoutSeconds)
       ? Math.min(600, Math.max(1, Math.floor(parsed.avatarTimeoutSeconds)))
       : 60;
-  const aspectRatio =
-    typeof parsed.aspectRatio === "string" &&
-    VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP.has(parsed.aspectRatio.trim())
-      ? parsed.aspectRatio.trim()
-      : VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT;
+  const aspectRatio = normalizeAspectRatio(parsed.aspectRatio);
   const interruptReplyOnNewMessage = parsed.interruptReplyOnNewMessage === true;
   if (!sessionKey || !imageUrl) {
-    throw new Error("LiveKit Claw Cast job metadata is incomplete");
+    throw new Error("LiveKit Avatar job metadata is incomplete");
   }
   return { sessionKey, imageUrl, avatarTimeoutSeconds, aspectRatio, interruptReplyOnNewMessage };
+}
+
+export function buildLemonSliceAspectRatioPayload(aspectRatio) {
+  return { aspect_ratio: normalizeAspectRatio(aspectRatio) };
 }
 
 function extractTextFromMessage(message) {
@@ -221,11 +230,11 @@ function summarizeParticipant(participant) {
 
 function logRoomSnapshot(label, room) {
   if (!room || typeof room !== "object") {
-    console.log(`[video-chat-agent] ${label} room snapshot unavailable`);
+    console.log(`[avatar-agent] ${label} room snapshot unavailable`);
     return;
   }
   console.log(
-    `[video-chat-agent] ${label} room snapshot ${JSON.stringify({
+    `[avatar-agent] ${label} room snapshot ${JSON.stringify({
       roomName: typeof room.name === "string" ? room.name : "",
       localParticipant: summarizeParticipant(room.localParticipant),
       remoteParticipants: Array.from(room.remoteParticipants?.values?.() || [])
@@ -239,7 +248,7 @@ function emitParentDebug(event, fields = {}) {
   try {
     if (typeof process.send === "function") {
       process.send({
-        case: "openclawVideoChatDebug",
+        case: "openclawAvatarDebug",
         value: {
           event,
           fields,
@@ -249,12 +258,12 @@ function emitParentDebug(event, fields = {}) {
   } catch {}
 }
 
-function getVideoChatTestMode() {
-  return process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE?.trim() || "";
+function getAvatarTestMode() {
+  return process.env.OPENCLAW_AVATAR_TEST_MODE?.trim() || "";
 }
 
 async function writeTestSignal(type, payload = {}) {
-  const signalFile = process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE?.trim();
+  const signalFile = process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE?.trim();
   if (!signalFile) {
     return;
   }
@@ -309,7 +318,7 @@ class GatewayWsClient {
       this.ws &&
       (this.ws.readyState === this.WebSocket.OPEN || this.ws.readyState === this.WebSocket.CONNECTING)
     ) {
-      this.ws.close(1000, "Claw Cast session closed");
+      this.ws.close(1000, "Avatar session closed");
     }
   }
 
@@ -361,7 +370,7 @@ class GatewayWsClient {
     this.reconnectAttempt = attempt;
     const delayMs = Math.min(5_000, 500 * 2 ** Math.min(attempt - 1, 3));
     console.warn(
-      `[video-chat-agent] gateway websocket reconnect scheduled in ${delayMs}ms attempt=${attempt} after ${reason}`,
+      `[avatar-agent] gateway websocket reconnect scheduled in ${delayMs}ms attempt=${attempt} after ${reason}`,
     );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -420,7 +429,7 @@ class GatewayWsClient {
         return;
       }
       console.log(
-        `[video-chat-agent] gateway websocket ${this.hasConnectedOnce ? "reopened" : "opened"}`,
+        `[avatar-agent] gateway websocket ${this.hasConnectedOnce ? "reopened" : "opened"}`,
       );
     });
 
@@ -436,7 +445,7 @@ class GatewayWsClient {
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[video-chat-agent] gateway websocket error: ${message}`);
+      console.error(`[avatar-agent] gateway websocket error: ${message}`);
       if (!this.hasConnectedOnce) {
         this.rejectReadyOnce(error instanceof Error ? error : new Error(message));
         return;
@@ -452,7 +461,7 @@ class GatewayWsClient {
         this.ws = null;
       }
       const message = `gateway websocket closed code=${code}${reason ? ` reason=${String(reason)}` : ""}`;
-      console.warn(`[video-chat-agent] ${message}`);
+      console.warn(`[avatar-agent] ${message}`);
       this.connected = false;
       const error = new Error(message);
       for (const pending of this.pending.values()) {
@@ -504,7 +513,7 @@ class GatewayWsClient {
         this.reconnectAttempt = 0;
         this.clearReconnectTimer();
         if (reconnected) {
-          console.log("[video-chat-agent] gateway websocket reconnected");
+          console.log("[avatar-agent] gateway websocket reconnected");
         }
         this.resolveReadyOnce(parsed.payload);
       }
@@ -553,8 +562,8 @@ class GatewayWsClient {
           maxProtocol: GATEWAY_PROTOCOL_VERSION,
           client: {
             id: GATEWAY_CLIENT_ID,
-            displayName: "OpenClaw Claw Cast Agent",
-            version: "video-chat-plugin",
+            displayName: "OpenClaw Avatar Agent",
+            version: "avatar-plugin",
             platform: process.platform,
             mode: "backend",
           },
@@ -579,23 +588,202 @@ async function connectGatewayBridge(params) {
   });
   const client = new GatewayWsClient({
     WebSocket: params.WebSocket,
-    url: requireEnv("OPENCLAW_VIDEO_CHAT_GATEWAY_URL"),
-    token: process.env.OPENCLAW_VIDEO_CHAT_GATEWAY_TOKEN?.trim() || "",
-    password: process.env.OPENCLAW_VIDEO_CHAT_GATEWAY_PASSWORD?.trim() || "",
+    url: requireEnv("OPENCLAW_AVATAR_GATEWAY_URL"),
+    token: process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN?.trim() || "",
+    password: process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD?.trim() || "",
     onChatEvent: params.onChatEvent,
   });
   await client.start();
-  console.log(`[video-chat-agent] gateway bridge ready for session ${params.sessionKey}`);
+  console.log(`[avatar-agent] gateway bridge ready for session ${params.sessionKey}`);
   emitParentDebug("gateway-bridge.connect.ready", {
     sessionKey: params.sessionKey,
   });
   return client;
 }
 
-async function runVideoChatAgentTestMode(ctx, metadata) {
+function decodeGatewaySpeechAudioBuffer(value) {
+  if (typeof value !== "string") {
+    throw new Error("gateway speech response did not include audio");
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("gateway speech response returned empty audio");
+  }
+  return Buffer.from(trimmed, "base64");
+}
+
+function normalizeGatewaySpeechPayload(payload) {
+  const sampleRate =
+    typeof payload?.sampleRate === "number" && Number.isFinite(payload.sampleRate)
+      ? Math.floor(payload.sampleRate)
+      : 0;
+  if (sampleRate <= 0) {
+    throw new Error("gateway speech response did not include a valid sample rate");
+  }
+  return {
+    audioBuffer: decodeGatewaySpeechAudioBuffer(payload?.audioBase64),
+    sampleRate,
+    provider:
+      typeof payload?.provider === "string" && payload.provider.trim() ? payload.provider.trim() : "",
+  };
+}
+
+function buildGatewayHttpUrl(pathname) {
+  const gatewayUrl = new URL(requireEnv("OPENCLAW_AVATAR_GATEWAY_URL"));
+  gatewayUrl.protocol = gatewayUrl.protocol === "wss:" ? "https:" : "http:";
+  gatewayUrl.pathname = pathname;
+  gatewayUrl.search = "";
+  gatewayUrl.hash = "";
+  return gatewayUrl.toString();
+}
+
+function buildGatewayHttpAuthHeaders() {
+  const token = process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN?.trim();
+  const password = process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD?.trim();
+  const sharedSecret = token || password;
+  return sharedSecret ? { authorization: `Bearer ${sharedSecret}` } : {};
+}
+
+function parseGatewayHttpErrorMessage(status, rawBody) {
+  const trimmed = typeof rawBody === "string" ? rawBody.trim() : "";
+  if (!trimmed) {
+    return `gateway speech request failed with status ${status}`;
+  }
+  try {
+    const payload = JSON.parse(trimmed);
+    if (typeof payload?.error?.message === "string" && payload.error.message.trim()) {
+      return payload.error.message.trim();
+    }
+    if (typeof payload?.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+  } catch {}
+  return `gateway speech request failed with status ${status}: ${trimmed}`;
+}
+
+function isAbortError(error) {
+  return (
+    (typeof DOMException === "function" && error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+async function requestGatewaySpeechSynthesis(text, signal) {
+  try {
+    const response = await fetch(buildGatewayHttpUrl("/plugins/openclaw-avatar/api/synthesize"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...buildGatewayHttpAuthHeaders(),
+      },
+      body: JSON.stringify({ text }),
+      signal,
+    });
+    const rawBody = await response.text();
+    if (!response.ok) {
+      throw new Error(parseGatewayHttpErrorMessage(response.status, rawBody));
+    }
+    let payload = null;
+    if (rawBody.trim()) {
+      try {
+        payload = JSON.parse(rawBody);
+      } catch {
+        payload = null;
+      }
+    }
+    const body = payload && payload.success === true ? payload : null;
+    if (!body) {
+      throw new Error("gateway speech response returned no payload");
+    }
+    return normalizeGatewaySpeechPayload(body);
+  } catch (error) {
+    if (isAbortError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function createGatewaySpeechTts(params) {
+  const { deps } = params;
+
+  class GatewaySpeechChunkedStream extends deps.agents.tts.ChunkedStream {
+    label = "openclaw.GatewaySpeechChunkedStream";
+
+    constructor(tts, text, connOptions, abortSignal) {
+      super(text, tts, connOptions, abortSignal);
+      this.tts = tts;
+    }
+
+    async run() {
+      const payload = await requestGatewaySpeechSynthesis(this.inputText, this.abortSignal);
+      if (!payload) {
+        return;
+      }
+      this.tts.setSampleRate(payload.sampleRate);
+      const frameStream = new deps.agents.AudioByteStream(this.tts.sampleRate, 1);
+      const arrayBuffer = payload.audioBuffer.buffer.slice(
+        payload.audioBuffer.byteOffset,
+        payload.audioBuffer.byteOffset + payload.audioBuffer.byteLength,
+      );
+      const frames = [...frameStream.write(arrayBuffer), ...frameStream.flush()];
+      if (frames.length === 0) {
+        throw new Error("gateway speech response returned no audio frames");
+      }
+      const requestId = randomUUID();
+      const segmentId = randomUUID();
+      for (let index = 0; index < frames.length; index += 1) {
+        if (this.abortSignal.aborted) {
+          return;
+        }
+        this.queue.put({
+          requestId,
+          segmentId,
+          frame: frames[index],
+          final: index === frames.length - 1,
+          ...(index === 0 ? { deltaText: this.inputText } : {}),
+        });
+      }
+    }
+  }
+
+  class GatewaySpeechTTS extends deps.agents.tts.TTS {
+    label = "openclaw.GatewaySpeechTTS";
+
+    constructor(sampleRate = 16_000) {
+      super(sampleRate, 1, { streaming: false });
+      this.outputSampleRate = sampleRate;
+    }
+
+    get sampleRate() {
+      return this.outputSampleRate;
+    }
+
+    setSampleRate(sampleRate) {
+      if (Number.isFinite(sampleRate) && sampleRate > 0) {
+        this.outputSampleRate = Math.floor(sampleRate);
+      }
+    }
+
+    synthesize(text, connOptions, abortSignal) {
+      return new GatewaySpeechChunkedStream(this, text, connOptions, abortSignal);
+    }
+
+    stream(options) {
+      return new deps.agents.tts.StreamAdapter(
+        this,
+        new deps.agents.tokenize.basic.SentenceTokenizer(),
+      ).stream(options);
+    }
+  }
+
+  return new GatewaySpeechTTS();
+}
+
+async function runAvatarAgentTestMode(ctx, metadata) {
   const roomName = typeof ctx?.room?.name === "string" ? ctx.room.name : "";
   console.log(
-    `[video-chat-agent] test mode connect-only begin sessionKey=${metadata.sessionKey} roomName=${roomName}`,
+    `[avatar-agent] test mode connect-only begin sessionKey=${metadata.sessionKey} roomName=${roomName}`,
   );
   await writeTestSignal("job-entry-begin", {
     sessionKey: metadata.sessionKey,
@@ -603,7 +791,7 @@ async function runVideoChatAgentTestMode(ctx, metadata) {
   });
   ctx.room?.on?.("participant_connected", (participant) => {
     const participantIdentity = typeof participant?.identity === "string" ? participant.identity : "";
-    console.log(`[video-chat-agent] test mode participant connected identity=${participantIdentity}`);
+    console.log(`[avatar-agent] test mode participant connected identity=${participantIdentity}`);
     void writeTestSignal("participant-connected", {
       roomName,
       participantIdentity,
@@ -615,7 +803,7 @@ async function runVideoChatAgentTestMode(ctx, metadata) {
     });
   });
   await ctx.connect();
-  console.log(`[video-chat-agent] test mode ctx.connect succeeded roomName=${roomName}`);
+  console.log(`[avatar-agent] test mode ctx.connect succeeded roomName=${roomName}`);
   logRoomSnapshot("after-test-mode-connect", ctx.room);
   await writeTestSignal("ctx-connect-succeeded", {
     roomName,
@@ -631,27 +819,27 @@ async function runVideoChatAgentTestMode(ctx, metadata) {
     if (participant) {
       const participantIdentity = typeof participant?.identity === "string" ? participant.identity : "";
       console.log(
-        `[video-chat-agent] test mode waitForParticipant succeeded identity=${participantIdentity}`,
+        `[avatar-agent] test mode waitForParticipant succeeded identity=${participantIdentity}`,
       );
       await writeTestSignal("wait-for-participant-succeeded", {
         roomName,
         participantIdentity,
       });
     } else {
-      console.warn(`[video-chat-agent] test mode waitForParticipant timed out roomName=${roomName}`);
+      console.warn(`[avatar-agent] test mode waitForParticipant timed out roomName=${roomName}`);
       await writeTestSignal("wait-for-participant-timeout", {
         roomName,
       });
     }
   } catch (error) {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    console.error(`[video-chat-agent] test mode waitForParticipant failed: ${message}`);
+    console.error(`[avatar-agent] test mode waitForParticipant failed: ${message}`);
     await writeTestSignal("wait-for-participant-failed", {
       roomName,
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  console.log(`[video-chat-agent] test mode awaiting room disconnect roomName=${roomName}`);
+  console.log(`[avatar-agent] test mode awaiting room disconnect roomName=${roomName}`);
   await writeTestSignal("awaiting-room-disconnect", {
     roomName,
   });
@@ -662,34 +850,23 @@ async function runVideoChatAgentTestMode(ctx, metadata) {
   });
 }
 
-async function runVideoChatAgentEntry(ctx) {
+async function runAvatarAgentEntry(ctx) {
   const metadata = parseJobMetadata(ctx.job?.metadata);
   console.log(
-    `[video-chat-agent] job entry begin sessionKey=${metadata.sessionKey} roomName=${typeof ctx?.room?.name === "string" ? ctx.room.name : ""} interruptible=${metadata.interruptReplyOnNewMessage === true}`,
+    `[avatar-agent] job entry begin sessionKey=${metadata.sessionKey} roomName=${typeof ctx?.room?.name === "string" ? ctx.room.name : ""} interruptible=${metadata.interruptReplyOnNewMessage === true}`,
   );
   emitParentDebug("job.entry.begin", {
     sessionKey: metadata.sessionKey,
     roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
     interruptible: metadata.interruptReplyOnNewMessage === true,
   });
-  if (getVideoChatTestMode() === "connect-only") {
-    await runVideoChatAgentTestMode(ctx, metadata);
+  if (getAvatarTestMode() === "connect-only") {
+    await runAvatarAgentTestMode(ctx, metadata);
     return;
   }
   const deps = await loadDeps();
-  const elevenLabsApiKey = requireEnv("OPENCLAW_VIDEO_CHAT_ELEVENLABS_API_KEY");
-  const lemonSliceApiKey = requireEnv("OPENCLAW_VIDEO_CHAT_LEMONSLICE_API_KEY");
-  const elevenLabsVoiceId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_VOICE_ID?.trim();
-  const elevenLabsModelId = process.env.OPENCLAW_VIDEO_CHAT_ELEVENLABS_MODEL_ID?.trim();
-
-  const tts = new deps.elevenlabs.TTS({
-    apiKey: elevenLabsApiKey,
-    ...(elevenLabsVoiceId ? { voiceId: elevenLabsVoiceId } : {}),
-    ...(elevenLabsModelId ? { modelId: elevenLabsModelId } : {}),
-    autoMode: false,
-    wordTokenizer: new deps.agents.tokenize.basic.WordTokenizer(false),
-    streamingLatency: 1,
-  });
+  const lemonSliceApiKey = requireEnv("OPENCLAW_AVATAR_LEMONSLICE_API_KEY");
+  const tts = createGatewaySpeechTts({ deps });
 
   const session = new deps.agents.voice.AgentSession({
     tts,
@@ -715,7 +892,7 @@ async function runVideoChatAgentEntry(ctx) {
   const logGatewaySpeechCleanupError = (operation, runId, error) => {
     const errorMessage = error instanceof Error ? error.stack ?? error.message : String(error);
     console.error(
-      `[video-chat-agent] failed to ${operation}${runId ? ` run=${runId}` : ""}: ${errorMessage}`,
+      `[avatar-agent] failed to ${operation}${runId ? ` run=${runId}` : ""}: ${errorMessage}`,
     );
     emitParentDebug("speech.cleanup.failed", {
       ...buildGatewaySpeechDebugContext(runId),
@@ -835,7 +1012,7 @@ async function runVideoChatAgentEntry(ctx) {
     };
     activeGatewaySpeech = reply;
     console.log(
-      `[video-chat-agent] speaking streamed gateway reply${normalizedRunId ? ` run=${normalizedRunId}` : ""} interruptible=${interruptReplyOnNewMessage}`,
+      `[avatar-agent] speaking streamed gateway reply${normalizedRunId ? ` run=${normalizedRunId}` : ""} interruptible=${interruptReplyOnNewMessage}`,
     );
     emitParentDebug("speech.begin", {
       sessionKey: metadata.sessionKey,
@@ -848,7 +1025,7 @@ async function runVideoChatAgentEntry(ctx) {
     logRoomSnapshot("before-session-say", ctx.room);
     void speechHandle.waitForPlayout().then(() => {
       console.log(
-        `[video-chat-agent] ${speechHandle.interrupted ? "interrupted" : "finished"} gateway reply${normalizedRunId ? ` run=${normalizedRunId}` : ""}`,
+        `[avatar-agent] ${speechHandle.interrupted ? "interrupted" : "finished"} gateway reply${normalizedRunId ? ` run=${normalizedRunId}` : ""}`,
       );
       emitParentDebug("speech.finished", {
         sessionKey: metadata.sessionKey,
@@ -861,7 +1038,7 @@ async function runVideoChatAgentEntry(ctx) {
       logRoomSnapshot("after-session-say", ctx.room);
     }).catch((error) => {
       console.error(
-        `[video-chat-agent] failed to speak gateway reply${normalizedRunId ? ` run=${normalizedRunId}` : ""}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+        `[avatar-agent] failed to speak gateway reply${normalizedRunId ? ` run=${normalizedRunId}` : ""}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
       );
       emitParentDebug("speech.failed", {
         sessionKey: metadata.sessionKey,
@@ -889,7 +1066,7 @@ async function runVideoChatAgentEntry(ctx) {
     const deltaText = computeStreamingTextDelta(normalizedText, reply.streamedText);
     if (deltaText === null) {
       console.warn(
-        `[video-chat-agent] gateway reply delta reset recovered${reply.runId ? ` run=${reply.runId}` : ""}`,
+        `[avatar-agent] gateway reply delta reset recovered${reply.runId ? ` run=${reply.runId}` : ""}`,
       );
       await stopGatewaySpeech(reply.runId);
       reply = await startGatewaySpeech(reply.runId);
@@ -976,7 +1153,7 @@ async function runVideoChatAgentEntry(ctx) {
       const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
       if (payloadState) {
         console.log(
-          `[video-chat-agent] received gateway chat event state=${payloadState}${runId ? ` run=${runId}` : ""}`,
+          `[avatar-agent] received gateway chat event state=${payloadState}${runId ? ` run=${runId}` : ""}`,
         );
         emitParentDebug("gateway-chat-event.received", {
           sessionKey: metadata.sessionKey,
@@ -1015,7 +1192,7 @@ async function runVideoChatAgentEntry(ctx) {
       }
     } catch (error) {
       console.error(
-        `[video-chat-agent] failed to process gateway reply event: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+        `[avatar-agent] failed to process gateway reply event: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
       );
       emitParentDebug("speech.failed", {
         sessionKey: metadata.sessionKey,
@@ -1032,7 +1209,7 @@ async function runVideoChatAgentEntry(ctx) {
   ctx.room?.on?.("participant_connected", (participant) => {
     const participantIdentity = typeof participant?.identity === "string" ? participant.identity : "";
     console.log(
-      `[video-chat-agent] room participant connected identity=${participantIdentity}`,
+      `[avatar-agent] room participant connected identity=${participantIdentity}`,
     );
     emitParentDebug("room.participant.connected", {
       sessionKey: metadata.sessionKey,
@@ -1043,7 +1220,7 @@ async function runVideoChatAgentEntry(ctx) {
   ctx.room?.on?.("participant_disconnected", (participant) => {
     const participantIdentity = typeof participant?.identity === "string" ? participant.identity : "";
     console.log(
-      `[video-chat-agent] room participant disconnected identity=${participantIdentity}`,
+      `[avatar-agent] room participant disconnected identity=${participantIdentity}`,
     );
     emitParentDebug("room.participant.disconnected", {
       sessionKey: metadata.sessionKey,
@@ -1056,7 +1233,7 @@ async function runVideoChatAgentEntry(ctx) {
     const trackKind = typeof track?.kind === "string" ? track.kind : "";
     const trackSource = typeof publication?.source === "string" ? publication.source : "";
     console.log(
-      `[video-chat-agent] room track subscribed participant=${participantIdentity} kind=${trackKind} source=${trackSource}`,
+      `[avatar-agent] room track subscribed participant=${participantIdentity} kind=${trackKind} source=${trackSource}`,
     );
     emitParentDebug("room.track.subscribed", {
       sessionKey: metadata.sessionKey,
@@ -1071,7 +1248,7 @@ async function runVideoChatAgentEntry(ctx) {
     const trackKind = typeof track?.kind === "string" ? track.kind : "";
     const trackSource = typeof publication?.source === "string" ? publication.source : "";
     console.log(
-      `[video-chat-agent] room track unsubscribed participant=${participantIdentity} kind=${trackKind} source=${trackSource}`,
+      `[avatar-agent] room track unsubscribed participant=${participantIdentity} kind=${trackKind} source=${trackSource}`,
     );
     emitParentDebug("room.track.unsubscribed", {
       sessionKey: metadata.sessionKey,
@@ -1101,7 +1278,7 @@ async function runVideoChatAgentEntry(ctx) {
     if (!parsed || parsed.type !== "avatar-control" || parsed.action !== "interrupt-speech") {
       return;
     }
-    console.log("[video-chat-agent] interrupting avatar speech from room control event");
+    console.log("[avatar-agent] interrupting avatar speech from room control event");
     emitParentDebug("speech.interrupt.requested", {
       sessionKey: metadata.sessionKey,
       roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
@@ -1131,7 +1308,7 @@ async function runVideoChatAgentEntry(ctx) {
       });
     } catch (error) {
       console.error(
-        `[video-chat-agent] failed to interrupt avatar speech: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+        `[avatar-agent] failed to interrupt avatar speech: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
       );
       emitParentDebug("speech.interrupt.failed", {
         sessionKey: metadata.sessionKey,
@@ -1142,7 +1319,7 @@ async function runVideoChatAgentEntry(ctx) {
     }
   });
 
-  console.log("[video-chat-agent] connecting gateway bridge");
+  console.log("[avatar-agent] connecting gateway bridge");
   gatewayClient = await connectGatewayBridge({
     WebSocket: deps.WebSocket,
     sessionKey: metadata.sessionKey,
@@ -1162,7 +1339,7 @@ async function runVideoChatAgentEntry(ctx) {
     },
   });
   try {
-    console.log("[video-chat-agent] connecting agent session to room");
+    console.log("[avatar-agent] connecting agent session to room");
     emitParentDebug("agent-session.start.begin", {
       sessionKey: metadata.sessionKey,
       roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
@@ -1176,7 +1353,7 @@ async function runVideoChatAgentEntry(ctx) {
       },
       outputOptions: { audioEnabled: true },
     });
-    console.log("[video-chat-agent] agent session connected");
+    console.log("[avatar-agent] agent session connected");
     emitParentDebug("agent-session.start.connected", {
       sessionKey: metadata.sessionKey,
       roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
@@ -1185,20 +1362,26 @@ async function runVideoChatAgentEntry(ctx) {
     });
     logRoomSnapshot("after-agent-session-start", ctx.room);
 
+    const aspectRatioPayload = buildLemonSliceAspectRatioPayload(metadata.aspectRatio);
     const avatar = new deps.lemonslice.AvatarSession({
       apiKey: lemonSliceApiKey,
       agentImageUrl: metadata.imageUrl,
       idleTimeout: metadata.avatarTimeoutSeconds,
+      // `extraPayload` on the constructor works with the currently installed
+      // LemonSlice package, while newer upstream versions also accept it on start().
+      extraPayload: aspectRatioPayload,
     });
-    console.log("[video-chat-agent] starting lemonslice avatar session");
+    console.log("[avatar-agent] starting lemonslice avatar session");
     emitParentDebug("avatar.start.begin", {
       sessionKey: metadata.sessionKey,
       roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
       outputAudioSink:
         session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
     });
-    await avatar.start(session, ctx.room);
-    console.log("[video-chat-agent] lemonslice avatar session started");
+    await avatar.start(session, ctx.room, {
+      extraPayload: aspectRatioPayload,
+    });
+    console.log("[avatar-agent] lemonslice avatar session started");
     emitParentDebug("avatar.start.connected", {
       sessionKey: metadata.sessionKey,
       roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
@@ -1212,7 +1395,7 @@ async function runVideoChatAgentEntry(ctx) {
       const room = ctx.room;
       const finish = () => {
         console.log(
-          `[video-chat-agent] room disconnected sessionKey=${metadata.sessionKey} roomName=${typeof room?.name === "string" ? room.name : ""}`,
+          `[avatar-agent] room disconnected sessionKey=${metadata.sessionKey} roomName=${typeof room?.name === "string" ? room.name : ""}`,
         );
         emitParentDebug("room.disconnected", {
           sessionKey: metadata.sessionKey,
@@ -1229,11 +1412,6 @@ async function runVideoChatAgentEntry(ctx) {
   }
 }
 
-export const videoChatAgent = { entry: runVideoChatAgentEntry };
-export {
-  GatewayWsClient,
-  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
-  VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
-  VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP,
-};
-export default videoChatAgent;
+export const avatarAgent = { entry: runAvatarAgentEntry };
+export { GatewayWsClient };
+export default avatarAgent;

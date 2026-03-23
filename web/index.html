@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Claw Cast</title>
+    <title>Avatar</title>
     <script>
       (() => {
         let didRecoverChatPanePreload = false;
@@ -13,8 +13,8 @@
           }
           didRecoverChatPanePreload = true;
           document.documentElement.classList.remove(
-            "video-chat-preload-layout-pending",
-            "video-chat-preload-chat-pane-pending",
+            "avatar-preload-layout-pending",
+            "avatar-preload-chat-pane-pending",
           );
 
           const maybeInitChatPane = globalThis.initChatPane;
@@ -25,23 +25,23 @@
           }
         };
 
-        document.documentElement.classList.add("video-chat-preload-layout-pending");
-        document.documentElement.classList.add("video-chat-preload-chat-pane-pending");
+        document.documentElement.classList.add("avatar-preload-layout-pending");
+        document.documentElement.classList.add("avatar-preload-chat-pane-pending");
         try {
-          const stored = globalThis.localStorage?.getItem("videoChat.chatPaneOpen");
+          const stored = globalThis.localStorage?.getItem("avatar.chatPaneOpen");
           const shouldOpen = stored === "1";
           const isMobile =
             typeof globalThis.matchMedia === "function" &&
             globalThis.matchMedia("(max-width: 960px)").matches;
           if (isMobile && !shouldOpen) {
-            document.documentElement.classList.add("video-chat-preload-chat-pane-closed");
+            document.documentElement.classList.add("avatar-preload-chat-pane-closed");
           }
         } catch {
           if (
             typeof globalThis.matchMedia === "function" &&
             globalThis.matchMedia("(max-width: 960px)").matches
           ) {
-            document.documentElement.classList.add("video-chat-preload-chat-pane-closed");
+            document.documentElement.classList.add("avatar-preload-chat-pane-closed");
           }
         }
 
@@ -53,70 +53,69 @@
       })();
     </script>
     <style>
-      .video-chat-preload-layout-pending .video-chat-layout {
+      .avatar-preload-layout-pending .avatar-layout {
         visibility: hidden !important;
       }
 
-      .video-chat-preload-chat-pane-pending #chat-pane,
-      .video-chat-preload-chat-pane-pending #chat-pane-backdrop,
-      .video-chat-preload-chat-pane-pending #chat-pane-resizer {
+      .avatar-preload-chat-pane-pending #chat-pane,
+      .avatar-preload-chat-pane-pending #chat-pane-backdrop,
+      .avatar-preload-chat-pane-pending #chat-pane-resizer {
         display: none !important;
       }
 
-      .video-chat-preload-chat-pane-closed #chat-pane,
-      .video-chat-preload-chat-pane-closed #chat-pane-backdrop,
-      .video-chat-preload-chat-pane-closed #chat-pane-resizer {
+      .avatar-preload-chat-pane-closed #chat-pane,
+      .avatar-preload-chat-pane-closed #chat-pane-backdrop,
+      .avatar-preload-chat-pane-closed #chat-pane-resizer {
         display: none !important;
       }
     </style>
-    <link rel="stylesheet" href="/plugins/video-chat/styles/base.css" />
-    <link rel="stylesheet" href="/plugins/video-chat/styles/layout.css" />
-    <link rel="stylesheet" href="/plugins/video-chat/styles/layout.mobile.css" />
-    <link rel="stylesheet" href="/plugins/video-chat/styles/components.css" />
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/base.css" />
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/layout.css" />
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/layout.mobile.css" />
+    <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/components.css" />
     <style>
-      .video-chat-shell .shell {
-        --video-chat-pane-width: 360px;
+      .avatar-shell .shell {
         --avatar-pane-width: 760px;
         --avatar-aspect-ratio: 16 / 9;
       }
 
-      .video-chat-shell .content {
+      .avatar-shell .content {
         width: 100%;
         max-width: none;
         margin: 0;
       }
 
-      .video-chat-shell .nav {
+      .avatar-shell .nav {
         border-right: 1px solid var(--border);
       }
 
-      .video-chat-shell .nav-item {
+      .avatar-shell .nav-item {
         text-decoration: none;
       }
 
-      .video-chat-section {
+      .avatar-section {
         scroll-margin-top: 72px;
       }
 
-      .video-chat-layout {
+      .avatar-layout {
         display: grid;
         grid-template-columns: minmax(0, 1fr) 18px auto;
         gap: 0;
         align-items: start;
       }
 
-      .video-chat-layout > * + * {
+      .avatar-layout > * + * {
         margin-top: 0;
       }
 
-      .video-chat-main {
+      .avatar-main {
         grid-column: 1;
         min-width: 0;
         display: grid;
         gap: 24px;
       }
 
-      .video-chat-header {
+      .avatar-header {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
@@ -124,7 +123,7 @@
         width: 100%;
       }
 
-      .video-chat-chat-toggle {
+      .avatar-chat-toggle {
         width: 36px;
         height: 36px;
         padding: 0;
@@ -133,8 +132,8 @@
         justify-content: center;
       }
 
-      .video-chat-chat-toggle svg,
-      .video-chat-chatpane__close svg {
+      .avatar-chat-toggle svg,
+      .avatar-chatpane__close svg {
         width: 18px;
         height: 18px;
         stroke: currentColor;
@@ -144,9 +143,9 @@
         stroke-linejoin: round;
       }
 
-      .video-chat-chatpane {
+      .avatar-chatpane {
         grid-column: 3;
-        width: var(--video-chat-pane-width, min(360px, 32vw));
+        width: var(--chat-pane-width, min(360px, 32vw));
         min-width: 300px;
         max-height: calc(100dvh - var(--shell-topbar-height) - 24px);
         position: sticky;
@@ -164,19 +163,19 @@
           transform 200ms var(--ease-out);
       }
 
-      .video-chat-shell .video-chat-chatpane,
-      .video-chat-shell .video-chat-resizer,
-      .video-chat-shell .video-chat-chatpane__backdrop {
+      .avatar-shell .avatar-chatpane,
+      .avatar-shell .avatar-resizer,
+      .avatar-shell .avatar-chatpane__backdrop {
         visibility: hidden;
       }
 
-      .video-chat-shell .shell--chat-pane-ready .video-chat-chatpane,
-      .video-chat-shell .shell--chat-pane-ready .video-chat-resizer,
-      .video-chat-shell .shell--chat-pane-ready .video-chat-chatpane__backdrop {
+      .avatar-shell .shell--chat-pane-ready .avatar-chatpane,
+      .avatar-shell .shell--chat-pane-ready .avatar-resizer,
+      .avatar-shell .shell--chat-pane-ready .avatar-chatpane__backdrop {
         visibility: visible;
       }
 
-      .video-chat-resizer {
+      .avatar-resizer {
         grid-column: 2;
         position: relative;
         width: 18px;
@@ -186,7 +185,7 @@
         user-select: none;
       }
 
-      .video-chat-resizer::before {
+      .avatar-resizer::before {
         content: "";
         position: absolute;
         left: 50%;
@@ -198,7 +197,7 @@
         transition: background-color 160ms var(--ease-out), opacity 160ms var(--ease-out);
       }
 
-      .video-chat-resizer::after {
+      .avatar-resizer::after {
         content: "";
         position: absolute;
         left: 50%;
@@ -212,34 +211,34 @@
         opacity: 0.7;
       }
 
-      .video-chat-resizer:hover::before,
-      .video-chat-resizer:focus-visible::before,
-      .shell--chat-pane-resizing .video-chat-resizer::before {
+      .avatar-resizer:hover::before,
+      .avatar-resizer:focus-visible::before,
+      .shell--chat-pane-resizing .avatar-resizer::before {
         background: var(--accent);
       }
 
-      .video-chat-resizer:focus-visible {
+      .avatar-resizer:focus-visible {
         outline: none;
       }
 
-      .video-chat-chatpane__header {
+      .avatar-chatpane__header {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 12px;
       }
 
-      .video-chat-chatpane__title {
+      .avatar-chatpane__title {
         display: grid;
         gap: 6px;
       }
 
-      .video-chat-chatpane__title h2,
-      .video-chat-chatpane__title p {
+      .avatar-chatpane__title h2,
+      .avatar-chatpane__title p {
         margin: 0;
       }
 
-      .video-chat-chatpane__close {
+      .avatar-chatpane__close {
         width: 32px;
         height: 32px;
         padding: 0;
@@ -249,12 +248,12 @@
         flex-shrink: 0;
       }
 
-      .video-chat-chatpane__backdrop {
+      .avatar-chatpane__backdrop {
         grid-column: 1 / -1;
         display: none;
       }
 
-      .shell--chat-pane-closed .video-chat-chatpane {
+      .shell--chat-pane-closed .avatar-chatpane {
         width: 0;
         min-width: 0;
         padding: 0;
@@ -265,7 +264,7 @@
         pointer-events: none;
       }
 
-      .shell--chat-pane-closed .video-chat-resizer {
+      .shell--chat-pane-closed .avatar-resizer {
         width: 0;
         opacity: 0;
         pointer-events: none;
@@ -277,27 +276,27 @@
         user-select: none;
       }
 
-      .video-chat-grid {
+      .avatar-grid {
         display: grid;
         gap: 16px;
         grid-template-columns: 1fr;
         align-items: stretch;
       }
 
-      .video-chat-head {
+      .avatar-head {
         display: grid;
         gap: 6px;
       }
 
-      .video-chat-head h2 {
+      .avatar-head h2 {
         margin: 0;
       }
 
-      .video-chat-head p {
+      .avatar-head p {
         margin: 0;
       }
 
-      .video-chat-form {
+      .avatar-form {
         display: grid;
         gap: 12px;
       }
@@ -428,6 +427,7 @@
         display: grid;
         width: 100%;
         max-width: 100%;
+        --chat-pane-width: 360px;
       }
 
       .avatar-pane {
@@ -764,22 +764,22 @@
         box-shadow: inset 0 0 0 2px var(--accent);
       }
 
-      .video-chat-chatpane .chat {
+      .avatar-chatpane .chat {
         min-height: 0;
       }
 
-      .video-chat-chatpane .chat-compose {
+      .avatar-chatpane .chat-compose {
         background: transparent;
       }
 
-      .video-chat-chatpane__meta {
+      .avatar-chatpane__meta {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
       }
 
-      .video-chat-chat-status {
+      .avatar-chat-status {
         margin: 0;
         padding: 10px 12px;
         border: 1px solid var(--border);
@@ -790,11 +790,11 @@
         line-height: 1.4;
       }
 
-      :root[data-theme="light"] .video-chat-chat-status {
+      :root[data-theme="light"] .avatar-chat-status {
         background: rgba(255, 255, 255, 0.9);
       }
 
-      .video-chat-chat-empty {
+      .avatar-chat-empty {
         display: grid;
         place-items: center;
         min-height: 100%;
@@ -812,20 +812,20 @@
       }
 
       @media (max-width: 960px) {
-        .video-chat-layout {
+        .avatar-layout {
           display: block;
         }
 
-        .video-chat-header {
+        .avatar-header {
           align-items: center;
         }
 
-        .video-chat-main {
+        .avatar-main {
           display: grid;
           gap: 24px;
         }
 
-        .video-chat-chatpane__backdrop {
+        .avatar-chatpane__backdrop {
           display: block;
           position: fixed;
           inset: var(--shell-topbar-height) 0 0 0;
@@ -836,7 +836,7 @@
           z-index: 54;
         }
 
-        .video-chat-chatpane {
+        .avatar-chatpane {
           position: fixed;
           top: var(--shell-topbar-height);
           right: 0;
@@ -852,17 +852,17 @@
           transform: translateX(calc(100% + 24px));
         }
 
-        .video-chat-preload-chat-pane-closed .video-chat-chatpane {
+        .avatar-preload-chat-pane-closed .avatar-chatpane {
           transform: translateX(calc(100% + 24px));
           pointer-events: none;
         }
 
-        .video-chat-preload-chat-pane-closed .video-chat-chatpane__backdrop {
+        .avatar-preload-chat-pane-closed .avatar-chatpane__backdrop {
           opacity: 0;
           pointer-events: none;
         }
 
-        .video-chat-resizer {
+        .avatar-resizer {
           display: none;
         }
 
@@ -874,18 +874,18 @@
           display: none;
         }
 
-        .shell--chat-pane-open .video-chat-chatpane {
+        .shell--chat-pane-open .avatar-chatpane {
           transform: translateX(0);
           pointer-events: auto;
           opacity: 1;
         }
 
-        .shell--chat-pane-open .video-chat-chatpane__backdrop {
+        .shell--chat-pane-open .avatar-chatpane__backdrop {
           opacity: 1;
           pointer-events: auto;
         }
 
-        .shell--chat-pane-closed .video-chat-chatpane {
+        .shell--chat-pane-closed .avatar-chatpane {
           width: min(400px, 100vw);
           padding: 20px;
           border-color: var(--border);
@@ -896,79 +896,79 @@
       }
 
       @media (max-width: 600px) {
-        body.video-chat-shell {
+        body.avatar-shell {
           overflow-x: hidden;
         }
 
-        .video-chat-shell .shell,
-        .video-chat-shell .shell--chat {
+        .avatar-shell .shell,
+        .avatar-shell .shell--chat {
           height: auto;
           min-height: 100dvh;
           overflow: visible;
         }
 
-        .video-chat-shell .topbar {
+        .avatar-shell .topbar {
           height: auto;
           min-height: var(--shell-topbar-height);
           align-items: flex-start;
         }
 
-        .video-chat-shell .topbar-left,
-        .video-chat-shell .topbar-status {
+        .avatar-shell .topbar-left,
+        .avatar-shell .topbar-status {
           width: 100%;
         }
 
-        .video-chat-shell .topbar-status {
+        .avatar-shell .topbar-status {
           justify-content: space-between;
           flex-wrap: wrap;
         }
 
-        .video-chat-shell .content.video-chat-layout {
+        .avatar-shell .content.avatar-layout {
           padding: 8px 8px calc(20px + env(safe-area-inset-bottom, 0px));
           gap: 16px;
         }
 
-        .video-chat-shell .content-header {
+        .avatar-shell .content-header {
           display: block;
           padding: 0;
         }
 
-        .video-chat-header {
+        .avatar-header {
           align-items: flex-start;
           gap: 12px;
         }
 
-        .video-chat-header > div {
+        .avatar-header > div {
           min-width: 0;
         }
 
-        .video-chat-header .page-sub {
+        .avatar-header .page-sub {
           margin-top: 4px;
         }
 
-        .video-chat-chat-toggle {
+        .avatar-chat-toggle {
           flex-shrink: 0;
         }
 
-        .video-chat-main {
+        .avatar-main {
           gap: 16px;
         }
 
-        .video-chat-grid {
+        .avatar-grid {
           gap: 12px;
         }
 
-        .video-chat-section.card,
-        .video-chat-chatpane.card {
+        .avatar-section.card,
+        .avatar-chatpane.card {
           padding: 14px;
         }
 
-        .video-chat-form .row {
+        .avatar-form .row {
           flex-direction: column;
           align-items: stretch;
         }
 
-        .video-chat-form .row .btn {
+        .avatar-form .row .btn {
           width: 100%;
         }
 
@@ -1016,46 +1016,46 @@
           border-radius: calc(var(--radius-lg) - 4px);
         }
 
-        .video-chat-chatpane__backdrop {
+        .avatar-chatpane__backdrop {
           inset: 0;
           padding-top: var(--shell-topbar-height);
         }
 
-        .video-chat-chatpane {
+        .avatar-chatpane {
           top: 0;
           width: 100vw;
           padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px));
           padding-top: calc(var(--shell-topbar-height) + 12px);
         }
 
-        .video-chat-chatpane__header {
+        .avatar-chatpane__header {
           align-items: center;
         }
 
-        .video-chat-chatpane__title {
+        .avatar-chatpane__title {
           min-width: 0;
         }
 
-        .video-chat-chatpane .chat-thread {
+        .avatar-chatpane .chat-thread {
           padding-bottom: 8px;
         }
 
-        .video-chat-chatpane .chat-compose {
+        .avatar-chatpane .chat-compose {
           padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
         }
       }
 
       @media (max-width: 400px) {
-        .video-chat-shell .content.video-chat-layout {
+        .avatar-shell .content.avatar-layout {
           padding-inline: 6px;
         }
 
-        .video-chat-section.card,
-        .video-chat-chatpane.card {
+        .avatar-section.card,
+        .avatar-chatpane.card {
           padding: 12px;
         }
 
-        .video-chat-chatpane {
+        .avatar-chatpane {
           padding-inline: 12px;
         }
 
@@ -1065,7 +1065,7 @@
       }
     </style>
   </head>
-  <body class="video-chat-shell">
+  <body class="avatar-shell">
     <div class="shell">
       <header
         class="topbar"
@@ -1076,16 +1076,16 @@
 
       <nav class="nav" id="plugin-nav" data-shared-nav data-active-nav="home"></nav>
 
-      <main class="content video-chat-layout">
-        <div class="video-chat-main">
+      <main class="content avatar-layout">
+        <div class="avatar-main">
           <div class="content-header">
-            <div class="video-chat-header">
+            <div class="avatar-header">
               <div>
-                <h1 class="page-title">Claw Cast</h1>
+                <h1 class="page-title">Avatar</h1>
                 <p class="page-sub">Session controls, avatar preview, and a docked text chat workspace.</p>
               </div>
               <button
-                class="btn video-chat-chat-toggle"
+                class="btn avatar-chat-toggle"
                 type="button"
                 id="chat-pane-toggle"
                 aria-controls="chat-pane"
@@ -1100,12 +1100,12 @@
             </div>
           </div>
 
-          <section class="card stack video-chat-section" id="session-card">
-            <header class="video-chat-head">
+          <section class="card stack avatar-section" id="session-card">
+            <header class="avatar-head">
               <h2 class="card-title">Session</h2>
               <p class="card-sub">Use a session key to connect to an OpenClaw agent session.</p>
             </header>
-            <form id="session-form" class="video-chat-form">
+            <form id="session-form" class="avatar-form">
               <label class="field full">
                 <span>Session key</span>
                 <input type="text" name="sessionKey" placeholder="main" aria-describedby="session-key-help" />
@@ -1124,7 +1124,7 @@
                   <p><strong>Quick guide:</strong> leave this blank or enter <code>main</code> to use the default OpenClaw session from <code>session.mainKey</code>, which falls back to <code>main</code>.</p>
                   <ul>
                     <li>Enter a plain key like <code>research</code> if that is the session name you started in OpenClaw.</li>
-                    <li>For the default OpenClaw main agent, the fully qualified <code>videoChat.session.create</code> input form is <code>agent:main/&lt;sessionKey&gt;</code>, for example <code>agent:main/main</code>.</li>
+                    <li>For the default OpenClaw main agent, the fully qualified <code>avatar.session.create</code> input form is <code>agent:main/&lt;sessionKey&gt;</code>, for example <code>agent:main/main</code>.</li>
                     <li>If OpenClaw already shows a full agent session key, paste it exactly as-is because this value is submitted verbatim.</li>
                   </ul>
                 </div>
@@ -1194,9 +1194,9 @@
             </form>
           </section>
 
-          <div class="video-chat-grid">
-            <section class="card stack video-chat-section avatar-card" id="avatar-card">
-              <header class="video-chat-head">
+          <div class="avatar-grid">
+            <section class="card stack avatar-section avatar-card" id="avatar-card">
+              <header class="avatar-head">
                 <h2 class="card-title">Avatar</h2>
               </header>
               <div id="room-status" class="callout info room-status" role="status" aria-live="polite">
@@ -1276,9 +1276,9 @@
                   <div class="avatar-placeholder" id="avatar-placeholder" hidden>
                     <div class="avatar-placeholder__content">
                       <div class="avatar-placeholder__icon" aria-hidden="true"></div>
-                      <h3 class="avatar-placeholder__title">Claw cast is in another window</h3>
+                      <h3 class="avatar-placeholder__title">Avatar is in another window</h3>
                       <p class="avatar-placeholder__copy">
-                        Picture-in-picture allows you to take your Claw Cast out of this tab.
+                        Picture-in-picture allows you to take your Avatar out of this tab.
                       </p>
                       <div class="avatar-placeholder__status" id="avatar-placeholder-status">
                         <span class="avatar-toolbar__status-indicator">
@@ -1309,7 +1309,7 @@
         </div>
 
         <div
-          class="video-chat-resizer"
+          class="avatar-resizer"
           id="chat-pane-resizer"
           role="separator"
           aria-label="Resize text chat panel"
@@ -1318,23 +1318,23 @@
           hidden
         ></div>
 
-        <div class="video-chat-chatpane__backdrop" id="chat-pane-backdrop" hidden></div>
+        <div class="avatar-chatpane__backdrop" id="chat-pane-backdrop" hidden></div>
 
-        <aside class="card video-chat-chatpane" id="chat-pane" aria-labelledby="chat-pane-title" hidden>
-          <div class="video-chat-chatpane__header">
-            <div class="video-chat-chatpane__title">
+        <aside class="card avatar-chatpane" id="chat-pane" aria-labelledby="chat-pane-title" hidden>
+          <div class="avatar-chatpane__header">
+            <div class="avatar-chatpane__title">
               <h2 class="card-title" id="chat-pane-title">Text Chat</h2>
               <p class="card-sub">Send messages to the active agent session.</p>
             </div>
-            <button class="btn video-chat-chatpane__close" type="button" id="chat-pane-close" aria-label="Close text chat panel" title="Close text chat panel">
+            <button class="btn avatar-chatpane__close" type="button" id="chat-pane-close" aria-label="Close text chat panel" title="Close text chat panel">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M18 6 6 18"></path>
                 <path d="m6 6 12 12"></path>
               </svg>
             </button>
           </div>
-          <div class="video-chat-chatpane__meta">
-            <p class="video-chat-chat-status" id="chat-status">Start a session to use text chat.</p>
+          <div class="avatar-chatpane__meta">
+            <p class="avatar-chat-status" id="chat-status">Start a session to use text chat.</p>
           </div>
           <section class="chat" aria-label="Text chat conversation">
             <div class="chat-thread" id="chat-log" role="log" aria-live="polite"></div>
@@ -1392,6 +1392,6 @@
       __SHARED_SHELL_BOOTSTRAP__
     </script>
     <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
-    <script type="module" src="/plugins/video-chat/app.js?v=__PACKAGE_VERSION__"></script>
+    <script type="module" src="/plugins/openclaw-avatar/app.js?v=__PACKAGE_VERSION__"></script>
   </body>
 </html>

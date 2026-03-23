@@ -14,8 +14,14 @@ declare module "openclaw/plugin-sdk" {
     session?: {
       mainKey?: string;
     };
-    videoChat?: {
+    tools?: {
+      media?: {
+        audio?: Record<string, unknown>;
+      };
+    };
+    avatar?: {
       provider?: "lemonslice" | string;
+      verbose?: boolean;
       lemonSlice?: {
         apiKey?: unknown;
         imageUrl?: string;
@@ -28,11 +34,7 @@ declare module "openclaw/plugin-sdk" {
     };
     messages?: {
       tts?: {
-        elevenlabs?: {
-          apiKey?: unknown;
-          voiceId?: string;
-          modelId?: string;
-        };
+        provider?: string;
       };
     };
     [key: string]: unknown;
@@ -55,11 +57,53 @@ declare module "openclaw/plugin-sdk" {
         loadConfig: () => OpenClawConfig;
         writeConfigFile?: (config: OpenClawConfig) => Promise<void>;
       };
+      agent?: {
+        resolveAgentDir?: (cfg: OpenClawConfig, agentId: string) => string;
+      };
+      tts?: {
+        textToSpeechTelephony: (input: {
+          text: string;
+          cfg: OpenClawConfig;
+          prefsPath?: string;
+        }) => Promise<{
+          success: boolean;
+          audioBuffer?: Buffer | Uint8Array | ArrayBuffer;
+          sampleRate?: number;
+          provider?: string;
+          error?: string;
+        }>;
+      };
+      videoAvatar?: {
+        synthesizeSpeech: (input: {
+          text: string;
+          cfg: OpenClawConfig;
+          prefsPath?: string;
+        }) => Promise<{
+          audioBuffer?: Buffer | Uint8Array | ArrayBuffer;
+          sampleRate?: number;
+          provider?: string;
+        }>;
+        transcribeAudio: (input: {
+          audioBuffer: Buffer | Uint8Array | ArrayBuffer;
+          cfg: OpenClawConfig;
+          mime?: string;
+          agentDir?: string;
+        }) => Promise<{ text?: string }>;
+      };
+      mediaUnderstanding?: {
+        transcribeAudioFile: (input: {
+          filePath: string;
+          cfg: OpenClawConfig;
+          mime?: string;
+          agentDir?: string;
+        }) => Promise<{ text?: string }>;
+      };
       stt: {
         transcribeAudioFile: (input: {
           filePath: string;
           cfg: OpenClawConfig;
           mime?: string;
+          agentDir?: string;
         }) => Promise<{ text?: string }>;
       };
     };
@@ -79,7 +123,12 @@ declare module "openclaw/plugin-sdk" {
       stop: () => Promise<void>;
     }) => void;
     registerHttpRoute: (route: unknown) => void;
-    registerCli: (definition: unknown) => void;
+    registerCli: (
+      definition: unknown,
+      metadata?: {
+        commands?: string[];
+      },
+    ) => void;
     resolvePath: (input: string) => string;
     [key: string]: unknown;
   };
@@ -89,4 +138,13 @@ declare module "openclaw/plugin-sdk" {
     value: unknown;
     path: string;
   }): string;
+}
+
+declare module "openclaw/plugin-sdk/plugin-entry" {
+  export function definePluginEntry<T extends {
+    id: string;
+    name: string;
+    description: string;
+    register: (...args: any[]) => any;
+  }>(entry: T): T & { configSchema: Record<string, never> };
 }

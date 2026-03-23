@@ -5,26 +5,26 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 function requireBaseRunnerPath() {
   const value =
-    process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER?.trim() ||
-    process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim();
+    process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER?.trim() ||
+    process.env.OPENCLAW_AVATAR_RUNNER_PATH?.trim();
   if (!value) {
-    throw new Error("Missing OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER");
+    throw new Error("Missing OPENCLAW_AVATAR_DEPS_BASE_RUNNER");
   }
   return path.resolve(value);
 }
 
 function requireRunnerPath() {
   const value =
-    process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH?.trim() ||
-    process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER?.trim();
+    process.env.OPENCLAW_AVATAR_RUNNER_PATH?.trim() ||
+    process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER?.trim();
   if (!value) {
-    throw new Error("Missing OPENCLAW_VIDEO_CHAT_RUNNER_PATH");
+    throw new Error("Missing OPENCLAW_AVATAR_RUNNER_PATH");
   }
   return path.resolve(value);
 }
 
 function applyInstanceProcessTitle() {
-  const instanceArg = process.env.OPENCLAW_VIDEO_CHAT_INSTANCE_ARG?.trim();
+  const instanceArg = process.env.OPENCLAW_AVATAR_INSTANCE_ARG?.trim();
   if (!instanceArg) {
     return;
   }
@@ -95,25 +95,25 @@ async function patchLemonSliceLogging(baseRunnerPath) {
       const startedAt = Date.now();
       const maxAttempts = 20;
       const retryDelayMs = 250;
-      console.log("[video-chat-agent] avatar.start begin");
+      console.log("[avatar-agent] avatar.start begin");
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
           const result = await originalStart.apply(this, args);
           const elapsedMs = Date.now() - startedAt;
           const suffix = attempt > 1 ? ` after retry ${attempt}/${maxAttempts}` : "";
-          console.log(`[video-chat-agent] avatar.start success (${elapsedMs}ms)${suffix}`);
+          console.log(`[avatar-agent] avatar.start success (${elapsedMs}ms)${suffix}`);
           return result;
         } catch (error) {
           const elapsedMs = Date.now() - startedAt;
           const message = error instanceof Error ? error.stack ?? error.message : String(error);
           const retryable = message.includes("failed to get local participant identity");
           if (!retryable || attempt >= maxAttempts) {
-            console.error(`[video-chat-agent] avatar.start failed (${elapsedMs}ms): ${message}`);
+            console.error(`[avatar-agent] avatar.start failed (${elapsedMs}ms): ${message}`);
             throw error;
           }
           console.warn(
-            `[video-chat-agent] avatar.start retry ${attempt}/${maxAttempts} waiting for local participant identity`,
+            `[avatar-agent] avatar.start retry ${attempt}/${maxAttempts} waiting for local participant identity`,
           );
           await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
@@ -127,17 +127,17 @@ async function patchLemonSliceLogging(baseRunnerPath) {
   if (typeof originalStartAgent === "function" && !originalStartAgent.__openclawWrapped) {
     const wrappedStartAgent = async function wrappedStartAgent(...args) {
       const startedAt = Date.now();
-      console.log("[video-chat-agent] lemonslice API session start begin");
+      console.log("[avatar-agent] lemonslice API session start begin");
       try {
         const result = await originalStartAgent.apply(this, args);
         const elapsedMs = Date.now() - startedAt;
-        console.log(`[video-chat-agent] lemonslice API session start success (${elapsedMs}ms)`);
+        console.log(`[avatar-agent] lemonslice API session start success (${elapsedMs}ms)`);
         return result;
       } catch (error) {
         const elapsedMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.stack ?? error.message : String(error);
         console.error(
-          `[video-chat-agent] lemonslice API session start failed (${elapsedMs}ms): ${message}`,
+          `[avatar-agent] lemonslice API session start failed (${elapsedMs}ms): ${message}`,
         );
         throw error;
       }
@@ -155,22 +155,22 @@ await patchLemonSliceLogging(baseRunnerPath);
 const baseRunnerModule = await import(pathToFileURL(runnerPath).href);
 const baseEntry =
   baseRunnerModule?.default?.entry ??
-  baseRunnerModule?.videoChatAgent?.entry ??
+  baseRunnerModule?.avatarAgent?.entry ??
   baseRunnerModule?.entry;
 if (typeof baseEntry !== "function") {
-  throw new Error("Base Claw Cast runner entry function not found");
+  throw new Error("Base Avatar runner entry function not found");
 }
 
 const wrappedRunner = {
   async entry(ctx) {
-    console.log("[video-chat-agent] wrapper entry begin");
+    console.log("[avatar-agent] wrapper entry begin");
     try {
       const result = await baseEntry(ctx);
-      console.log("[video-chat-agent] wrapper entry completed");
+      console.log("[avatar-agent] wrapper entry completed");
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.stack ?? error.message : String(error);
-      console.error(`[video-chat-agent] wrapper entry failed: ${message}`);
+      console.error(`[avatar-agent] wrapper entry failed: ${message}`);
       throw error;
     }
   },

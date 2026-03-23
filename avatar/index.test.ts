@@ -1,8 +1,10 @@
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
-import { VIDEO_CHAT_AVATAR_ASPECT_RATIOS } from "./avatar-aspect-ratio.js";
+import { AVATAR_ASPECT_RATIOS } from "./avatar-aspect-ratio.js";
 import plugin from "./index.js";
 
 const {
@@ -42,7 +44,7 @@ const {
   mockAgentDispatchCreateDispatch: vi.fn().mockResolvedValue({
     id: "dispatch-123",
     room: "openclaw-main-12345678",
-    agentName: "openclaw-video-chat",
+    agentName: "openclaw-avatar",
   }),
   mockAgentDispatchGetDispatch: vi.fn().mockResolvedValue(undefined),
   mockAgentDispatchDeleteDispatch: vi.fn().mockResolvedValue(undefined),
@@ -99,7 +101,7 @@ type RegisteredHttpRoute = {
 
 const baseConfig = {
   session: { mainKey: "main" },
-  videoChat: {
+  avatar: {
     provider: "lemonslice" as const,
     lemonSlice: {
       apiKey: "ls-key",
@@ -113,20 +115,30 @@ const baseConfig = {
   },
   messages: {
     tts: {
-      elevenlabs: {
-        apiKey: "eleven-key",
+      provider: "openai",
+    },
+  },
+  tools: {
+    media: {
+      audio: {
+        enabled: true,
+        models: [{ provider: "openai", model: "gpt-4o-mini-transcribe" }],
       },
     },
   },
 };
 
 const DEFAULT_GATEWAY_PORT = 1;
-const SIDE_CAR_INSTANCE_ARG = `--openclaw-video-chat-instance=gateway-port-${DEFAULT_GATEWAY_PORT}`;
-const SERVICE_GATEWAY_INSTANCE_ARG = "--openclaw-video-chat-instance=gateway-port-4321";
+const PLUGIN_ID = "openclaw-avatar";
+const LEGACY_PLUGIN_ID = "avatar";
+const PLUGIN_ROUTE_BASE = `/plugins/${PLUGIN_ID}`;
+const LEGACY_PLUGIN_ROUTE_BASE = `/plugins/${LEGACY_PLUGIN_ID}`;
+const SIDE_CAR_INSTANCE_ARG = `--openclaw-avatar-instance=gateway-port-${DEFAULT_GATEWAY_PORT}`;
+const SERVICE_GATEWAY_INSTANCE_ARG = "--openclaw-avatar-instance=gateway-port-4321";
 const DEFAULT_TEST_AVATAR_IMAGE_URL = "https://example.com/avatar.png";
 
 function expectEphemeralAgentName(value: unknown) {
-  expect(value).toEqual(expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/));
+  expect(value).toEqual(expect.stringMatching(/^openclaw-avatar-\d+-\d+-[a-f0-9]{8}$/));
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
@@ -143,49 +155,41 @@ function parseDispatchMetadata(callIndex: number): Record<string, unknown> {
   return JSON.parse(options?.metadata ?? "{}") as Record<string, unknown>;
 }
 
-function resolveFetchInvocation(
-  input: string | URL | Request,
-  init?: { method?: string },
-): { url: string; method: string } {
-  const url =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url;
-  const method =
-    (
-      init?.method ??
-      (input instanceof Request ? input.method : "GET")
-    ).toUpperCase();
-  return { url, method };
-}
-
-function setup(config: unknown = baseConfig) {
+function setup(
+  config: unknown = baseConfig,
+  options: {
+    disableVideoAvatarRuntime?: boolean;
+    resolvePath?: (input: string) => string;
+  } = {},
+) {
   const runtime = createPluginRuntimeMock();
   const methods = new Map<string, unknown>();
   const services: unknown[] = [];
   const httpRoutes: unknown[] = [];
-  const cliCommands: unknown[] = [];
+  const cliCommands: Array<{ definition: unknown; metadata?: unknown }> = [];
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
 
   vi.mocked(runtime.config.loadConfig).mockReturnValue(config as never);
+  if (options.disableVideoAvatarRuntime) {
+    delete (runtime as { videoAvatar?: unknown }).videoAvatar;
+  }
   vi.mocked(runtime.stt.transcribeAudioFile).mockResolvedValue({
     text: "hello from microphone",
   });
 
   plugin.register({
-    id: "video-chat",
-    name: "Claw Cast",
+    id: PLUGIN_ID,
+    name: "Avatar",
     source: "test",
     config,
     pluginConfig: {},
     runtime,
-    logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    },
+    logger,
     registerGatewayMethod: (method: string, handler: unknown) => methods.set(method, handler),
     registerService: (service: unknown) => services.push(service),
     registerTool: () => {},
@@ -193,15 +197,16 @@ function setup(config: unknown = baseConfig) {
     registerHttpRoute: (route: unknown) => httpRoutes.push(route),
     registerChannel: () => {},
     registerProvider: () => {},
-    registerCli: (command: unknown) => cliCommands.push(command),
+    registerCli: (definition: unknown, metadata?: unknown) =>
+      cliCommands.push({ definition, metadata }),
     registerCommand: () => {},
-    resolvePath: (input: string) => `/tmp/${input}`,
+    resolvePath: options.resolvePath ?? ((input: string) => `/tmp/${input}`),
     on: () => {},
     description: "test",
     version: "0",
   } as Parameters<typeof plugin.register>[0]);
 
-  return { runtime, methods, services, httpRoutes, cliCommands };
+  return { runtime, methods, services, httpRoutes, cliCommands, logger };
 }
 
 function createSpawnedChild(
@@ -237,7 +242,7 @@ function createSpawnedChild(
       }
       readyScheduled = true;
       queueMicrotask(() => {
-        child.stdout.emit("data", "[video-chat-agent] worker registered and ready id=test-worker\n");
+        child.stdout.emit("data", "[avatar-agent] worker registered and ready id=test-worker\n");
       });
     });
   }
@@ -248,6 +253,10 @@ function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => {
     queueMicrotask(() => resolve());
   });
+}
+
+function loggedMessages(mockFn: ReturnType<typeof vi.fn>): string[] {
+  return mockFn.mock.calls.map(([message]) => String(message));
 }
 
 class MockHttpResponse {
@@ -309,16 +318,16 @@ async function invokeHttpRoute(
 async function invoke(
   methods: Map<string, unknown>,
   method:
-    | "videoChat.config"
-    | "videoChat.setup.get"
-    | "videoChat.setup.save"
-    | "videoChat.session.create"
-    | "videoChat.session.stop"
-    | "videoChat.sidecar.restart"
-    | "videoChat.sidecar.stop"
-    | "videoChat.chat.history"
-    | "videoChat.chat.send"
-    | "videoChat.audio.transcribe",
+    | "avatar.config"
+    | "avatar.setup.get"
+    | "avatar.setup.save"
+    | "avatar.session.create"
+    | "avatar.session.stop"
+    | "avatar.sidecar.restart"
+    | "avatar.sidecar.stop"
+    | "avatar.chat.history"
+    | "avatar.chat.send"
+    | "avatar.audio.transcribe",
   params: Record<string, unknown>,
 ) {
   const handler = methods.get(method) as
@@ -333,16 +342,20 @@ async function invoke(
 }
 
 async function createTestSession(methods: Map<string, unknown>) {
-  return invoke(methods, "videoChat.session.create", {
+  return invoke(methods, "avatar.session.create", {
     avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
   });
 }
 
-describe("video-chat plugin", () => {
+describe("avatar plugin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", mockFetch);
-    delete process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER;
+    mockFetch.mockReset();
+    mockFetch.mockImplementation(async () => {
+      throw new Error("Unhandled fetch request in test");
+    });
+    delete process.env.OPENCLAW_AVATAR_AGENT_RUNNER;
     mockSpawn.mockImplementation(() => createSpawnedChild(4999));
     mockStopMatchingProcesses.mockResolvedValue([]);
     mockRoomServiceCreateRoom.mockImplementation(async ({ name }: { name: string }) => ({
@@ -361,38 +374,10 @@ describe("video-chat plugin", () => {
     );
     mockAgentDispatchGetDispatch.mockResolvedValue(undefined);
     mockAgentDispatchDeleteDispatch.mockResolvedValue(undefined);
-    mockFetch.mockImplementation(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      if (url === "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe" && method === "POST") {
-        return new Response(JSON.stringify({ token: "rtm_token_123" }), {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        });
-      }
-      if (url.startsWith("https://api.elevenlabs.io/v1/text-to-speech/") && method === "POST") {
-        return new Response("audio-bytes", {
-          status: 200,
-          headers: {
-            "content-type": "audio/mpeg",
-          },
-        });
-      }
-      if (url === "https://api.elevenlabs.io/v1/speech-to-text" && method === "POST") {
-        return new Response(JSON.stringify({ text: "hello from microphone" }), {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        });
-      }
-      throw new Error(`Unhandled fetch request in test: ${method} ${url}`);
-    });
     mockStat.mockImplementation(async (candidate: string) => {
       if (
-        candidate.endsWith("/video-chat/video-chat-agent-runner.js") ||
-        candidate.endsWith("/mock-openclaw/dist/video-chat-agent-runner.js") ||
+        candidate.endsWith("/avatar/avatar-agent-runner.js") ||
+        candidate.endsWith("/mock-openclaw/dist/avatar-agent-runner.js") ||
         candidate.endsWith("/mock-openclaw/index.js")
       ) {
         return {
@@ -407,65 +392,85 @@ describe("video-chat plugin", () => {
     });
   });
 
-  it("registers Claw Cast gateway methods and sidecar service", () => {
+  it("registers Avatar gateway methods and sidecar service", () => {
     const { methods, services, httpRoutes, cliCommands } = setup();
-    expect(methods.has("videoChat.config")).toBe(true);
-    expect(methods.has("videoChat.setup.get")).toBe(true);
-    expect(methods.has("videoChat.setup.save")).toBe(true);
-    expect(methods.has("videoChat.session.create")).toBe(true);
-    expect(methods.has("videoChat.session.stop")).toBe(true);
-    expect(methods.has("videoChat.audio.transcribe")).toBe(true);
+    expect(methods.has("avatar.config")).toBe(true);
+    expect(methods.has("avatar.setup.get")).toBe(true);
+    expect(methods.has("avatar.setup.save")).toBe(true);
+    expect(methods.has("avatar.session.create")).toBe(true);
+    expect(methods.has("avatar.session.stop")).toBe(true);
+    expect(methods.has("avatar.audio.transcribe")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(10);
+    expect(httpRoutes).toHaveLength(20);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          path: "/plugins/video-chat/api",
+          path: `${PLUGIN_ROUTE_BASE}/api`,
           auth: "gateway",
           match: "prefix",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat",
+          path: `${LEGACY_PLUGIN_ROUTE_BASE}/api`,
+          auth: "gateway",
+          match: "prefix",
+        }),
+        expect.objectContaining({
+          path: PLUGIN_ROUTE_BASE,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat/config",
+          path: `${PLUGIN_ROUTE_BASE}/config`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat/readme",
+          path: `${PLUGIN_ROUTE_BASE}/readme`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat/settings",
+          path: `${PLUGIN_ROUTE_BASE}/settings`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat/bootstrap",
+          path: `${PLUGIN_ROUTE_BASE}/bootstrap`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat/app.js",
+          path: `${PLUGIN_ROUTE_BASE}/app.js`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat/avatar-aspect-ratio.js",
+          path: `${PLUGIN_ROUTE_BASE}/avatar-aspect-ratio.js`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat/assets",
+          path: `${PLUGIN_ROUTE_BASE}/assets`,
           auth: "plugin",
           match: "prefix",
         }),
         expect.objectContaining({
-          path: "/plugins/video-chat/styles",
+          path: `${PLUGIN_ROUTE_BASE}/styles`,
+          auth: "plugin",
+          match: "prefix",
+        }),
+        expect.objectContaining({
+          path: LEGACY_PLUGIN_ROUTE_BASE,
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: `${LEGACY_PLUGIN_ROUTE_BASE}/bootstrap`,
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: `${LEGACY_PLUGIN_ROUTE_BASE}/styles`,
           auth: "plugin",
           match: "prefix",
         }),
@@ -474,12 +479,20 @@ describe("video-chat plugin", () => {
     expect(cliCommands).toHaveLength(1);
   });
 
-  it("registers gateway token as the first video-chat setup CLI option", () => {
+  it("registers gateway token as the first avatar setup CLI option", () => {
     const { cliCommands } = setup();
-    const registerCli = cliCommands[0] as ((ctx: { program: unknown }) => void) | undefined;
+    const cliRegistration = cliCommands[0];
+    const registerCli = cliRegistration?.definition as
+      | ((ctx: { program: unknown }) => void)
+      | undefined;
     const optionFlags: string[] = [];
+    const aliases: string[] = [];
     let actionHandler: unknown;
     const commandApi = {
+      alias(name: string) {
+        aliases.push(name);
+        return commandApi;
+      },
       description(description: string) {
         expect(description).toContain("gateway auth");
         return commandApi;
@@ -497,22 +510,26 @@ describe("video-chat plugin", () => {
     registerCli?.({
       program: {
         command(name: string) {
-          expect(name).toBe("video-chat-setup");
+          expect(name).toBe("openclaw-avatar-setup");
           return commandApi;
         },
       },
     });
 
     expect(optionFlags[0]).toBe("--gateway-token <token>");
+    expect(aliases).toEqual(["avatar-setup"]);
+    expect(cliRegistration?.metadata).toEqual({
+      commands: ["openclaw-avatar-setup", "avatar-setup"],
+    });
     expect(actionHandler).toBeTypeOf("function");
   });
 
   it("prefers the bundled bridge runner over the native gateway sidecar command", async () => {
-    process.env.OPENCLAW_VIDEO_CHAT_AGENT_RUNNER = "/mock-openclaw/dist/video-chat-agent-runner.js";
+    process.env.OPENCLAW_AVATAR_AGENT_RUNNER = "/mock-openclaw/dist/avatar-agent-runner.js";
     mockStat.mockImplementation(async (candidate: string) => {
       if (
-        candidate.endsWith("/video-chat/video-chat-agent-runner.js") ||
-        candidate.endsWith("/mock-openclaw/dist/video-chat-agent-runner.js") ||
+        candidate.endsWith("/avatar/avatar-agent-runner.js") ||
+        candidate.endsWith("/mock-openclaw/dist/avatar-agent-runner.js") ||
         candidate.endsWith("/mock-openclaw/index.js")
       ) {
         return {
@@ -553,11 +570,11 @@ describe("video-chat plugin", () => {
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
-          expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+          expect.stringContaining("/avatar/avatar-agent-runner-wrapper.mjs"),
           SERVICE_GATEWAY_INSTANCE_ARG,
         ],
         [
-          expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+          expect.stringContaining("/avatar/avatar-agent-bridge.mjs"),
           SERVICE_GATEWAY_INSTANCE_ARG,
         ],
       ],
@@ -565,9 +582,9 @@ describe("video-chat plugin", () => {
       postKillDelayMs: 200,
     });
     expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
-      expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
-      expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
-      "/mock-openclaw/dist/video-chat-agent-runner.js",
+      expect.stringContaining("/avatar/avatar-agent-bridge.mjs"),
+      expect.stringContaining("/avatar/avatar-agent-runner.js"),
+      "/mock-openclaw/dist/avatar-agent-runner.js",
       SERVICE_GATEWAY_INSTANCE_ARG,
     ]);
     await service?.stop?.();
@@ -601,23 +618,24 @@ describe("video-chat plugin", () => {
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
-          expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+          expect.stringContaining("/avatar/avatar-agent-runner-wrapper.mjs"),
           SERVICE_GATEWAY_INSTANCE_ARG,
         ],
         [
-          expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
+          expect.stringContaining("/avatar/avatar-agent-bridge.mjs"),
           SERVICE_GATEWAY_INSTANCE_ARG,
         ],
       ],
       termTimeoutMs: 400,
       postKillDelayMs: 200,
     });
-    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
-      expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"),
-      expect.stringContaining("/video-chat/video-chat-agent-runner.js"),
-      expect.stringContaining("/openclaw/dist/video-chat-agent-runner.js"),
-      SERVICE_GATEWAY_INSTANCE_ARG,
-    ]);
+    const spawnArgs = mockSpawn.mock.calls[0]?.[1] as string[] | undefined;
+    expect(spawnArgs?.[0]).toEqual(expect.stringContaining("/avatar/avatar-agent-bridge.mjs"));
+    expect(spawnArgs?.[1]).toEqual(expect.stringContaining("/avatar/avatar-agent-runner.js"));
+    expect(spawnArgs?.at(-1)).toBe(SERVICE_GATEWAY_INSTANCE_ARG);
+    if ((spawnArgs?.length ?? 0) > 3) {
+      expect(spawnArgs?.[2]).toEqual(expect.stringContaining("/openclaw/dist/avatar-agent-runner.js"));
+    }
     await service?.stop?.();
   });
 
@@ -714,9 +732,232 @@ describe("video-chat plugin", () => {
     await service?.stop?.();
   });
 
-  it("returns redacted Claw Cast config state", async () => {
+  it("only emits sidecar-ready and session lifecycle logs when verbose is false", async () => {
+    const config = {
+      ...baseConfig,
+      avatar: {
+        ...baseConfig.avatar,
+        verbose: false,
+      },
+    };
+    const child = createSpawnedChild(4111);
+    mockSpawn.mockImplementationOnce(() => child);
+    const { services, methods, logger } = setup(config);
+    const service = services[0] as
+      | {
+          start?: (ctx: { config: typeof config; gateway: { port: number; auth: object } }) => Promise<void>;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+
+    await service?.start?.({
+      config,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+    await flushMicrotasks();
+
+    const createRespond = await createTestSession(methods);
+    const createCall = createRespond.mock.calls[0] as RespondCall | undefined;
+    expect(createCall?.[0]).toBe(true);
+
+    const roomName = (createCall?.[1] as { roomName?: string } | undefined)?.roomName;
+    expect(typeof roomName).toBe("string");
+
+    child.stdout.emit(
+      "data",
+      `[avatar-agent] request func accepted job jobId=AJ_test roomName=${roomName} agentName=openclaw-avatar-1-1-12345678\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] agent-session.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="SyncedAudioOutput"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] avatar.start.begin sessionKey="agent:main:main" roomName="${roomName}"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] avatar.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="DataStreamAudioOutput" avatarParticipantIdentity="lemonslice-avatar-agent"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] speech.begin sessionKey="agent:main:main" roomName="${roomName}" runId="run-1" textLength=42 interruptible=true outputAudioSink="DataStreamAudioOutput"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] speech.finished sessionKey="agent:main:main" roomName="${roomName}" runId="run-1" interrupted=false outputAudioSink="DataStreamAudioOutput"\n`,
+    );
+
+    await flushMicrotasks();
+
+    const stopRespond = await invoke(methods, "avatar.session.stop", {
+      roomName,
+    });
+    const stopCall = stopRespond.mock.calls[0] as RespondCall | undefined;
+    expect(stopCall?.[0]).toBe(true);
+
+    const infoMessages = loggedMessages(logger.info);
+    expect(infoMessages.some((message) => message.startsWith("[avatar] sidecar.ready"))).toBe(true);
+    expect(
+      infoMessages.some((message) => message.startsWith("[avatar] session.create.succeeded")),
+    ).toBe(true);
+    expect(
+      infoMessages.some((message) => message.startsWith("[avatar] session.stop.completed")),
+    ).toBe(true);
+    expect(
+      infoMessages.every((message) =>
+        message.startsWith("[avatar] sidecar.ready") ||
+        message.startsWith("[avatar] session.progress.job.accepted") ||
+        message.startsWith("[avatar] session.progress.agent.connected") ||
+        message.startsWith("[avatar] session.progress.avatar.starting") ||
+        message.startsWith("[avatar] session.progress.avatar.connected") ||
+        message.startsWith("[avatar] speech.playback.begin") ||
+        message.startsWith("[avatar] speech.playback.finished") ||
+        message.startsWith("[avatar] session.create.succeeded") ||
+        message.startsWith("[avatar] session.stop.completed"),
+      ),
+    ).toBe(true);
+    expect(
+      infoMessages.some(
+        (message) =>
+          message.startsWith("[avatar] sidecar.ready") &&
+          (message.includes("agentName=") ||
+            message.includes("gatewayPort=") ||
+            message.includes("configFingerprint=")),
+      ),
+    ).toBe(false);
+    expect(
+      infoMessages.some(
+        (message) =>
+          message.startsWith("[avatar] session.create.succeeded") &&
+          (message.includes("participantIdentity=") ||
+            message.includes("agentName=") ||
+            message.includes("dispatchId=") ||
+            message.includes("interruptReplyOnNewMessage=")),
+      ),
+    ).toBe(false);
+    expect(
+      infoMessages.some(
+        (message) =>
+          message.startsWith("[avatar] session.progress.job.accepted") &&
+          message.includes("jobId="),
+      ),
+    ).toBe(false);
+    expect(
+      infoMessages.some(
+        (message) =>
+          (message.startsWith("[avatar] session.progress.agent.connected") ||
+            message.startsWith("[avatar] session.progress.avatar.connected") ||
+            message.startsWith("[avatar] speech.playback.begin") ||
+            message.startsWith("[avatar] speech.playback.finished")) &&
+          (message.includes("outputAudioSink=") ||
+            message.includes("runId=") ||
+            message.includes("avatarParticipantIdentity=") ||
+            message.includes("interruptible=") ||
+            message.includes("interrupted=")),
+      ),
+    ).toBe(false);
+    expect(infoMessages.some((message) => message.includes("service.start"))).toBe(false);
+    expect(infoMessages.some((message) => message.startsWith("[avatar-agent]"))).toBe(false);
+
+    await service?.stop?.();
+  });
+
+  it("keeps detailed gateway logs when verbose is true", async () => {
+    const config = {
+      ...baseConfig,
+      avatar: {
+        ...baseConfig.avatar,
+        verbose: true,
+      },
+    };
+    const { services, methods, logger } = setup(config);
+    const service = services[0] as
+      | {
+          start?: (ctx: { config: typeof config; gateway: { port: number; auth: object } }) => Promise<void>;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+
+    await service?.start?.({
+      config,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+    await flushMicrotasks();
+    await createTestSession(methods);
+
+    const infoMessages = loggedMessages(logger.info);
+    expect(infoMessages.some((message) => message.startsWith("[avatar] service.start"))).toBe(true);
+    expect(
+      infoMessages.some((message) => message.startsWith("[avatar] sidecar.ensure.attempt")),
+    ).toBe(true);
+    expect(
+      [...infoMessages, ...loggedMessages(logger.warn), ...loggedMessages(logger.error)].some(
+        (message) => message.startsWith("[avatar-agent]"),
+      ),
+    ).toBe(false);
+
+    await service?.stop?.();
+  });
+
+  it("returns redacted Avatar config state", async () => {
     const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.config", {});
+    const respond = await invoke(methods, "avatar.config", {});
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(
+      (call?.[1] as { config?: { configured?: boolean } } | undefined)?.config?.configured,
+    ).toBe(true);
+  });
+
+  it("returns the avatar verbose flag from config", async () => {
+    const { methods } = setup({
+      ...baseConfig,
+      plugins: {
+        entries: {
+          [LEGACY_PLUGIN_ID]: {
+            config: {
+              avatar: {
+                ...baseConfig.avatar,
+                verbose: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const respond = await invoke(methods, "avatar.config", {});
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect((call?.[1] as { config?: { verbose?: boolean } } | undefined)?.config?.verbose).toBe(
+      true,
+    );
+  });
+
+  it("treats runtime stt as a valid transcription capability in config status", async () => {
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
+    (runtime as typeof runtime & {
+      tts?: {
+        textToSpeechTelephony: ReturnType<typeof vi.fn>;
+      };
+    }).tts = {
+      textToSpeechTelephony: vi.fn().mockResolvedValue({
+        success: true,
+        audioBuffer: Buffer.from("pcm-audio"),
+        sampleRate: 24000,
+        provider: "runtime-tts",
+      }),
+    };
+
+    const respond = await invoke(methods, "avatar.config", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
@@ -728,19 +969,20 @@ describe("video-chat plugin", () => {
   it("reads plugin-owned config from the plugin entry overlay", async () => {
     const { methods } = setup({
       session: { mainKey: "main" },
+      messages: baseConfig.messages,
+      tools: baseConfig.tools,
       plugins: {
         entries: {
-          "video-chat": {
+          [LEGACY_PLUGIN_ID]: {
             config: {
-              videoChat: baseConfig.videoChat,
-              messages: baseConfig.messages,
+              avatar: baseConfig.avatar,
             },
           },
         },
       },
     });
 
-    const respond = await invoke(methods, "videoChat.config", {});
+    const respond = await invoke(methods, "avatar.config", {});
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
     expect(call?.[1]).toMatchObject({
@@ -755,7 +997,7 @@ describe("video-chat plugin", () => {
 
   it("mints a browser participant token for a session", async () => {
     const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.create", {
+    const respond = await invoke(methods, "avatar.session.create", {
       sessionKey: "agent:main/main",
       avatarImageUrl: "https://example.com/browser-avatar.png",
       aspectRatio: "9x16",
@@ -789,7 +1031,7 @@ describe("video-chat plugin", () => {
     });
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
       expect.stringContaining("openclaw-agent-main-main-"),
-      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      expect.stringMatching(/^openclaw-avatar-\d+-\d+-[a-f0-9]{8}$/),
       expect.objectContaining({
         metadata: expect.any(String),
       }),
@@ -813,7 +1055,7 @@ describe("video-chat plugin", () => {
     { input: 1000, expected: 600 },
   ])("normalizes avatar timeout %p", async ({ input, expected }) => {
     const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.create", {
+    const respond = await invoke(methods, "avatar.session.create", {
       sessionKey: "agent:main/main",
       avatarImageUrl: "https://example.com/browser-avatar.png",
       avatarTimeoutSeconds: input,
@@ -838,7 +1080,7 @@ describe("video-chat plugin", () => {
 
   it("returns canonical chat session key for default main session", async () => {
     const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.create", {
+    const respond = await invoke(methods, "avatar.session.create", {
       avatarImageUrl: "https://example.com/default-avatar.png",
     });
 
@@ -862,7 +1104,7 @@ describe("video-chat plugin", () => {
     });
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
       expect.stringContaining("openclaw-main-"),
-      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      expect.stringMatching(/^openclaw-avatar-\d+-\d+-[a-f0-9]{8}$/),
       expect.objectContaining({
         metadata: expect.any(String),
       }),
@@ -880,7 +1122,7 @@ describe("video-chat plugin", () => {
 
   it("respects a disabled reply interruption request", async () => {
     const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.create", {
+    const respond = await invoke(methods, "avatar.session.create", {
       sessionKey: "agent:main/main",
       avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
       interruptReplyOnNewMessage: false,
@@ -896,7 +1138,7 @@ describe("video-chat plugin", () => {
     expect(payload?.interruptReplyOnNewMessage).toBe(false);
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledWith(
       expect.stringContaining("openclaw-agent-main-main-"),
-      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      expect.stringMatching(/^openclaw-avatar-\d+-\d+-[a-f0-9]{8}$/),
       expect.objectContaining({
         metadata: expect.any(String),
       }),
@@ -935,7 +1177,7 @@ describe("video-chat plugin", () => {
     const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
-    const respond = await invoke(methods, "videoChat.session.stop", {
+    const respond = await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -954,7 +1196,7 @@ describe("video-chat plugin", () => {
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
 
-    await invoke(methods, "videoChat.session.stop", {
+    await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -978,7 +1220,7 @@ describe("video-chat plugin", () => {
       }),
     );
 
-    const respond = await invoke(methods, "videoChat.session.stop", {
+    const respond = await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -998,7 +1240,7 @@ describe("video-chat plugin", () => {
     const roomName = createPayload?.roomName ?? "";
     mockRoomServiceDeleteRoom.mockRejectedValueOnce(new Error("delete failed"));
 
-    const respond = await invoke(methods, "videoChat.session.stop", {
+    const respond = await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -1017,14 +1259,14 @@ describe("video-chat plugin", () => {
       .mockRejectedValueOnce(new Error("delete failed"))
       .mockResolvedValueOnce(undefined);
 
-    const firstRespond = await invoke(methods, "videoChat.session.stop", {
+    const firstRespond = await invoke(methods, "avatar.session.stop", {
       roomName,
     });
     const firstCall = firstRespond.mock.calls[0] as RespondCall | undefined;
     expect(firstCall?.[0]).toBe(false);
     expect(firstCall?.[2]?.message).toContain("delete failed");
 
-    const secondRespond = await invoke(methods, "videoChat.session.stop", {
+    const secondRespond = await invoke(methods, "avatar.session.stop", {
       roomName,
     });
     const secondCall = secondRespond.mock.calls[0] as RespondCall | undefined;
@@ -1046,7 +1288,7 @@ describe("video-chat plugin", () => {
       .mockRejectedValueOnce(new Error("dispatch delete failed"))
       .mockResolvedValueOnce(undefined);
 
-    const firstRespond = await invoke(methods, "videoChat.session.stop", {
+    const firstRespond = await invoke(methods, "avatar.session.stop", {
       roomName,
     });
     const firstCall = firstRespond.mock.calls[0] as RespondCall | undefined;
@@ -1054,7 +1296,7 @@ describe("video-chat plugin", () => {
     expect(firstCall?.[2]?.message).toContain("dispatch delete failed");
     expect(mockRoomServiceDeleteRoom).not.toHaveBeenCalled();
 
-    const secondRespond = await invoke(methods, "videoChat.session.stop", {
+    const secondRespond = await invoke(methods, "avatar.session.stop", {
       roomName,
     });
     const secondCall = secondRespond.mock.calls[0] as RespondCall | undefined;
@@ -1080,7 +1322,7 @@ describe("video-chat plugin", () => {
       }),
     );
 
-    const respond = await invoke(methods, "videoChat.session.stop", {
+    const respond = await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -1094,7 +1336,7 @@ describe("video-chat plugin", () => {
   });
 
   it("uses the room's stored LiveKit snapshot during session stop", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
@@ -1104,8 +1346,8 @@ describe("video-chat plugin", () => {
     mockRoomServiceClientCtor.mockClear();
     vi.mocked(runtime.config.loadConfig).mockReturnValue({
       ...baseConfig,
-      videoChat: {
-        ...baseConfig.videoChat,
+      avatar: {
+        ...baseConfig.avatar,
         livekit: {
           url: "wss://rotated.livekit.cloud",
           apiKey: "rotated-key",
@@ -1114,7 +1356,7 @@ describe("video-chat plugin", () => {
       },
     } as never);
 
-    await invoke(methods, "videoChat.session.stop", {
+    await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -1136,7 +1378,7 @@ describe("video-chat plugin", () => {
     const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
     const roomName = createPayload?.roomName ?? "";
-    await invoke(methods, "videoChat.session.stop", {
+    await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -1144,10 +1386,10 @@ describe("video-chat plugin", () => {
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
-          expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+          expect.stringContaining("/avatar/avatar-agent-runner-wrapper.mjs"),
           SIDE_CAR_INSTANCE_ARG,
         ],
-        [expect.stringContaining("/video-chat/video-chat-agent-bridge.mjs"), SIDE_CAR_INSTANCE_ARG],
+        [expect.stringContaining("/avatar/avatar-agent-bridge.mjs"), SIDE_CAR_INSTANCE_ARG],
       ],
       termTimeoutMs: 400,
       postKillDelayMs: 200,
@@ -1156,7 +1398,7 @@ describe("video-chat plugin", () => {
       commandPatterns: [
         [
           "job_proc_lazy_main.cjs",
-          expect.stringContaining("/video-chat/video-chat-agent-runner-wrapper.mjs"),
+          expect.stringContaining("/avatar/avatar-agent-runner-wrapper.mjs"),
           SIDE_CAR_INSTANCE_ARG,
         ],
       ],
@@ -1169,7 +1411,7 @@ describe("video-chat plugin", () => {
   it("refuses to stop rooms that are not tracked by this runtime", async () => {
     const { methods } = setup();
 
-    const respond = await invoke(methods, "videoChat.session.stop", {
+    const respond = await invoke(methods, "avatar.session.stop", {
       roomName: "openclaw-main-unknown",
     });
 
@@ -1193,7 +1435,7 @@ describe("video-chat plugin", () => {
     });
     mockResetProcessGroupChildren.mockImplementationOnce(() => resetPromise);
 
-    const stopPromise = invoke(methods, "videoChat.session.stop", {
+    const stopPromise = invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -1261,8 +1503,8 @@ describe("video-chat plugin", () => {
 
     await createTestSession(methods);
 
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/sidecar/restart",
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/sidecar/restart",
       method: "POST",
       body: {},
     });
@@ -1296,12 +1538,12 @@ describe("video-chat plugin", () => {
     const roomName = createPayload?.roomName ?? "";
     const firstAgentName = createPayload?.agentName ?? "";
 
-    await invoke(methods, "videoChat.sidecar.restart", {});
+    await invoke(methods, "avatar.sidecar.restart", {});
 
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(2);
     expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[0]).toBe(roomName);
     expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[1]).toEqual(
-      expect.stringMatching(/^openclaw-video-chat-\d+-\d+-[a-f0-9]{8}$/),
+      expect.stringMatching(/^openclaw-avatar-\d+-\d+-[a-f0-9]{8}$/),
     );
     expect(mockAgentDispatchCreateDispatch.mock.calls[1]?.[1]).not.toBe(firstAgentName);
     expect(mockAgentDispatchDeleteDispatch).toHaveBeenCalledWith("dispatch-1", roomName);
@@ -1325,10 +1567,10 @@ describe("video-chat plugin", () => {
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
 
-    const restartRespond = await invoke(methods, "videoChat.sidecar.restart", {});
+    const restartRespond = await invoke(methods, "avatar.sidecar.restart", {});
     expect((restartRespond.mock.calls[0] as RespondCall | undefined)?.[0]).toBe(true);
 
-    await invoke(methods, "videoChat.session.stop", {
+    await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
@@ -1350,7 +1592,7 @@ describe("video-chat plugin", () => {
     const firstAgentName = firstCreatePayload?.agentName ?? "";
     expectEphemeralAgentName(firstAgentName);
 
-    await invoke(methods, "videoChat.sidecar.restart", {});
+    await invoke(methods, "avatar.sidecar.restart", {});
 
     const secondCreateRespond = await createTestSession(methods);
     const secondCreatePayload = secondCreateRespond.mock.calls[0]?.[1] as
@@ -1369,15 +1611,15 @@ describe("video-chat plugin", () => {
   });
 
   it("recycles the sidecar when the LiveKit credential fingerprint changes", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     await createTestSession(methods);
     await flushMicrotasks();
 
     vi.mocked(runtime.config.loadConfig).mockReturnValue({
       ...baseConfig,
-      videoChat: {
-        ...baseConfig.videoChat,
+      avatar: {
+        ...baseConfig.avatar,
         livekit: {
           url: "wss://rotated.livekit.cloud",
           apiKey: "rotated-key",
@@ -1394,7 +1636,7 @@ describe("video-chat plugin", () => {
   });
 
   it("skips redispatch when the replacement sidecar does not start", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     await createTestSession(methods);
 
@@ -1407,7 +1649,7 @@ describe("video-chat plugin", () => {
       },
     } as never);
 
-    const respond = await invoke(methods, "videoChat.sidecar.restart", {});
+    const respond = await invoke(methods, "avatar.sidecar.restart", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
@@ -1420,14 +1662,14 @@ describe("video-chat plugin", () => {
   });
 
   it("skips redispatch when the room snapshot fingerprint no longer matches the active sidecar", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     await createTestSession(methods);
 
     vi.mocked(runtime.config.loadConfig).mockReturnValue({
       ...baseConfig,
-      videoChat: {
-        ...baseConfig.videoChat,
+      avatar: {
+        ...baseConfig.avatar,
         livekit: {
           url: "wss://rotated.livekit.cloud",
           apiKey: "rotated-key",
@@ -1436,7 +1678,7 @@ describe("video-chat plugin", () => {
       },
     } as never);
 
-    const respond = await invoke(methods, "videoChat.sidecar.restart", {});
+    const respond = await invoke(methods, "avatar.sidecar.restart", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
@@ -1453,8 +1695,8 @@ describe("video-chat plugin", () => {
 
     await createTestSession(methods);
 
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/sidecar/stop",
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/sidecar/stop",
       method: "POST",
       body: {},
     });
@@ -1478,21 +1720,21 @@ describe("video-chat plugin", () => {
 
     child.stdout.emit(
       "data",
-      `[video-chat-agent] request func accepted job jobId=AJ_test roomName=${roomName} agentName=openclaw-video-chat-1-1-12345678\n`,
+      `[avatar-agent] request func accepted job jobId=AJ_test roomName=${roomName} agentName=openclaw-avatar-1-1-12345678\n`,
     );
     child.stdout.emit(
       "data",
-      `[video-chat-agent/job pid=999] agent-session.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="SyncedAudioOutput"\n`,
+      `[avatar-agent/job pid=999] agent-session.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="SyncedAudioOutput"\n`,
     );
     child.stdout.emit(
       "data",
-      `[video-chat-agent/job pid=999] avatar.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="DataStreamAudioOutput" avatarParticipantIdentity="lemonslice-avatar-agent"\n`,
+      `[avatar-agent/job pid=999] avatar.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="DataStreamAudioOutput" avatarParticipantIdentity="lemonslice-avatar-agent"\n`,
     );
 
     await flushMicrotasks();
 
-    const statusResponse = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName)}`,
+    const statusResponse = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: `/plugins/avatar/api/session/status?roomName=${encodeURIComponent(roomName)}`,
     });
 
     expect(statusResponse.handled).toBe(true);
@@ -1507,12 +1749,12 @@ describe("video-chat plugin", () => {
       },
     });
 
-    await invoke(methods, "videoChat.session.stop", {
+    await invoke(methods, "avatar.session.stop", {
       roomName,
     });
 
-    const clearedStatusResponse = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: `/plugins/video-chat/api/session/status?roomName=${encodeURIComponent(roomName)}`,
+    const clearedStatusResponse = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: `/plugins/avatar/api/session/status?roomName=${encodeURIComponent(roomName)}`,
     });
 
     expect(clearedStatusResponse.handled).toBe(true);
@@ -1534,8 +1776,8 @@ describe("video-chat plugin", () => {
       ],
     });
 
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/chat/history",
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/chat/history",
       method: "POST",
       body: {
         sessionKey: "agent:main:main",
@@ -1563,8 +1805,8 @@ describe("video-chat plugin", () => {
   it("rejects invalid chat history route payloads before calling the runtime subagent API", async () => {
     const { httpRoutes, runtime } = setup();
 
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/chat/history",
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/chat/history",
       method: "POST",
       body: {
         limit: "12",
@@ -1578,7 +1820,7 @@ describe("video-chat plugin", () => {
       success: false,
       error: {
         code: "INVALID_REQUEST",
-        message: "invalid videoChat.chat.history params",
+        message: "invalid avatar.chat.history params",
       },
     });
   });
@@ -1589,13 +1831,13 @@ describe("video-chat plugin", () => {
       runId: "run-123",
     });
 
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/chat/send",
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/chat/send",
       method: "POST",
       body: {
         sessionKey: "agent:main:main",
         message: "show me the bug",
-        idempotencyKey: "video-chat-ui-123",
+        idempotencyKey: "avatar-ui-123",
         attachments: [
           {
             type: "image",
@@ -1612,7 +1854,7 @@ describe("video-chat plugin", () => {
       sessionKey: "agent:main:main",
       message: "show me the bug",
       deliver: false,
-      idempotencyKey: "video-chat-ui-123",
+      idempotencyKey: "avatar-ui-123",
       attachments: [
         {
           type: "image",
@@ -1633,8 +1875,8 @@ describe("video-chat plugin", () => {
   it("rejects invalid chat send route payloads before calling the runtime subagent API", async () => {
     const { httpRoutes, runtime } = setup();
 
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/chat/send",
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/chat/send",
       method: "POST",
       body: {
         sessionKey: "agent:main:main",
@@ -1656,7 +1898,7 @@ describe("video-chat plugin", () => {
       success: false,
       error: {
         code: "INVALID_REQUEST",
-        message: "invalid videoChat.chat.send params",
+        message: "invalid avatar.chat.send params",
       },
     });
   });
@@ -1664,8 +1906,8 @@ describe("video-chat plugin", () => {
   it("rejects chat send route payloads with too many attachments", async () => {
     const { httpRoutes, runtime } = setup();
 
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/chat/send",
+    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/chat/send",
       method: "POST",
       body: {
         sessionKey: "agent:main:main",
@@ -1686,13 +1928,13 @@ describe("video-chat plugin", () => {
       success: false,
       error: {
         code: "INVALID_REQUEST",
-        message: "invalid videoChat.chat.send params",
+        message: "invalid avatar.chat.send params",
       },
     });
   });
 
   it("loads chat history through the gateway method", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     vi.mocked(runtime.subagent.getSessionMessages).mockResolvedValueOnce({
       messages: [
         {
@@ -1703,7 +1945,7 @@ describe("video-chat plugin", () => {
       ],
     });
 
-    const respond = await invoke(methods, "videoChat.chat.history", {
+    const respond = await invoke(methods, "avatar.chat.history", {
       sessionKey: "agent:main:main",
       limit: 12,
     });
@@ -1726,15 +1968,15 @@ describe("video-chat plugin", () => {
   });
 
   it("sends chat messages through the gateway method", async () => {
-    const { methods, runtime } = setup();
+    const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     vi.mocked(runtime.subagent.run).mockResolvedValueOnce({
       runId: "run-123",
     });
 
-    const respond = await invoke(methods, "videoChat.chat.send", {
+    const respond = await invoke(methods, "avatar.chat.send", {
       sessionKey: "agent:main:main",
       message: "show me the bug",
-      idempotencyKey: "video-chat-ui-123",
+      idempotencyKey: "avatar-ui-123",
       attachments: [
         {
           type: "image",
@@ -1751,7 +1993,7 @@ describe("video-chat plugin", () => {
       sessionKey: "agent:main:main",
       message: "show me the bug",
       deliver: false,
-      idempotencyKey: "video-chat-ui-123",
+      idempotencyKey: "avatar-ui-123",
       attachments: [
         {
           type: "image",
@@ -1769,7 +2011,7 @@ describe("video-chat plugin", () => {
   it("rejects invalid chat history params through the gateway method", async () => {
     const { methods, runtime } = setup();
 
-    const respond = await invoke(methods, "videoChat.chat.history", {
+    const respond = await invoke(methods, "avatar.chat.history", {
       sessionKey: "   ",
       limit: 12,
     });
@@ -1778,7 +2020,7 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]).toEqual({
       code: "INVALID_REQUEST",
-      message: "invalid videoChat.chat.history params",
+      message: "invalid avatar.chat.history params",
     });
     expect(runtime.subagent.getSessionMessages).not.toHaveBeenCalled();
   });
@@ -1787,7 +2029,7 @@ describe("video-chat plugin", () => {
     const { methods, runtime } = setup();
     const oversizedContent = "x".repeat(10 * 1024 * 1024 + 1);
 
-    const respond = await invoke(methods, "videoChat.chat.send", {
+    const respond = await invoke(methods, "avatar.chat.send", {
       sessionKey: "agent:main:main",
       message: "show me the bug",
       attachments: [
@@ -1804,7 +2046,7 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]).toEqual({
       code: "INVALID_REQUEST",
-      message: "invalid videoChat.chat.send params",
+      message: "invalid avatar.chat.send params",
     });
     expect(runtime.subagent.run).not.toHaveBeenCalled();
   });
@@ -1812,7 +2054,7 @@ describe("video-chat plugin", () => {
   it("rejects chat send params through the gateway method when attachment count exceeds the cap", async () => {
     const { methods, runtime } = setup();
 
-    const respond = await invoke(methods, "videoChat.chat.send", {
+    const respond = await invoke(methods, "avatar.chat.send", {
       sessionKey: "agent:main:main",
       message: "show me the bug",
       attachments: Array.from({ length: 5 }, (_, index) => ({
@@ -1827,14 +2069,14 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]).toEqual({
       code: "INVALID_REQUEST",
-      message: "invalid videoChat.chat.send params",
+      message: "invalid avatar.chat.send params",
     });
     expect(runtime.subagent.run).not.toHaveBeenCalled();
   });
 
   it("returns setup state for plugin-owned setup surfaces", async () => {
     const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.setup.get", {});
+    const respond = await invoke(methods, "avatar.setup.get", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
@@ -1845,13 +2087,11 @@ describe("video-chat plugin", () => {
 
   it("saves setup values while preserving blank secrets", async () => {
     const { methods, runtime } = setup();
-    const respond = await invoke(methods, "videoChat.setup.save", {
+    const respond = await invoke(methods, "avatar.setup.save", {
       lemonSliceApiKey: "",
       livekitUrl: "wss://new.livekit.cloud",
       livekitApiKey: "",
       livekitApiSecret: "",
-      elevenLabsApiKey: "",
-      elevenLabsVoiceId: "voice-1234",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -1861,27 +2101,69 @@ describe("video-chat plugin", () => {
       | {
           plugins?: {
             entries?: {
-              "video-chat"?: {
+              "openclaw-avatar"?: {
                 config?: {
-                  videoChat?: {
+                  avatar?: {
                     lemonSlice?: { apiKey?: string; imageUrl?: string };
                     livekit?: { url?: string; apiKey?: string; apiSecret?: string };
                   };
-                  messages?: { tts?: { elevenlabs?: { apiKey?: string; voiceId?: string } } };
                 };
               };
             };
           };
         }
       | undefined;
-    const pluginConfig = savedConfig?.plugins?.entries?.["video-chat"]?.config;
-    expect(pluginConfig?.videoChat?.lemonSlice?.apiKey).toBe("ls-key");
-    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe(DEFAULT_TEST_AVATAR_IMAGE_URL);
-    expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
-    expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
-    expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
-    expect(pluginConfig?.messages?.tts?.elevenlabs?.apiKey).toBe("eleven-key");
-    expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
+    const pluginConfig = savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config;
+    expect(pluginConfig?.avatar?.lemonSlice?.apiKey).toBe("ls-key");
+    expect(pluginConfig?.avatar?.lemonSlice?.imageUrl).toBe(DEFAULT_TEST_AVATAR_IMAGE_URL);
+    expect(pluginConfig?.avatar?.livekit?.url).toBe("wss://new.livekit.cloud");
+    expect(pluginConfig?.avatar?.livekit?.apiKey).toBe("lk-key");
+    expect(pluginConfig?.avatar?.livekit?.apiSecret).toBe("lk-secret");
+  });
+
+  it("preserves the existing verbose flag when saving setup", async () => {
+    const { methods, runtime } = setup({
+      ...baseConfig,
+      plugins: {
+        entries: {
+          [LEGACY_PLUGIN_ID]: {
+            config: {
+              avatar: {
+                ...baseConfig.avatar,
+                verbose: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const respond = await invoke(methods, "avatar.setup.save", {
+      livekitUrl: "wss://new.livekit.cloud",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const savedConfig = vi.mocked(runtime.config.writeConfigFile).mock.calls[0]?.[0] as
+      | {
+          plugins?: {
+            entries?: {
+              "openclaw-avatar"?: {
+                config?: {
+                  avatar?: {
+                    verbose?: boolean;
+                    livekit?: { url?: string };
+                  };
+                };
+              };
+            };
+          };
+        }
+      | undefined;
+    expect(savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config?.avatar?.verbose).toBe(true);
+    expect(savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config?.avatar?.livekit?.url).toBe(
+      "wss://new.livekit.cloud",
+    );
   });
 
   it("saves gateway token into the root gateway auth config", async () => {
@@ -1893,7 +2175,7 @@ describe("video-chat plugin", () => {
       },
     });
 
-    const respond = await invoke(methods, "videoChat.setup.save", {
+    const respond = await invoke(methods, "avatar.setup.save", {
       gatewayToken: "new-gateway-token",
     });
 
@@ -1922,7 +2204,7 @@ describe("video-chat plugin", () => {
       },
     });
 
-    const respond = await invoke(methods, "videoChat.setup.save", {
+    const respond = await invoke(methods, "avatar.setup.save", {
       gatewayToken: "",
     });
 
@@ -1944,13 +2226,11 @@ describe("video-chat plugin", () => {
 
   it("saves setup values while preserving redacted secrets", async () => {
     const { methods, runtime } = setup();
-    const respond = await invoke(methods, "videoChat.setup.save", {
+    const respond = await invoke(methods, "avatar.setup.save", {
       lemonSliceApiKey: "_REDACTED_",
       livekitUrl: "wss://new.livekit.cloud",
       livekitApiKey: "__OPENCLAW_REDACTED__",
       livekitApiSecret: "_REDACTED_",
-      elevenLabsApiKey: "__OPENCLAW_REDACTED__",
-      elevenLabsVoiceId: "voice-1234",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -1960,32 +2240,98 @@ describe("video-chat plugin", () => {
       | {
           plugins?: {
             entries?: {
-              "video-chat"?: {
+              "openclaw-avatar"?: {
                 config?: {
-                  videoChat?: {
+                  avatar?: {
                     lemonSlice?: { apiKey?: string; imageUrl?: string };
                     livekit?: { url?: string; apiKey?: string; apiSecret?: string };
                   };
-                  messages?: { tts?: { elevenlabs?: { apiKey?: string; voiceId?: string } } };
                 };
               };
             };
           };
         }
       | undefined;
-    const pluginConfig = savedConfig?.plugins?.entries?.["video-chat"]?.config;
-    expect(pluginConfig?.videoChat?.lemonSlice?.apiKey).toBe("ls-key");
-    expect(pluginConfig?.videoChat?.lemonSlice?.imageUrl).toBe(DEFAULT_TEST_AVATAR_IMAGE_URL);
-    expect(pluginConfig?.videoChat?.livekit?.url).toBe("wss://new.livekit.cloud");
-    expect(pluginConfig?.videoChat?.livekit?.apiKey).toBe("lk-key");
-    expect(pluginConfig?.videoChat?.livekit?.apiSecret).toBe("lk-secret");
-    expect(pluginConfig?.messages?.tts?.elevenlabs?.apiKey).toBe("eleven-key");
-    expect(pluginConfig?.messages?.tts?.elevenlabs?.voiceId).toBe("voice-1234");
+    const pluginConfig = savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config;
+    expect(pluginConfig?.avatar?.lemonSlice?.apiKey).toBe("ls-key");
+    expect(pluginConfig?.avatar?.lemonSlice?.imageUrl).toBe(DEFAULT_TEST_AVATAR_IMAGE_URL);
+    expect(pluginConfig?.avatar?.livekit?.url).toBe("wss://new.livekit.cloud");
+    expect(pluginConfig?.avatar?.livekit?.apiKey).toBe("lk-key");
+    expect(pluginConfig?.avatar?.livekit?.apiSecret).toBe("lk-secret");
+  });
+
+  it("drops unsupported legacy provider config when saving setup", async () => {
+    const config = {
+      ...baseConfig,
+      plugins: {
+        entries: {
+          [LEGACY_PLUGIN_ID]: {
+            config: {
+              avatar: {
+                provider: "removed-provider",
+                lemonSlice: {
+                  apiKey: "ls-key",
+                  imageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
+                },
+                livekit: {
+                  url: "wss://example.livekit.cloud",
+                  apiKey: "lk-key",
+                  apiSecret: "lk-secret",
+                },
+                removedProviderConfig: {
+                  apiKey: "legacy-key",
+                  voiceId: "legacy-voice",
+                },
+                pipeline: {
+                  provider: "removed-provider",
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const { methods, runtime } = setup(config);
+
+    const respond = await invoke(methods, "avatar.setup.save", {
+      livekitUrl: "wss://new.livekit.cloud",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const savedConfig = vi.mocked(runtime.config.writeConfigFile).mock.calls[0]?.[0] as
+      | {
+          plugins?: {
+            entries?: {
+              "openclaw-avatar"?: {
+                config?: {
+                  avatar?: Record<string, unknown>;
+                };
+              };
+            };
+          };
+        }
+      | undefined;
+    const avatarConfig = savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config?.avatar;
+    expect(avatarConfig).toEqual({
+      provider: "lemonslice",
+      lemonSlice: {
+        apiKey: "ls-key",
+        imageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
+      },
+      livekit: {
+        url: "wss://new.livekit.cloud",
+        apiKey: "lk-key",
+        apiSecret: "lk-secret",
+      },
+    });
+    expect(avatarConfig).not.toHaveProperty("removedProviderConfig");
+    expect(avatarConfig).not.toHaveProperty("pipeline");
   });
 
   it("rejects invalid setup save params", async () => {
-    const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.setup.save", {
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
+    const respond = await invoke(methods, "avatar.setup.save", {
       livekitUrl: 12,
     });
 
@@ -2000,7 +2346,7 @@ describe("video-chat plugin", () => {
     );
     const { methods, runtime } = setup();
 
-    const respond = await invoke(methods, "videoChat.setup.save", {
+    const respond = await invoke(methods, "avatar.setup.save", {
       livekitApiKey: "bad-livekit-key",
     });
 
@@ -2013,126 +2359,10 @@ describe("video-chat plugin", () => {
     expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
   });
 
-  it("rejects setup save when the ElevenLabs API key cannot be verified", async () => {
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ detail: "Invalid API key" }), {
-        status: 401,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    const { methods, runtime } = setup();
-
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      elevenLabsApiKey: "bad-eleven-key",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(false);
-    expect(call?.[2]).toEqual({
-      code: "INVALID_REQUEST",
-      message: "ElevenLabs speech-to-text access could not be verified: Invalid API key",
-    });
-    expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
-  });
-
-  it("rejects setup save when the ElevenLabs voice ID does not exist", async () => {
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ token: "rtm_token_123" }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toContain("/v1/text-to-speech/missing-voice/stream?");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ detail: "voice not found" }), {
-        status: 404,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    const { methods, runtime } = setup();
-
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      elevenLabsVoiceId: "missing-voice",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(false);
-    expect(call?.[2]).toEqual({
-      code: "INVALID_REQUEST",
-      message: "ElevenLabs text-to-speech voice could not be verified: voice not found",
-    });
-    expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-  });
-
-  it("treats ElevenLabs transport failures as unavailable during setup save", async () => {
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
-      expect(method).toBe("POST");
-      throw Object.assign(new Error("fetch failed"), { code: "ENOTFOUND" });
-    });
-    const { methods, runtime } = setup();
-
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      elevenLabsApiKey: "network-flaky-key",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(false);
-    expect(call?.[2]).toEqual({
-      code: "UNAVAILABLE",
-      message: "ElevenLabs speech-to-text access could not be verified: fetch failed",
-    });
-    expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
-  });
-
-  it("uses the configured ElevenLabs model ID when verifying setup saves", async () => {
-    const { methods, runtime } = setup({
-      ...baseConfig,
-      messages: {
-        tts: {
-          elevenlabs: {
-            apiKey: "eleven-key",
-            modelId: "custom-eleven-model",
-          },
-        },
-      },
-    });
-
-    const respond = await invoke(methods, "videoChat.setup.save", {
-      elevenLabsVoiceId: "voice-1234",
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect(runtime.config.writeConfigFile).toHaveBeenCalledTimes(1);
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const ttsCall = mockFetch.mock.calls[1];
-    expect(String(ttsCall?.[0])).toContain("model_id=custom-eleven-model");
-    expect(ttsCall?.[1]).toMatchObject({ method: "POST" });
-    expect(JSON.parse(String(ttsCall?.[1]?.body))).toMatchObject({
-      model_id: "custom-eleven-model",
-    });
-  });
 
   it("rejects session create when the avatar image URL is not direct", async () => {
-    const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.create", {
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
+    const respond = await invoke(methods, "avatar.session.create", {
       avatarImageUrl: "https://e9riw81orx.ufs.sh/f/",
     });
 
@@ -2143,20 +2373,20 @@ describe("video-chat plugin", () => {
   });
 
   it("rejects invalid session params", async () => {
-    const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.create", {
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
+    const respond = await invoke(methods, "avatar.session.create", {
       interruptReplyOnNewMessage: "yes",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
-    expect(call?.[2]?.message).toContain("invalid videoChat.session.create params");
+    expect(call?.[2]?.message).toContain("invalid avatar.session.create params");
   });
 
   it("rejects unsupported avatar aspect ratios", async () => {
-    const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.create", {
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
+    const respond = await invoke(methods, "avatar.session.create", {
       avatarImageUrl: DEFAULT_TEST_AVATAR_IMAGE_URL,
       aspectRatio: "1x1",
     });
@@ -2165,37 +2395,37 @@ describe("video-chat plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
     const message = call?.[2]?.message;
-    expect(message?.startsWith("invalid videoChat.session.create params: aspectRatio must be one of")).toBe(true);
-    for (const ratio of VIDEO_CHAT_AVATAR_ASPECT_RATIOS) {
+    expect(message?.startsWith("invalid avatar.session.create params: aspectRatio must be one of")).toBe(true);
+    for (const ratio of AVATAR_ASPECT_RATIOS) {
       expect(message).toContain(ratio);
     }
   });
 
   it("rejects invalid session stop params", async () => {
-    const { methods } = setup();
-    const respond = await invoke(methods, "videoChat.session.stop", {
+    const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
+    const respond = await invoke(methods, "avatar.session.stop", {
       roomName: 12,
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
-    expect(call?.[2]?.message).toContain("invalid videoChat.session.stop params");
+    expect(call?.[2]?.message).toContain("invalid avatar.session.stop params");
   });
 
   it("requires avatarImageUrl even when LemonSlice config includes an image URL", async () => {
     const config = {
       ...baseConfig,
-      videoChat: {
-        ...baseConfig.videoChat,
+      avatar: {
+        ...baseConfig.avatar,
         lemonSlice: {
-          ...baseConfig.videoChat.lemonSlice,
+          ...baseConfig.avatar.lemonSlice,
           imageUrl: "https://e9riw81orx.ufs.sh/f/",
         },
       },
     };
     const { methods } = setup(config);
-    const respond = await invoke(methods, "videoChat.session.create", {});
+    const respond = await invoke(methods, "avatar.session.create", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(false);
@@ -2205,10 +2435,7 @@ describe("video-chat plugin", () => {
 
   it("transcribes uploaded browser audio", async () => {
     const { methods, runtime } = setup();
-    vi.mocked(runtime.stt.transcribeAudioFile).mockRejectedValue(
-      new Error("runtime STT should not be used"),
-    );
-    const respond = await invoke(methods, "videoChat.audio.transcribe", {
+    const respond = await invoke(methods, "avatar.audio.transcribe", {
       sessionKey: "agent:main/main",
       mimeType: "audio/webm;codecs=opus",
       data: Buffer.from("audio-bytes").toString("base64"),
@@ -2219,188 +2446,65 @@ describe("video-chat plugin", () => {
     expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
       "hello from microphone",
     );
-    expect(runtime.stt.transcribeAudioFile).not.toHaveBeenCalled();
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch.mock.calls[0]?.[0]).toBe("https://api.elevenlabs.io/v1/speech-to-text");
-    expect(mockFetch.mock.calls[0]?.[1]).toMatchObject({
-      method: "POST",
-      headers: {
-        "xi-api-key": "eleven-key",
+    expect(runtime.stt.transcribeAudioFile).toHaveBeenCalledTimes(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not forward agentDir to STT capabilities", async () => {
+    const { methods, runtime } = setup({}, { disableVideoAvatarRuntime: true });
+
+    const respond = await invoke(methods, "avatar.audio.transcribe", {
+      sessionKey: "agent:main:main",
+      mimeType: "audio/wav",
+      data: Buffer.from("audio-bytes").toString("base64"),
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect(runtime.stt.transcribeAudioFile).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        agentDir: expect.any(String),
+      }),
+    );
+  });
+
+  it("normalizes human-readable audio language names before calling STT capabilities", async () => {
+    const config = {
+      ...baseConfig,
+      tools: {
+        media: {
+          audio: {
+            enabled: true,
+            language: "English",
+            models: [{ provider: "openai", model: "gpt-4o-mini-transcribe", language: "English" }],
+          },
+        },
       },
-    });
-    const requestBody = mockFetch.mock.calls[0]?.[1]?.body;
-    expect(requestBody).toBeInstanceOf(FormData);
-    expect((requestBody as FormData).get("model_id")).toBe("scribe_v1");
-    expect((requestBody as FormData).get("tag_audio_events")).toBe("false");
-    expect((requestBody as FormData).get("file")).toBeTruthy();
-  });
+    };
+    const { methods, runtime } = setup(config, { disableVideoAvatarRuntime: true });
 
-  it("strips subtitle timing cues from ElevenLabs transcripts", async () => {
-    const { methods } = setup();
-    mockFetch.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          text: "00012 00:01:07,348 -- 00:01:10,23\nhello from microphone",
-        }),
-        {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        },
-      ),
-    );
-
-    const respond = await invoke(methods, "videoChat.audio.transcribe", {
-      mimeType: "audio/webm;codecs=opus",
+    const respond = await invoke(methods, "avatar.audio.transcribe", {
+      sessionKey: "agent:main:main",
+      mimeType: "audio/wav",
       data: Buffer.from("audio-bytes").toString("base64"),
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe(
-      "hello from microphone",
-    );
-  });
-
-  it("drops low-confidence hallucinated ElevenLabs transcripts", async () => {
-    const { methods } = setup();
-    mockFetch.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          text:
-            "So I'm gonna go ahead and get this recording started now so you can hear me talking about the Black Panther Party here at home with us tonight",
-          words: [
-            { type: "word", text: "So", logprob: -1.24 },
-            { type: "word", text: "I'm", logprob: -1.18 },
-            { type: "word", text: "gonna", logprob: -1.31 },
-            { type: "word", text: "go", logprob: -1.09 },
-            { type: "word", text: "ahead", logprob: -1.27 },
-            { type: "word", text: "and", logprob: -1.12 },
-            { type: "word", text: "get", logprob: -1.21 },
-            { type: "word", text: "this", logprob: -1.16 },
-          ],
-        }),
-        {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        },
-      ),
-    );
-
-    const respond = await invoke(methods, "videoChat.audio.transcribe", {
-      mimeType: "audio/webm;codecs=opus",
-      data: Buffer.from("audio-bytes").toString("base64"),
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe("");
-  });
-
-  it("mints a realtime transcription token for the browser websocket", async () => {
-    const { httpRoutes } = setup();
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ token: "rtm_token_123" }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-        },
-      }),
-    );
-
-    const { handled, res } = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/transcribe/token",
-      method: "POST",
-    });
-
-    expect(handled).toBe(true);
-    expect(res.statusCode).toBe(200);
-    expect(res.header("content-type")).toBe("application/json; charset=utf-8");
-    expect(res.header("cache-control")).toBe("no-store");
-    expect(JSON.parse(res.body)).toEqual({
-      success: true,
-      token: "rtm_token_123",
-      modelId: "scribe_v2_realtime",
-    });
-    expect(mockFetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
+    expect(runtime.stt.transcribeAudioFile).toHaveBeenCalledWith(
       expect.objectContaining({
-        method: "POST",
-        headers: {
-          "xi-api-key": "eleven-key",
-        },
+        cfg: expect.objectContaining({
+          tools: expect.objectContaining({
+            media: expect.objectContaining({
+              audio: expect.objectContaining({
+                language: "en",
+                models: [expect.objectContaining({ language: "en" })],
+              }),
+            }),
+          }),
+        }),
       }),
     );
-  });
-
-  it("fails realtime transcription token requests with a timeout error", async () => {
-    vi.useFakeTimers();
-    try {
-      const { httpRoutes } = setup();
-      mockFetch.mockImplementationOnce(
-        async (_url: string, options?: { signal?: AbortSignal }) =>
-          await new Promise<Response>((_resolve, reject) => {
-            options?.signal?.addEventListener("abort", () => {
-              reject(new DOMException("The operation was aborted.", "AbortError"));
-            });
-          }),
-      );
-
-      const pendingResponse = invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-        url: "/plugins/video-chat/api/transcribe/token",
-        method: "POST",
-      });
-
-      await vi.advanceTimersByTimeAsync(4_000);
-
-      const { handled, res } = await pendingResponse;
-      expect(handled).toBe(true);
-      expect(res.statusCode).toBe(503);
-      expect(JSON.parse(res.body)).toEqual({
-        success: false,
-        error: {
-          code: "UNAVAILABLE",
-          message: "Claw Cast realtime transcription token request timed out after 4000ms",
-        },
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retries transient ElevenLabs transcription failures", async () => {
-    const { methods } = setup();
-    mockFetch
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ detail: "temporary upstream issue" }), {
-          status: 503,
-          headers: {
-            "content-type": "application/json",
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ text: "hello after retry" }), {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
-        }),
-      );
-
-    const respond = await invoke(methods, "videoChat.audio.transcribe", {
-      mimeType: "audio/webm;codecs=opus",
-      data: Buffer.from("audio-bytes").toString("base64"),
-    });
-
-    const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect((call?.[1] as { transcript?: string } | undefined)?.transcript).toBe("hello after retry");
-    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it("serves the shipped browser shell and setup API routes", async () => {
@@ -2409,41 +2513,40 @@ describe("video-chat plugin", () => {
       await readFile(new URL("../package.json", import.meta.url), "utf8"),
     ) as { version: string };
 
-    const page = await invokeHttpRoute(httpRoutes, "/plugins/video-chat", {
-      url: "/plugins/video-chat",
+    const page = await invokeHttpRoute(httpRoutes, PLUGIN_ROUTE_BASE, {
+      url: PLUGIN_ROUTE_BASE,
     });
     expect(page.handled).toBe(true);
     expect(page.res.statusCode).toBe(200);
     expect(page.res.header("content-type")).toBe("text/html; charset=utf-8");
     expect(page.res.header("permissions-policy")).toBe("microphone=(self)");
-    expect(page.res.body).toContain("<title>Claw Cast</title>");
+    expect(page.res.body).toContain("<title>Avatar</title>");
     expect(page.res.body).toContain('data-shared-topbar');
     expect(page.res.body).toContain('id="package-version-value"');
     expect(page.res.body).toContain(`>${packageJson.version}</span>`);
     expect(page.res.body).not.toContain("__SHARED_SHELL_BOOTSTRAP__");
 
-    const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/readme", {
-      url: "/plugins/video-chat/readme",
+    const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/avatar/readme", {
+      url: "/plugins/avatar/readme",
     });
     expect(readmePage.handled).toBe(true);
     expect(readmePage.res.statusCode).toBe(200);
     expect(readmePage.res.header("content-type")).toBe("text/html; charset=utf-8");
-    expect(readmePage.res.body).toContain("<title>Claw Cast README</title>");
+    expect(readmePage.res.body).toContain("<title>Avatar README</title>");
     expect(readmePage.res.body).toContain('id="gateway-health-value"');
     expect(readmePage.res.body).toContain('id="keys-health-value"');
     expect(readmePage.res.body).toContain('id="package-version-value"');
     expect(readmePage.res.body).toContain('id="theme-toggle"');
     expect(readmePage.res.body).toContain('id="nav-collapse-toggle"');
-    expect(readmePage.res.body).toContain('/plugins/video-chat/app.js?v=');
+    expect(readmePage.res.body).toContain('/plugins/openclaw-avatar/app.js?v=');
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
-    expect(readmePage.res.body).toContain("/plugins/video-chat/assets/GreenConfig.png");
     expect(readmePage.res.body).not.toContain("__README_HTML__");
 
     const aspectRatioModule = await invokeHttpRoute(
       httpRoutes,
-      "/plugins/video-chat/avatar-aspect-ratio.js",
+      "/plugins/avatar/avatar-aspect-ratio.js",
       {
-        url: "/plugins/video-chat/avatar-aspect-ratio.js",
+        url: "/plugins/avatar/avatar-aspect-ratio.js",
       },
     );
     expect(aspectRatioModule.handled).toBe(true);
@@ -2451,11 +2554,11 @@ describe("video-chat plugin", () => {
     expect(aspectRatioModule.res.header("content-type")).toBe(
       "application/javascript; charset=utf-8",
     );
-    expect(aspectRatioModule.res.body).toContain("VIDEO_CHAT_AVATAR_ASPECT_RATIOS");
-    expect(aspectRatioModule.res.body).toContain("VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT");
+    expect(aspectRatioModule.res.body).toContain("AVATAR_ASPECT_RATIOS");
+    expect(aspectRatioModule.res.body).toContain("AVATAR_ASPECT_RATIO_DEFAULT");
 
-    const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/setup",
+    const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/setup",
     });
     expect(setupApi.handled).toBe(true);
     expect(setupApi.res.statusCode).toBe(200);
@@ -2471,57 +2574,45 @@ describe("video-chat plugin", () => {
           apiKey: "lk-key",
           apiSecret: "lk-secret",
         },
-        tts: {
-          elevenLabsApiKey: "eleven-key",
-        },
       },
     });
   });
 
-  it("rejects HTTP setup saves when verification fails", async () => {
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ token: "rtm_token_123" }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    mockFetch.mockImplementationOnce(async (input: string | URL | Request, init?: { method?: string }) => {
-      const { url, method } = resolveFetchInvocation(input, init);
-      expect(url).toContain("/v1/text-to-speech/missing-voice/stream?");
-      expect(method).toBe("POST");
-      return new Response(JSON.stringify({ detail: "voice not found" }), {
-        status: 404,
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-    });
-    const { httpRoutes, runtime } = setup();
+  it("serves the plugin README and package version even when parent paths point at host files", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "avatar-readme-host-"));
+    const fakePluginRoot = path.join(tempRoot, "plugins", "avatar");
+    const fakeHostReadme = path.join(tempRoot, "plugins", "README.md");
+    const fakeHostPackageJson = path.join(tempRoot, "plugins", "package.json");
 
-    const response = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/api", {
-      url: "/plugins/video-chat/api/setup",
-      method: "POST",
-      body: {
-        elevenLabsVoiceId: "missing-voice",
-      },
-    });
+    await mkdir(fakePluginRoot, { recursive: true });
+    await writeFile(fakeHostReadme, "# OpenClaw Host README\n\nThis should not appear in the plugin UI.\n");
+    await writeFile(
+      fakeHostPackageJson,
+      JSON.stringify({ name: "openclaw-host", version: "2026.3.14" }, null, 2),
+    );
 
-    expect(response.handled).toBe(true);
-    expect(response.res.statusCode).toBe(400);
-    expect(JSON.parse(response.res.body)).toEqual({
-      success: false,
-      error: {
-        code: "INVALID_REQUEST",
-        message: "ElevenLabs text-to-speech voice could not be verified: voice not found",
-      },
-    });
-    expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    try {
+      const { httpRoutes } = setup(baseConfig, {
+        resolvePath: (input: string) => path.join(fakePluginRoot, input),
+      });
+      const packageJson = JSON.parse(
+        await readFile(new URL("../package.json", import.meta.url), "utf8"),
+      ) as { version: string };
+
+      const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/avatar/readme", {
+        url: "/plugins/avatar/readme",
+      });
+
+      expect(readmePage.handled).toBe(true);
+      expect(readmePage.res.statusCode).toBe(200);
+      expect(readmePage.res.body).toContain(">Openclaw - Avatar Plugin</h1>");
+      expect(readmePage.res.body).toContain(`>${packageJson.version}</span>`);
+      expect(readmePage.res.body).not.toContain("OpenClaw Host README");
+      expect(readmePage.res.body).not.toContain("This should not appear in the plugin UI.");
+      expect(readmePage.res.body).not.toContain(">2026.3.14</span>");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("bootstraps the configured gateway token for the browser settings page", async () => {
@@ -2532,10 +2623,10 @@ describe("video-chat plugin", () => {
         auth: { mode: "token", token: "gateway-token" },
       },
     });
-    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.11";
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.22";
 
-    const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/bootstrap", {
-      url: "/plugins/video-chat/bootstrap",
+    const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/avatar/bootstrap", {
+      url: "/plugins/avatar/bootstrap",
     });
     expect(bootstrap.handled).toBe(true);
     expect(bootstrap.res.statusCode).toBe(200);
@@ -2546,8 +2637,8 @@ describe("video-chat plugin", () => {
     expect(JSON.parse(bootstrap.res.body)).toEqual({
       success: true,
       openclaw: {
-        version: "2026.3.11",
-        minimumCompatibleVersion: "2026.3.11",
+        version: "2026.3.22",
+        minimumCompatibleVersion: "2026.3.22",
         compatible: true,
       },
       gateway: {
@@ -2563,8 +2654,8 @@ describe("video-chat plugin", () => {
     const { httpRoutes, runtime } = setup();
     (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.10";
 
-    const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/video-chat/bootstrap", {
-      url: "/plugins/video-chat/bootstrap",
+    const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/avatar/bootstrap", {
+      url: "/plugins/avatar/bootstrap",
     });
     expect(bootstrap.handled).toBe(true);
     expect(bootstrap.res.statusCode).toBe(200);
@@ -2572,7 +2663,7 @@ describe("video-chat plugin", () => {
       success: true,
       openclaw: {
         version: "2026.3.10",
-        minimumCompatibleVersion: "2026.3.11",
+        minimumCompatibleVersion: "2026.3.22",
         compatible: false,
       },
     });

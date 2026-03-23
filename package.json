@@ -1,20 +1,40 @@
 {
-  "name": "openclaw-video-chat-do-not-install-7f3c9d1",
+  "name": "@lemonsliceai/openclaw-avatar",
   "version": "0.1.36",
-  "description": "OpenClaw Claw Cast plugin",
+  "description": "OpenClaw Avatar plugin",
   "license": "MIT",
   "type": "module",
+  "main": "./dist/avatar/index.js",
+  "exports": {
+    ".": "./dist/avatar/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lemonsliceai/videoChatPlugin.git"
+  },
+  "homepage": "https://github.com/lemonsliceai/videoChatPlugin#readme",
+  "bugs": {
+    "url": "https://github.com/lemonsliceai/videoChatPlugin/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "openclaw",
+    "clawhub",
+    "plugin",
+    "avatar",
+    "video",
+    "livekit",
+    "lemonslice"
+  ],
   "files": [
-    "README.md",
     "assets",
+    "dist",
+    "LICENSE",
     "openclaw.plugin.json",
+    "README.md",
     "styles",
-    "video-chat/avatar-aspect-ratio.js",
-    "video-chat/index.ts",
-    "video-chat/sidecar-process-control.ts",
-    "video-chat/video-chat-agent-bridge.mjs",
-    "video-chat/video-chat-agent-runner-wrapper.mjs",
-    "video-chat/video-chat-agent-runner.js",
     "web/app.js",
     "web/shared-shell.js",
     "web/index.html",
@@ -23,17 +43,17 @@
   ],
   "openclaw": {
     "extensions": [
-      "./video-chat/index.ts"
+      "./dist/avatar/index.js"
     ]
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.11"
+    "openclaw": ">=2026.3.22"
   },
   "dependencies": {
-    "@livekit/agents": "1.0.51",
-    "@livekit/agents-plugin-elevenlabs": "1.0.51",
-    "@livekit/agents-plugin-lemonslice": "1.0.51",
+    "@livekit/agents": "1.2.0",
+    "@livekit/agents-plugin-lemonslice": "1.2.0",
     "@livekit/rtc-node": "0.13.24",
+    "livekit-server-sdk": "2.15.0",
     "ws": "8.19.0",
     "zod": "4.3.6"
   },
@@ -43,9 +63,11 @@
     "vitest": "^4.0.0"
   },
   "scripts": {
+    "build": "node ./scripts/build.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "pack:check": "npm pack --dry-run --cache .npm-cache",
+    "prepack": "npm run build",
     "validate": "npm run typecheck && npm test && npm run pack:check"
   }
 }

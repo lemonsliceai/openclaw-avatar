@@ -3,15 +3,15 @@ import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import videoChatAgent, {
+import avatarAgent, {
   GatewayWsClient,
-  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT as RUNNER_VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
-  VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP,
+  buildLemonSliceAspectRatioPayload,
   computeStreamingTextDelta,
-} from "./video-chat-agent-runner.js";
+} from "./avatar-agent-runner.js";
 import {
-  VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
-  VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+  AVATAR_ASPECT_RATIO_DEFAULT,
+  AVATAR_ASPECT_RATIO_LOOKUP,
+  AVATAR_ASPECT_RATIOS,
 } from "./avatar-aspect-ratio.js";
 
 class MockWebSocket extends EventEmitter {
@@ -211,42 +211,49 @@ describe("computeStreamingTextDelta", () => {
 
 describe("avatar aspect ratio constants", () => {
   it("keeps the runner validation whitelist aligned with the shared constants", () => {
-    expect(Array.from(VIDEO_CHAT_AVATAR_ASPECT_RATIO_LOOKUP)).toEqual([
-      ...VIDEO_CHAT_AVATAR_ASPECT_RATIOS,
+    expect(Array.from(AVATAR_ASPECT_RATIO_LOOKUP)).toEqual([
+      ...AVATAR_ASPECT_RATIOS,
     ]);
-    expect(RUNNER_VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT).toBe(
-      VIDEO_CHAT_AVATAR_ASPECT_RATIO_DEFAULT,
-    );
+    expect(AVATAR_ASPECT_RATIO_DEFAULT).toBe("16x9");
+  });
+
+  it("maps aspect ratio into the LemonSlice request payload", () => {
+    expect(buildLemonSliceAspectRatioPayload("9x16")).toEqual({
+      aspect_ratio: "9x16",
+    });
+    expect(buildLemonSliceAspectRatioPayload("invalid")).toEqual({
+      aspect_ratio: AVATAR_ASPECT_RATIO_DEFAULT,
+    });
   });
 });
 
-describe("videoChatAgent test mode", () => {
-  const originalTestMode = process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE;
-  const originalSignalFile = process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE;
-  const originalDepsBaseRunner = process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER;
-  const originalRunnerPath = process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH;
+describe("avatarAgent test mode", () => {
+  const originalTestMode = process.env.OPENCLAW_AVATAR_TEST_MODE;
+  const originalSignalFile = process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE;
+  const originalDepsBaseRunner = process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER;
+  const originalRunnerPath = process.env.OPENCLAW_AVATAR_RUNNER_PATH;
   let tmpDir = "";
 
   afterEach(async () => {
     if (originalTestMode === undefined) {
-      delete process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE;
+      delete process.env.OPENCLAW_AVATAR_TEST_MODE;
     } else {
-      process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE = originalTestMode;
+      process.env.OPENCLAW_AVATAR_TEST_MODE = originalTestMode;
     }
     if (originalSignalFile === undefined) {
-      delete process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE;
+      delete process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE;
     } else {
-      process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE = originalSignalFile;
+      process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE = originalSignalFile;
     }
     if (originalDepsBaseRunner === undefined) {
-      delete process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER;
+      delete process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER;
     } else {
-      process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER = originalDepsBaseRunner;
+      process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER = originalDepsBaseRunner;
     }
     if (originalRunnerPath === undefined) {
-      delete process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH;
+      delete process.env.OPENCLAW_AVATAR_RUNNER_PATH;
     } else {
-      process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH = originalRunnerPath;
+      process.env.OPENCLAW_AVATAR_RUNNER_PATH = originalRunnerPath;
     }
     if (tmpDir) {
       await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -255,13 +262,13 @@ describe("videoChatAgent test mode", () => {
   });
 
   it("writes connect-only runtime signals using the actual runner entry", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "video-chat-runner-test-"));
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "avatar-runner-test-"));
     const signalFile = path.join(tmpDir, "signals.ndjson");
-    const runnerPath = path.join(process.cwd(), "video-chat", "video-chat-agent-runner.js");
-    process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE = "connect-only";
-    process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE = signalFile;
-    process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER = runnerPath;
-    process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH = runnerPath;
+    const runnerPath = path.join(process.cwd(), "avatar", "avatar-agent-runner.js");
+    process.env.OPENCLAW_AVATAR_TEST_MODE = "connect-only";
+    process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE = signalFile;
+    process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER = runnerPath;
+    process.env.OPENCLAW_AVATAR_RUNNER_PATH = runnerPath;
 
     const room = new EventEmitter() as EventEmitter & {
       name: string;
@@ -290,7 +297,7 @@ describe("videoChatAgent test mode", () => {
       }),
     };
 
-    const entryPromise = videoChatAgent.entry(ctx);
+    const entryPromise = avatarAgent.entry(ctx);
     await waitForSignalEvent(signalFile, "awaiting-room-disconnect");
     room.emit("disconnected");
     await entryPromise;
@@ -321,12 +328,12 @@ describe("videoChatAgent test mode", () => {
   });
 
   it("skips dependency loading in connect-only test mode", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "video-chat-runner-test-"));
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "avatar-runner-test-"));
     const signalFile = path.join(tmpDir, "signals.ndjson");
-    process.env.OPENCLAW_VIDEO_CHAT_TEST_MODE = "connect-only";
-    process.env.OPENCLAW_VIDEO_CHAT_TEST_SIGNAL_FILE = signalFile;
-    delete process.env.OPENCLAW_VIDEO_CHAT_DEPS_BASE_RUNNER;
-    delete process.env.OPENCLAW_VIDEO_CHAT_RUNNER_PATH;
+    process.env.OPENCLAW_AVATAR_TEST_MODE = "connect-only";
+    process.env.OPENCLAW_AVATAR_TEST_SIGNAL_FILE = signalFile;
+    delete process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER;
+    delete process.env.OPENCLAW_AVATAR_RUNNER_PATH;
 
     const room = new EventEmitter() as EventEmitter & {
       name: string;
@@ -353,7 +360,7 @@ describe("videoChatAgent test mode", () => {
       waitForParticipant: vi.fn(async () => participant),
     };
 
-    const entryPromise = videoChatAgent.entry(ctx);
+    const entryPromise = avatarAgent.entry(ctx);
     await waitForSignalEvent(signalFile, "awaiting-room-disconnect");
     room.emit("disconnected");
 
@@ -363,7 +370,7 @@ describe("videoChatAgent test mode", () => {
   });
 
   it("ignores incomplete NDJSON lines while waiting for a signal event", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "video-chat-runner-test-"));
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "avatar-runner-test-"));
     const signalFile = path.join(tmpDir, "signals.ndjson");
     await writeFile(signalFile, '{"type":"unrelated"}\n{"type":"awaiting-room-disconnect"', "utf8");
 

@@ -1,31 +1,28 @@
-# Openclaw - Claw Cast Plugin
+# Openclaw - Avatar Plugin
 
-Give your Openclaw agents a face! Claw Cast enables a real time video avatar for any of your Openclaw agents. Now you can speak directly with your agent and bring them anywhere on your desktop!
+Give your OpenClaw agent a face! The Avatar Plugin allows you to have a real-time, interactive video call with your agent. 
+The avatar listens to you, sends your speech to your OpenClaw agent, and speaks the response back with lip-synced video. It’s like FaceTime.  
 
-Claw Cast is an OpenClaw plugin that integrates LemonSlice, LiveKit, and ElevenLabs to deliver a real-time avatar experience with plugin-managed setup, browser session controls, text chat, speech-to-text, and text-to-speech.
+Design your OpenClaw’s face to match its personality. Unlimited avatar options. Powered by LemonSlice, real-time AI avatar technology. 
 
-<div>
-  <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
-    <p>Claw Cast Demo - Watch Video</p>
-  </a>
-  <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
-    <img
-      src="https://cdn.loom.com/sessions/thumbnails/307a34384a0b4dc4a5391d8bbc9accf7-5fbac2c9d95c536d-full-play.gif#t=0.1"
-      alt="Claw Cast demo video thumbnail"
-    />
-  </a>
-</div>
+## How it Works
+You speak (or type) → Avatar transcribes → OpenClaw processes → Avatar speaks response
+This plugin works with the OpenClaw gateway. It allows you to have a floating FaceTime-style avatar on your screen while you work. 
+## Features
+- Real-time video avatar 
+- Expressive lip sync and whole-body gestures
+- Voice-to-voice conversations
+- Design your own avatar (just one photo!) 
+- Picture-in-picture experience (have the avatar hangout while you work) 
 
 **Outline**
 
 - [Prerequisites](#prerequisites)
 - [Quickstart](#quickstart)
-- [Install](#install)
-- [Configure](#configure)
-- [Join avatar session](#join-avatar-session)
+- [Config](#config)
+- [ClawHub release](#clawhub-release)
 - [Usage tips](#usage-tips)
 - [Update](#update)
-- [About The Install Warning](#about-the-install-warning)
 - [License](#license)
 
 <a id="prerequisites"></a>
@@ -33,205 +30,145 @@ Claw Cast is an OpenClaw plugin that integrates LemonSlice, LiveKit, and ElevenL
 
 ### OpenClaw
 
-Before installing and running this plugin, you must have an OpenClaw instance installed and configured.
+Before installing and running this plugin, you must have an OpenClaw instance installed and configured with at least one LLM provider, and TTS and STT capabilities.
 
-- OpenClaw [install guide](https://docs.openclaw.ai/install#npm-pnpm)
+- OpenClaw [getting started](https://docs.openclaw.ai/start/getting-started)
 
-After installing OpenClaw, configure at least one LLM provider before you install this plugin. We highly recommend using a fast model for a better experience. Examples below.
-- qwen3-30B-A3B
-- gpt-5-nano
-- claude-haiku-4-5
+We recommend using a fast model for a better experience. e.g. gpt-5-nano
 
-```bash
-openclaw config
-```
+<a id="tts-for-avatar"></a>
+### TTS for avatar
 
-For plugin submission and reviewer setup, this `openclaw config` step is required. After configuring a valid LLM provider, make sure your agent is also set up with a primary model:
+Avatar uses the core `messages.tts` configuration for avatar speech playback. Configure it in your main OpenClaw config. Provider setup, examples, and caveats live here: https://docs.openclaw.ai/tts
 
-```text
-http://127.0.0.1:18789/agents
-```
+<a id="stt-for-avatar"></a>
+### STT for avatar
+
+Avatar uses the core `tools.media.audio` configuration for speech-to-text during avatar sessions. Configure it in your main OpenClaw config. Provider setup, examples, and transcription model options live here: https://docs.openclaw.ai/audio
 
 ### Providers
 
-You will also need accounts with the following service providers:
+You will also need API keys with the following service providers:
 
-- **LemonSlice** — provides the avatar/character rendering for the video chat experience.
-  Sign up at https://www.lemonslice.com
+- **LemonSlice** — real-time avatar. Get API key: https://lemonslice.com/agents/api  
 
-- **ElevenLabs** — powers plugin-owned speech-to-text (STT) and text-to-speech (TTS).
-  Sign up at https://elevenlabs.io
-  **The ElevenLabs API key must have both text-to-speech (TTS) and speech-to-text (STT) access enabled.**
-  Sample voice ID: `pg7Nd5b8Y3tnfSndq5lh`
-
-- **LiveKit** — provides the real-time video/audio room infrastructure.
-  Sign up at https://livekit.io
-
-- **Publicly Accessible Image URL** - The source image for the avatar.
-  Sample image URL: `https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtNkoagYf5CBjh3ZkFEumULAJYeQriWT8tg79y`
-
-Once you have accounts, retrieve API keys from each service and supply them during plugin setup. Enter the avatar image URL on the main session page when you start a session.
+- **LiveKit** — real-time video/audio infrastructure. Sign up at https://livekit.io
 
 <a id="quickstart"></a>
 ## Quickstart
 
-If you want the shortest path from install to first conversation, follow these steps in order:
+1. Install and enable the plugin.
 
-1. Install and configure OpenClaw with a working LLM provider by running `openclaw config`.
-
-2. Install and enable the plugin:
+Install from ClawHub:
 
 ```bash
-openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
-openclaw plugins enable video-chat
+openclaw plugins install clawhub:@lemonsliceai/openclaw-avatar
+openclaw plugins enable openclaw-avatar
 ```
 
-3. Run the plugin setup command and enter your LemonSlice, ElevenLabs, and LiveKit credentials:
+Or install directly from npm:
 
 ```bash
-openclaw video-chat-setup
+openclaw plugins install @lemonsliceai/openclaw-avatar@latest
+openclaw plugins enable openclaw-avatar
 ```
 
-4. Start the OpenClaw gateway:
+2. Allow the Avatar plugin:
+
+`openclaw.json`
+```json
+"plugins": {
+    ...
+    "allow": [
+      "openclaw-avatar"],
+    ...
+}
+```
+or via gateway UI
+
+http://127.0.0.1:18789/automation
+
+3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Avatar:
 
 ```bash
-openclaw gateway run
+openclaw openclaw-avatar-setup
 ```
 
-5. Open the session UI:
-
-```text
-http://127.0.0.1:18789/plugins/video-chat/
-```
-
-6. Paste a public avatar image URL, leave the session key as `main` unless you already use a different OpenClaw session, and start the session.
-
-When setup is complete, the plugin config page should show green `OK` indicators for both Gateway and Config:
-
-```text
-http://127.0.0.1:18789/plugins/video-chat/config
-```
-
-<a id="install"></a>
-## Install
-
-Plugin installation:
-
-```bash
-openclaw plugins install openclaw-video-chat-do-not-install-7f3c9d1@latest
-openclaw plugins enable video-chat
-openclaw plugins list
-```
-
-Verify that ClawCast is listed. 
-
-<a id="configure"></a>
-## Configure
-
-The plugin can be configured with either the CLI (recommended) or the browser UI. The CLI path is the fastest option for most users. If you choose the browser UI, you must first [run the OpenClaw gateway](#run-gateway).
-
-### CLI Config 
-
-```bash
-openclaw video-chat-setup
-```
-
-This command is the recommended setup flow because it walks you through the required provider credentials in one place.
-
-### Browser Config
-
-1. [Run the gateway](#run-gateway)
-
-2. [Open the plugin UI](http://127.0.0.1:18789/plugins/video-chat/config)
-
-3. Set gateway token, click "Use Token"
-
-4. Set provider values, click "Save"
-
-Browser Config link
-```text
-http://127.0.0.1:18789/plugins/video-chat/config
-```
-
-**Once the plugin is properly configured the Gateway and Config status indicators (top bar of plugin web UI) will read "OK" and show green lights.**
-
-![Green Config](assets/GreenConfig.png)
-
-<a id="run-gateway"></a>
-### Run Gateway
-
-Start
-
-```bash
-openclaw gateway run
-```
-
-If the gateway is currently running, it can be stopped by using:
-
-```bash
-openclaw gateway stop
-```
-
-The gateway can also be forcefully re-run:
+4. Restart the OpenClaw gateway:
 
 ```bash
 openclaw gateway run --force
 ```
 
-<a id="join-avatar-session"></a>
-## Join avatar session
-
-Open the session UI, fill in the form, and start your avatar session:
+5. Open the session UI for OpenClaw Avatar Chat:
 
 ```text
-http://127.0.0.1:18789/plugins/video-chat/
+http://127.0.0.1:18789/plugins/openclaw-avatar/
 ```
 
-Plugin documentation is also available in the web UI at:
+6. Paste a public avatar image URL, leave the session key as `main` unless you already use a different OpenClaw session, and start the session.
 
-```text
-http://127.0.0.1:18789/plugins/video-chat/readme
+<a id="config"></a>
+## Config
+
+In `openclaw.json`
+
+```json
+{
+  "plugins": {
+    ...
+    "entries": {
+      "openclaw-avatar": {
+        "config": {
+          "avatar": {
+            "provider": "lemonslice",
+            "verbose": false,
+            "lemonSlice": {
+              "apiKey": "<lemonslice-api-key>",
+              "imageUrl": "https://example.com/avatar-image.jpg"
+            },
+            "livekit": {
+              "url": "wss://your-project.livekit.cloud",
+              "apiKey": "<livekit-api-key>",
+              "apiSecret": "<livekit-api-secret>"
+            }
+          }
+        }
+      }
+    },
+    ...
+  }
+}
 ```
 
-If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
+`avatar.verbose` defaults to `false`. When it is `false`, the gateway log only receives Avatar sidecar-ready, session start/end lifecycle events, and the worker progress state changes shown above the avatar in the main view. Set it to `true` to restore the full Avatar event stream.
 
-Session form fields:
+<a id="clawhub-release"></a>
+## ClawHub release
 
-- **Avatar image URL** - required for each session start.
-- **Avatar timeout (seconds)** - defaults to `60`.
+ClawHub now supports native OpenClaw plugins. This package is set up as a code plugin and can be published directly from the repo root after you build and validate it.
 
-Session key tips:
+```bash
+npm run validate
+clawhub login
+clawhub package publish . \
+  --source-repo lemonsliceai/videoChatPlugin \
+  --source-commit $(git rev-parse HEAD)
+```
 
-- Leave the Session key field blank, or enter `main`, to use the default OpenClaw session key from `session.mainKey` (fallback: `main`).
-- Enter a plain key like `research` if that is the session name you started in OpenClaw.
-- For the default OpenClaw main agent, the fully qualified agent session key format is `agent:main:<sessionKey>`, for example `agent:main:main`.
-- If OpenClaw already shows a full agent session key, paste it into the field exactly as-is.
+Notes:
 
-Typical first run:
-
-1. Keep the session key as `main`.
-
-2. Paste your public avatar image URL.
-
-3. Pick an avatar aspect ratio. Leave it at `16x9` unless your source image works better in one of the supported portrait or landscape ratios below.
-
-4. Leave avatar timeout at `60` unless you need a different value.
-
-5. Start the session and begin chatting through the page controls.
+- `npm run validate` runs typecheck, tests, and a dry-run package build.
+- `clawhub package publish` uploads the package artifact and links it to the exact GitHub commit used for the release.
+- Publish the same version to npm as `@lemonsliceai/openclaw-avatar`.
 
 <a id="usage-tips"></a>
 ## Usage tips
 
 - The plugin is best used in a Chromium-based browser.
-
-Best image sizes:
-
-| aspect_ratio | resolution |
-|--------------|------------|
-| 2x3          | 368×560    |
-| 3x2          | 560×368    |
-| 9x16         | 336×608    |
-| 16x9         | 608×336    |
+- If you choose to use the picture-in-picture view for the avatar, **do not close the avatar tab**.
+- Avatar image tips: https://lemonslice.com/docs/avatar-design 
+- Avatar timeout (seconds)- defaults to `60`. This defines how long your avatar will remain in the chat without interaction.
 
 <a id="update"></a>
 ## Update
@@ -239,34 +176,8 @@ Best image sizes:
 The plugin can be updated to the latest version using:
 
 ```bash
-openclaw plugins update video-chat  
+openclaw plugins update openclaw-avatar  
 ```
-
-<a id="about-the-install-warning"></a>
-## About The Install Warning
-
-OpenClaw may show a warning like this during install:
-
-```text
-WARNING: Plugin "video-chat" contains dangerous code patterns: Shell command execution detected (child_process) (.../video-chat/index.ts:1727); Environment variable access combined with network send — possible credential harvesting (.../video-chat/index.ts:212)
-```
-
-That warning is expected for this plugin. It is flagging two real implementation details:
-
-- `child_process` in `video-chat/index.ts` is used to start a local sidecar worker for the `video-chat-agent` service. That worker runs the long-lived LiveKit agent runtime in a separate process so it can be started, stopped, restarted, and isolated from the main gateway process.
-- `process.env` plus network activity in `video-chat/index.ts` is used to read setup defaults and plugin-specific runtime variables, then connect to the local OpenClaw gateway and the configured LiveKit, ElevenLabs, and LemonSlice services that power the plugin.
-
-What this plugin is not doing:
-
-- It does not execute arbitrary shell snippets from user input.
-- The plugin does not scan unrelated environment variables and send them to a third-party endpoint.
-- Outbound connections are limited to the services required for the video chat flow and the local OpenClaw gateway bridge.
-
-What it does do:
-
-- Launch a local worker process for the avatar agent runtime.
-- Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
-- Send audio, transcript, and session traffic only to the configured providers needed for Claw Cast to function.
 
 <a id="license"></a>
 ## License
