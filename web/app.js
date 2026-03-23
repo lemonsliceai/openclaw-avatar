@@ -163,12 +163,14 @@ const SERVER_SPEECH_ZERO_CROSSING_MAX = 0.25;
 const SERVER_SPEECH_START_CONSECUTIVE_FRAMES = 2;
 const SERVER_SPEECH_MIN_VOICED_FRAMES = 3;
 const SERVER_SPEECH_MAX_PREROLL_CHUNKS = 3;
+const SERVER_SPEECH_MAX_CAPTURE_BYTES = 512 * 1024;
 const SERVER_SPEECH_CAPTURE_MIME_TYPES = [
   "audio/webm;codecs=opus",
   "audio/webm",
   "audio/mp4;codecs=mp4a.40.2",
   "audio/mp4",
 ];
+const SERVER_SPEECH_TRANSCRIBE_REQUEST_TIMEOUT_MS = 20_000;
 const SERVER_SPEECH_START_RETRY_BASE_DELAY_MS = 500;
 const SERVER_SPEECH_START_RETRY_MAX_DELAY_MS = 4_000;
 const SERVER_SPEECH_START_RETRY_MAX_ATTEMPTS = 5;
@@ -224,6 +226,7 @@ let serverSpeechRecorderSpeechActive = false;
 let serverSpeechRecorderSpeechStartedAt = 0;
 let serverSpeechRecorderSilenceStartedAt = 0;
 let serverSpeechRecorderPcmChunks = [];
+let serverSpeechRecorderPcmByteLength = 0;
 let serverSpeechRecorderPrerollChunks = [];
 let serverSpeechRecorderSpeechFrameStreak = 0;
 let serverSpeechRecorderVoicedFrameCount = 0;
@@ -2004,6 +2007,11 @@ async function submitVoiceTranscript(rawTranscript, sessionKey = resolveChatSess
     return false;
   }
 
+  if (normalizedSessionKey !== resolveChatSessionKey()) {
+    clearVoiceTranscriptionPending();
+    return false;
+  }
+
   if (shouldSuppressVoiceTranscriptAsAvatarEcho(transcript)) {
     debugLog("voice-chat:transcript-suppressed", {
       reason: "avatar-echo",
@@ -2381,6 +2389,7 @@ function resetServerSpeechCaptureState() {
   serverSpeechRecorderSpeechStartedAt = 0;
   serverSpeechRecorderSilenceStartedAt = 0;
   serverSpeechRecorderPcmChunks = [];
+  serverSpeechRecorderPcmByteLength = 0;
   serverSpeechRecorderPrerollChunks = [];
   serverSpeechRecorderSpeechFrameStreak = 0;
   serverSpeechRecorderVoicedFrameCount = 0;
@@ -2428,11 +2437,46 @@ function syncServerSpeechRecorderMuteState(options = {}) {
   return micMuted;
 }
 
+function discardServerSpeechCaptureForLimitExceeded() {
+  setOutput({
+    action: "server-speech-capture-discarded",
+    reason: "capture-limit",
+    captureBytes: serverSpeechRecorderPcmByteLength,
+    maxCaptureBytes: SERVER_SPEECH_MAX_CAPTURE_BYTES,
+  });
+  discardServerSpeechCapture();
+  return false;
+}
+
+function setServerSpeechRecorderPcmChunks(chunks) {
+  const nextChunks = Array.isArray(chunks)
+    ? chunks.filter((chunk) => chunk instanceof Uint8Array && chunk.length > 0)
+    : [];
+  serverSpeechRecorderPcmChunks = nextChunks;
+  serverSpeechRecorderPcmByteLength = nextChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  if (serverSpeechRecorderPcmByteLength <= SERVER_SPEECH_MAX_CAPTURE_BYTES) {
+    return true;
+  }
+  return discardServerSpeechCaptureForLimitExceeded();
+}
+
+function pushServerSpeechRecorderPcmChunk(chunk) {
+  if (!(chunk instanceof Uint8Array) || chunk.length === 0) {
+    return true;
+  }
+  serverSpeechRecorderPcmChunks.push(chunk);
+  serverSpeechRecorderPcmByteLength += chunk.length;
+  if (serverSpeechRecorderPcmByteLength <= SERVER_SPEECH_MAX_CAPTURE_BYTES) {
+    return true;
+  }
+  return discardServerSpeechCaptureForLimitExceeded();
+}
+
 function buildServerSpeechFallbackWavBytes() {
   if (serverSpeechRecorderPcmChunks.length === 0) {
     return null;
   }
-  const totalBytes = serverSpeechRecorderPcmChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const totalBytes = serverSpeechRecorderPcmByteLength;
   if (totalBytes === 0) {
     return null;
   }
@@ -2531,18 +2575,32 @@ async function requestServerSpeechTranscript(
   captureError,
 ) {
   const base64Data = base64EncodeBytes(audioBytes);
-  const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/transcribe`, {
-    method: "POST",
-    body: JSON.stringify({
-      data: base64Data,
-      mimeType,
-      ...(captureSource ? { captureSource } : {}),
-      ...(roomTrackMuted ? { roomTrackMuted: true } : {}),
-      ...(captureError ? { captureError } : {}),
-      ...(sessionKey ? { sessionKey } : {}),
-    }),
-  });
-  return stripRealtimeTranscriptionCaptionCues(extractServerSpeechTranscript(payload));
+  try {
+    const payload = await requestJsonWithTimeout(
+      `${AVATAR_PLUGIN_BASE_PATH}/api/transcribe`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          data: base64Data,
+          mimeType,
+          ...(captureSource ? { captureSource } : {}),
+          ...(roomTrackMuted ? { roomTrackMuted: true } : {}),
+          ...(captureError ? { captureError } : {}),
+          ...(sessionKey ? { sessionKey } : {}),
+        }),
+      },
+      SERVER_SPEECH_TRANSCRIBE_REQUEST_TIMEOUT_MS,
+    );
+    return stripRealtimeTranscriptionCaptionCues(extractServerSpeechTranscript(payload));
+  } catch (error) {
+    if (isAbortError(error)) {
+      const timeoutError = new Error("Speech transcription timed out.");
+      timeoutError.name = "AbortError";
+      timeoutError.code = "SERVER_SPEECH_TRANSCRIBE_TIMEOUT";
+      throw timeoutError;
+    }
+    throw error;
+  }
 }
 
 function queueServerSpeechCaptureUpload(audioBytes, mimeType, options = {}) {
@@ -2597,6 +2655,10 @@ function queueServerSpeechCaptureUpload(audioBytes, mimeType, options = {}) {
 }
 
 function flushServerSpeechCapture() {
+  if (serverSpeechRecorderDiscardNextCapture) {
+    resetServerSpeechCaptureState();
+    return;
+  }
   if (shouldBlockServerSpeechTranscription() && !serverSpeechRecorderBargeInActive) {
     discardServerSpeechCapture();
     return;
@@ -2856,12 +2918,6 @@ async function startServerSpeechTranscription() {
             clearVoiceTranscriptionPending();
             return;
           }
-          if (fallbackBytes) {
-            queueServerSpeechCaptureUpload(fallbackBytes, "audio/wav", {
-              transcriptRequest,
-            });
-            return;
-          }
           if (encodedChunks.length > 0) {
             const captureBlob = new Blob(encodedChunks, { type: mimeType });
             void captureBlob
@@ -2869,6 +2925,8 @@ async function startServerSpeechTranscription() {
               .then((arrayBuffer) => {
                 queueServerSpeechCaptureUpload(new Uint8Array(arrayBuffer), mimeType, {
                   transcriptRequest,
+                  fallbackAudioBytes: fallbackBytes,
+                  fallbackMimeType: fallbackBytes ? "audio/wav" : undefined,
                 });
               })
               .catch((error) => {
@@ -2878,6 +2936,12 @@ async function startServerSpeechTranscription() {
                   error: String(error),
                 });
               });
+            return;
+          }
+          if (fallbackBytes) {
+            queueServerSpeechCaptureUpload(fallbackBytes, "audio/wav", {
+              transcriptRequest,
+            });
             return;
           }
           clearVoiceTranscriptionPending();
@@ -2950,7 +3014,9 @@ async function startServerSpeechTranscription() {
         serverSpeechRecorderSilenceStartedAt = 0;
         serverSpeechRecorderVoicedFrameCount = serverSpeechRecorderSpeechFrameStreak;
         serverSpeechRecorderBargeInActive = shouldBlockServerSpeechTranscription(now);
-        serverSpeechRecorderPcmChunks = serverSpeechRecorderPrerollChunks.slice();
+        if (!setServerSpeechRecorderPcmChunks(serverSpeechRecorderPrerollChunks.slice())) {
+          return;
+        }
         serverSpeechRecorderPrerollChunks = [];
         serverSpeechRecorderSpeechFrameStreak = 0;
         justActivatedSpeechCapture = true;
@@ -2965,7 +3031,9 @@ async function startServerSpeechTranscription() {
         requestAvatarInterruptForVoiceTranscription("voice-transcription");
       }
       if (pcmBytes.length && !justActivatedSpeechCapture) {
-        serverSpeechRecorderPcmChunks.push(pcmBytes);
+        if (!pushServerSpeechRecorderPcmChunk(pcmBytes)) {
+          return;
+        }
       }
       if (isSpeech) {
         serverSpeechRecorderVoicedFrameCount += justActivatedSpeechCapture ? 0 : 1;

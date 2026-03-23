@@ -10,7 +10,7 @@ You speak (or type) → Avatar transcribes → OpenClaw processes → Avatar spe
 This plugin works with the OpenClaw gateway. It allows you to have a floating FaceTime-style avatar on your screen while you work. 
 ## Features
 - Real-time video avatar 
-- Expressive lip sync and whole body gestures
+- Expressive lip sync and whole-body gestures
 - Voice-to-voice conversations
 - Design your own avatar (just one photo!) 
 - Picture-in-picture experience (have the avatar hangout while you work) 
@@ -166,7 +166,7 @@ Notes:
 ## Usage tips
 
 - The plugin is best used in a Chromium-based browser.
-- If you choose to use the picture-in-picture view for the avatar, **do not close the avatar tab** .
+- If you choose to use the picture-in-picture view for the avatar, **do not close the avatar tab**.
 - Avatar image tips: https://lemonslice.com/docs/avatar-design 
 - Avatar timeout (seconds)- defaults to `60`. This defines how long your avatar will remain in the chat without interaction.
 
