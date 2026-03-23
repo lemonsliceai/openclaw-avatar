@@ -7,6 +7,7 @@ import avatarAgent, {
   GatewayWsClient,
   AVATAR_ASPECT_RATIO_DEFAULT as RUNNER_AVATAR_ASPECT_RATIO_DEFAULT,
   AVATAR_ASPECT_RATIO_LOOKUP,
+  buildLemonSliceAspectRatioPayload,
   computeStreamingTextDelta,
 } from "./avatar-agent-runner.js";
 import {
@@ -217,6 +218,15 @@ describe("avatar aspect ratio constants", () => {
     expect(RUNNER_AVATAR_ASPECT_RATIO_DEFAULT).toBe(
       AVATAR_ASPECT_RATIO_DEFAULT,
     );
+  });
+
+  it("maps aspect ratio into the LemonSlice request payload", () => {
+    expect(buildLemonSliceAspectRatioPayload("9x16")).toEqual({
+      aspect_ratio: "9x16",
+    });
+    expect(buildLemonSliceAspectRatioPayload("invalid")).toEqual({
+      aspect_ratio: AVATAR_ASPECT_RATIO_DEFAULT,
+    });
   });
 });
 

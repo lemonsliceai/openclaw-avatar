@@ -112,6 +112,15 @@ function parseJobMetadata(raw) {
   return { sessionKey, imageUrl, avatarTimeoutSeconds, aspectRatio, interruptReplyOnNewMessage };
 }
 
+export function buildLemonSliceAspectRatioPayload(aspectRatio) {
+  const normalized =
+    typeof aspectRatio === "string" &&
+    AVATAR_ASPECT_RATIO_LOOKUP.has(aspectRatio.trim())
+      ? aspectRatio.trim()
+      : AVATAR_ASPECT_RATIO_DEFAULT;
+  return { aspect_ratio: normalized };
+}
+
 function extractTextFromMessage(message) {
   if (!message || typeof message !== "object") {
     return null;
@@ -1325,10 +1334,14 @@ async function runAvatarAgentEntry(ctx) {
     });
     logRoomSnapshot("after-agent-session-start", ctx.room);
 
+    const aspectRatioPayload = buildLemonSliceAspectRatioPayload(metadata.aspectRatio);
     const avatar = new deps.lemonslice.AvatarSession({
       apiKey: lemonSliceApiKey,
       agentImageUrl: metadata.imageUrl,
       idleTimeout: metadata.avatarTimeoutSeconds,
+      // `extraPayload` on the constructor works with the currently installed
+      // LemonSlice package, while newer upstream versions also accept it on start().
+      extraPayload: aspectRatioPayload,
     });
     console.log("[avatar-agent] starting lemonslice avatar session");
     emitParentDebug("avatar.start.begin", {
@@ -1337,7 +1350,9 @@ async function runAvatarAgentEntry(ctx) {
       outputAudioSink:
         session?.output?.audio?.constructor?.name || typeof session?.output?.audio,
     });
-    await avatar.start(session, ctx.room);
+    await avatar.start(session, ctx.room, {
+      extraPayload: aspectRatioPayload,
+    });
     console.log("[avatar-agent] lemonslice avatar session started");
     emitParentDebug("avatar.start.connected", {
       sessionKey: metadata.sessionKey,

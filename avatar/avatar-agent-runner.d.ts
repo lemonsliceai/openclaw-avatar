@@ -27,4 +27,8 @@ export function computeStreamingTextDelta(
   previousText?: string,
 ): string | null;
 
+export function buildLemonSliceAspectRatioPayload(aspectRatio?: string): {
+  aspect_ratio: (typeof AVATAR_ASPECT_RATIOS)[number];
+};
+
 export default avatarAgent;
