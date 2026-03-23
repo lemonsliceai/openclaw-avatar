@@ -865,6 +865,11 @@ describe("avatar plugin", () => {
     expect(
       infoMessages.some((message) => message.startsWith("[avatar] sidecar.ensure.attempt")),
     ).toBe(true);
+    expect(
+      [...infoMessages, ...loggedMessages(logger.warn), ...loggedMessages(logger.error)].some(
+        (message) => message.startsWith("[avatar-agent]"),
+      ),
+    ).toBe(false);
 
     await service?.stop?.();
   });

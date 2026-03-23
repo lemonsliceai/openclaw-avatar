@@ -531,6 +531,20 @@ function formatLogFields(fields: Record<string, unknown>): string {
     .join(" ");
 }
 
+function normalizeAvatarLogPrefix(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return "[avatar]";
+  }
+  if (/^\[avatar-agent(?=\/|\])/.test(trimmed)) {
+    return trimmed.replace(/^\[avatar-agent(?=\/|\])/, "[avatar");
+  }
+  if (/^\[avatar(?=\/|\])/.test(trimmed)) {
+    return trimmed;
+  }
+  return `[avatar] ${trimmed}`;
+}
+
 function shouldEmitAvatarGatewayMessage(logger: AvatarLogger, message: string): boolean {
   const getVerbose = logger[AVATAR_LOGGER_CONTROL]?.getVerbose;
   if (!getVerbose) {
@@ -4403,12 +4417,12 @@ async function startAvatarAgentSidecar(params: {
     });
     if (stalePids.length > 0) {
       params.log.warn(
-        `[avatar-agent] cleaned up stale sidecar processes before launch: ${stalePids.join(", ")}`,
+        `[avatar] cleaned up stale sidecar processes before launch: ${stalePids.join(", ")}`,
       );
     }
   } catch (error) {
     params.log.warn(
-      `[avatar-agent] failed to clean up stale sidecar processes before launch: ${
+      `[avatar] failed to clean up stale sidecar processes before launch: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
@@ -4500,11 +4514,11 @@ async function startAvatarAgentSidecar(params: {
     childProcessGroupId =
       typeof next.pid === "number" && Number.isInteger(next.pid) && next.pid > 0 ? next.pid : null;
     params.log.info(
-      `[avatar-agent] spawned sidecar process pid=${childProcessGroupId ?? "unknown"} agentName=${params.agentName} command=${activeLaunchCommand.description}`,
+      `[avatar] spawned sidecar process pid=${childProcessGroupId ?? "unknown"} agentName=${params.agentName} command=${activeLaunchCommand.description}`,
     );
     attachLineLogger(
       next.stdout,
-      (message) => params.log.info(`[avatar-agent] ${message}`),
+      (message) => params.log.info(normalizeAvatarLogPrefix(message)),
       observeWorkerLine,
     );
     attachLineLogger(next.stderr, (message) => {
@@ -4515,7 +4529,7 @@ async function startAvatarAgentSidecar(params: {
       ) {
         unsupportedLegacyCommand = true;
       }
-      params.log.warn(`[avatar-agent] ${message}`);
+      params.log.warn(normalizeAvatarLogPrefix(message));
     });
     next.once("exit", (code, signal) => {
       child = null;
@@ -4794,7 +4808,7 @@ const avatarPlugin = {
 
     const observeWorkerRuntimeLine = (message: string): void => {
       const childEventMatch = message.match(
-        /^\[avatar-agent\/job pid=\d+\]\s+([A-Za-z0-9._-]+)(?:\s+(.*))?$/,
+        /^\[(?:avatar|avatar-agent)\/job pid=\d+\]\s+([A-Za-z0-9._-]+)(?:\s+(.*))?$/,
       );
       if (childEventMatch && !childEventMatch[1]?.includes("[")) {
         const [, eventName, rawFields = ""] = childEventMatch;
@@ -4911,7 +4925,7 @@ const avatarPlugin = {
       }
 
       const requestAcceptedMatch = message.match(
-        /^\[avatar-agent\]\s+request func accepted job\s+jobId=([^\s]+)\s+roomName=([^\s]+)\s+/,
+        /^\[(?:avatar|avatar-agent)\]\s+request func accepted job\s+jobId=([^\s]+)\s+roomName=([^\s]+)\s+/,
       );
       if (requestAcceptedMatch) {
         const [, jobId, roomName] = requestAcceptedMatch;
@@ -5068,7 +5082,7 @@ const avatarPlugin = {
 
         const staleSidecar = sidecar;
         if (staleSidecar && !staleSidecar.isRunning()) {
-          gatewayLogger.warn("[avatar-agent] detected stale sidecar state; restarting worker");
+          gatewayLogger.warn("[avatar] detected stale sidecar state; restarting worker");
           await staleSidecar.stop().catch(() => {});
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
             return null;
@@ -5106,7 +5120,7 @@ const avatarPlugin = {
           }
           const message = error instanceof Error ? error.message : String(error);
           gatewayLogger.warn(
-            `[avatar-agent] startup attempt ${attempt}/${AVATAR_SIDECAR_START_MAX_ATTEMPTS} failed: ${message}`,
+            `[avatar] startup attempt ${attempt}/${AVATAR_SIDECAR_START_MAX_ATTEMPTS} failed: ${message}`,
           );
           await activeSidecar.stop().catch(() => {});
           if (!isCurrentSidecarGeneration(attemptGeneration)) {
