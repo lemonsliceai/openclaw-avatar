@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../test-utils/plugin-runtime-mock.ts";
 import { AVATAR_ASPECT_RATIOS } from "./avatar-aspect-ratio.js";
@@ -151,7 +153,10 @@ function parseDispatchMetadata(callIndex: number): Record<string, unknown> {
 
 function setup(
   config: unknown = baseConfig,
-  options: { disableVideoAvatarRuntime?: boolean } = {},
+  options: {
+    disableVideoAvatarRuntime?: boolean;
+    resolvePath?: (input: string) => string;
+  } = {},
 ) {
   const runtime = createPluginRuntimeMock();
   const methods = new Map<string, unknown>();
@@ -189,7 +194,7 @@ function setup(
     registerProvider: () => {},
     registerCli: (command: unknown) => cliCommands.push(command),
     registerCommand: () => {},
-    resolvePath: (input: string) => `/tmp/${input}`,
+    resolvePath: options.resolvePath ?? ((input: string) => `/tmp/${input}`),
     on: () => {},
     description: "test",
     version: "0",
@@ -2286,6 +2291,43 @@ describe("avatar plugin", () => {
         },
       },
     });
+  });
+
+  it("serves the plugin README and package version even when parent paths point at host files", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "avatar-readme-host-"));
+    const fakePluginRoot = path.join(tempRoot, "plugins", "avatar");
+    const fakeHostReadme = path.join(tempRoot, "plugins", "README.md");
+    const fakeHostPackageJson = path.join(tempRoot, "plugins", "package.json");
+
+    await mkdir(fakePluginRoot, { recursive: true });
+    await writeFile(fakeHostReadme, "# OpenClaw Host README\n\nThis should not appear in the plugin UI.\n");
+    await writeFile(
+      fakeHostPackageJson,
+      JSON.stringify({ name: "openclaw-host", version: "2026.3.14" }, null, 2),
+    );
+
+    try {
+      const { httpRoutes } = setup(baseConfig, {
+        resolvePath: (input: string) => path.join(fakePluginRoot, input),
+      });
+      const packageJson = JSON.parse(
+        await readFile(new URL("../package.json", import.meta.url), "utf8"),
+      ) as { version: string };
+
+      const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/avatar/readme", {
+        url: "/plugins/avatar/readme",
+      });
+
+      expect(readmePage.handled).toBe(true);
+      expect(readmePage.res.statusCode).toBe(200);
+      expect(readmePage.res.body).toContain(">Openclaw - Avatar Plugin</h1>");
+      expect(readmePage.res.body).toContain(`>${packageJson.version}</span>`);
+      expect(readmePage.res.body).not.toContain("OpenClaw Host README");
+      expect(readmePage.res.body).not.toContain("This should not appear in the plugin UI.");
+      expect(readmePage.res.body).not.toContain(">2026.3.14</span>");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("bootstraps the configured gateway token for the browser settings page", async () => {

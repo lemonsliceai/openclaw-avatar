@@ -2164,6 +2164,14 @@ function moduleOpenClawPackageJsonCandidates(): string[] {
   ];
 }
 
+function modulePluginManifestCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "..", "openclaw.plugin.json"),
+    path.resolve(moduleDir, "..", "..", "openclaw.plugin.json"),
+  ];
+}
+
 function moduleReadmeCandidates(): string[] {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return [
@@ -2486,10 +2494,64 @@ function registerAvatarHttpRoutes(
 ): void {
   let cachedWebRootPath: string | null | undefined;
   let cachedStylesRootPath: string | null | undefined;
+  let cachedPluginRootPath: string | null | undefined;
   let cachedPackageVersion: string | undefined;
   let cachedHostOpenClawVersion: string | null | undefined;
   let cachedReadmePath: string | null | undefined;
   let cachedAssetsRootPath: string | null | undefined;
+
+  const resolvePluginRootPath = async (): Promise<string> => {
+    if (cachedPluginRootPath !== undefined) {
+      if (!cachedPluginRootPath) {
+        throw new Error("unable to locate plugin root");
+      }
+      return cachedPluginRootPath;
+    }
+
+    const manifestCandidates = [
+      api.resolvePath("openclaw.plugin.json"),
+      api.resolvePath("./openclaw.plugin.json"),
+      api.resolvePath("../openclaw.plugin.json"),
+      ...modulePluginManifestCandidates(),
+    ];
+    const seen = new Set<string>();
+
+    for (const candidate of manifestCandidates) {
+      const normalized = candidate.trim();
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      try {
+        const entry = await stat(normalized);
+        if (!entry.isFile()) {
+          continue;
+        }
+        const manifest = JSON.parse(await readFile(normalized, "utf8")) as { id?: unknown };
+        if (manifest.id === api.id) {
+          cachedPluginRootPath = path.dirname(normalized);
+          return cachedPluginRootPath;
+        }
+      } catch {
+        // Keep scanning fallback manifests.
+      }
+    }
+
+    const packageJsonPath = await resolveExistingFile(modulePackageJsonCandidates());
+    if (packageJsonPath) {
+      cachedPluginRootPath = path.dirname(packageJsonPath);
+      return cachedPluginRootPath;
+    }
+
+    const readmePath = await resolveExistingFile(moduleReadmeCandidates());
+    if (readmePath) {
+      cachedPluginRootPath = path.dirname(readmePath);
+      return cachedPluginRootPath;
+    }
+
+    cachedPluginRootPath = null;
+    throw new Error("unable to locate plugin root");
+  };
 
   const resolveWebRootPath = async (): Promise<string> => {
     if (cachedWebRootPath !== undefined) {
@@ -2536,12 +2598,17 @@ function registerAvatarHttpRoutes(
     if (cachedPackageVersion !== undefined) {
       return cachedPackageVersion;
     }
-    const packageJsonPath = await resolveExistingFile([
-      api.resolvePath("package.json"),
-      api.resolvePath("./package.json"),
-      api.resolvePath("../package.json"),
-      ...modulePackageJsonCandidates(),
-    ]);
+    let packageJsonPath: string | null = null;
+    try {
+      const pluginRootPath = await resolvePluginRootPath();
+      packageJsonPath = await resolveExistingFile([path.join(pluginRootPath, "package.json")]);
+    } catch {
+      packageJsonPath = await resolveExistingFile([
+        api.resolvePath("package.json"),
+        api.resolvePath("./package.json"),
+        ...modulePackageJsonCandidates(),
+      ]);
+    }
     if (!packageJsonPath) {
       cachedPackageVersion = "unknown";
       return cachedPackageVersion;
@@ -2653,12 +2720,17 @@ function registerAvatarHttpRoutes(
       }
       return cachedReadmePath;
     }
-    const readmePath = await resolveExistingFile([
-      api.resolvePath("README.md"),
-      api.resolvePath("./README.md"),
-      api.resolvePath("../README.md"),
-      ...moduleReadmeCandidates(),
-    ]);
+    let readmePath: string | null = null;
+    try {
+      const pluginRootPath = await resolvePluginRootPath();
+      readmePath = await resolveExistingFile([path.join(pluginRootPath, "README.md")]);
+    } catch {
+      readmePath = await resolveExistingFile([
+        api.resolvePath("README.md"),
+        api.resolvePath("./README.md"),
+        ...moduleReadmeCandidates(),
+      ]);
+    }
     cachedReadmePath = readmePath;
     if (!readmePath) {
       throw new Error("unable to locate plugin README");

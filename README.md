@@ -1,8 +1,21 @@
 # Openclaw - Avatar Plugin
 
-Give your Openclaw agents a face! Avatar enables a real time video avatar for any of your Openclaw agents. Now you can speak directly with your agent and bring them anywhere on your desktop!
+Give your OpenClaw agent a face! The Avatar Plugin allows you to have a real-time, interactive video call with your agent. 
+The avatar listens to you, sends your speech to your OpenClaw agent, and speaks the response back with lip-synced video. It’s like FaceTime.  
 
-Avatar is an OpenClaw plugin that integrates LemonSlice and LiveKit to deliver a real-time avatar experience with plugin-managed setup, browser session controls, text chat, and avatar speech routed through OpenClaw's shared speech/media runtime.
+Design your OpenClaw’s face to match its personality. Unlimited avatar options. Powered by LemonSlice, real-time AI avatar technology. 
+
+
+## How it Works
+You speak (or type) → Avatar transcribes → OpenClaw processes → Avatar speaks response
+This plugin works with the OpenClaw gateway. It allows you to have a floating FaceTime-style avatar on your screen while you work. 
+## Features
+- Real-time video avatar 
+- Expressive lip sync and whole body gestures
+- Voice-to-voice conversations
+- Design your own avatar (just one photo!) 
+- Picture-in-picture experience (have the avatar hangout while you work) 
+
 
 <div>
   <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
