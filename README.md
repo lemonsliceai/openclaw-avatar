@@ -63,15 +63,15 @@ You will also need API keys with the following service providers:
 Install from ClawHub:
 
 ```bash
-openclaw plugins install clawhub:@lemonslice/avatar
-openclaw plugins enable avatar
+openclaw plugins install clawhub:@lemonsliceai/openclaw-avatar
+openclaw plugins enable openclaw-avatar
 ```
 
 Or install directly from npm:
 
 ```bash
-openclaw plugins install @lemonslice/avatar@latest
-openclaw plugins enable avatar
+openclaw plugins install @lemonsliceai/openclaw-avatar@latest
+openclaw plugins enable openclaw-avatar
 ```
 
 2. Allow the Avatar plugin:
@@ -81,7 +81,7 @@ openclaw plugins enable avatar
 "plugins": {
     ...
     "allow": [
-      "avatar"],
+      "openclaw-avatar"],
     ...
 }
 ```
@@ -92,7 +92,7 @@ http://127.0.0.1:18789/automation
 3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Avatar:
 
 ```bash
-openclaw avatar-setup
+openclaw openclaw-avatar-setup
 ```
 
 4. Restart the OpenClaw gateway:
@@ -104,7 +104,7 @@ openclaw gateway run --force
 5. Open the session UI for OpenClaw Avatar Chat:
 
 ```text
-http://127.0.0.1:18789/plugins/avatar/
+http://127.0.0.1:18789/plugins/openclaw-avatar/
 ```
 
 6. Paste a public avatar image URL, leave the session key as `main` unless you already use a different OpenClaw session, and start the session.
@@ -119,7 +119,7 @@ In `openclaw.json`
   "plugins": {
     ...
     "entries": {
-      "avatar": {
+      "openclaw-avatar": {
         "config": {
           "avatar": {
             "provider": "lemonslice",
@@ -161,7 +161,7 @@ Notes:
 
 - `npm run validate` runs typecheck, tests, and a dry-run package build.
 - `clawhub package publish` uploads the package artifact and links it to the exact GitHub commit used for the release.
-- For broad compatibility, you can continue publishing the same version to npm as `@lemonslice/avatar`.
+- Publish the same version to npm as `@lemonsliceai/openclaw-avatar`.
 
 <a id="usage-tips"></a>
 ## Usage tips
@@ -177,7 +177,7 @@ Notes:
 The plugin can be updated to the latest version using:
 
 ```bash
-openclaw plugins update avatar  
+openclaw plugins update openclaw-avatar  
 ```
 
 <a id="license"></a>

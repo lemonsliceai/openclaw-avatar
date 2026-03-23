@@ -33,7 +33,7 @@ function setupIntegrationPlugin(config: unknown) {
   vi.mocked(runtime.config.loadConfig).mockReturnValue(config as never);
 
   plugin.register({
-    id: "avatar",
+    id: "openclaw-avatar",
     name: "Avatar",
     source: "integration-test",
     config,

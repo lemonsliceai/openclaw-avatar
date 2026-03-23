@@ -1,5 +1,5 @@
 {
-  "name": "@lemonslice/avatar",
+  "name": "@lemonsliceai/openclaw-avatar",
   "version": "0.1.36",
   "description": "OpenClaw Avatar plugin",
   "license": "MIT",
@@ -15,6 +15,9 @@
   "homepage": "https://github.com/lemonsliceai/videoChatPlugin#readme",
   "bugs": {
     "url": "https://github.com/lemonsliceai/videoChatPlugin/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "keywords": [
     "openclaw",

@@ -37,7 +37,12 @@ const AVATAR_ROOM_PART_FALLBACK = "main";
 const AVATAR_ROOM_PART_MAX_LENGTH = 48;
 const AVATAR_AGENT_NAME = "openclaw-avatar";
 const AVATAR_SIDECAR_AGENT_NAME_ENV = "OPENCLAW_AVATAR_AGENT_NAME";
-const AVATAR_PLUGIN_ID = "avatar";
+const AVATAR_PLUGIN_ID = "openclaw-avatar";
+const LEGACY_AVATAR_PLUGIN_ID = "avatar";
+const AVATAR_PLUGIN_ROUTE_BASE = `/plugins/${AVATAR_PLUGIN_ID}`;
+const LEGACY_AVATAR_PLUGIN_ROUTE_BASE = `/plugins/${LEGACY_AVATAR_PLUGIN_ID}`;
+const AVATAR_SETUP_COMMAND = "openclaw-avatar-setup";
+const LEGACY_AVATAR_SETUP_COMMAND = "avatar-setup";
 const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.22";
 const AVATAR_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-avatar-instance=";
 const AVATAR_SIDECAR_RESET_SETTLE_MS = 1_000;
@@ -937,7 +942,16 @@ function sanitizeAvatarConfigValue(
 function readAvatarPluginConfig(config: OpenClawConfig): Record<string, unknown> | null {
   const plugins = asObjectRecord(config.plugins);
   const entries = asObjectRecord(plugins.entries);
-  const pluginEntry = asObjectRecord(entries[AVATAR_PLUGIN_ID]);
+  const primaryEntry = entries[AVATAR_PLUGIN_ID];
+  const legacyEntry = entries[LEGACY_AVATAR_PLUGIN_ID];
+  const pluginEntry = isObjectRecord(primaryEntry)
+    ? primaryEntry
+    : isObjectRecord(legacyEntry)
+      ? legacyEntry
+      : null;
+  if (!pluginEntry) {
+    return null;
+  }
   const pluginConfig = pluginEntry.config;
   return isObjectRecord(pluginConfig) ? pluginConfig : null;
 }
@@ -947,7 +961,7 @@ function resolveEffectiveAvatarConfig(config: OpenClawConfig): OpenClawConfig {
   if (!pluginConfig) {
     return config;
   }
-  // Plugin-owned setup is persisted under plugins.entries.avatar.config, but Avatar only
+  // Plugin-owned setup is persisted under plugins.entries.<plugin-id>.config, but Avatar only
   // owns the avatar branch now. Shared speech/media config must come from the gateway root.
   const effective: OpenClawConfig = { ...config };
   const sanitizedPluginAvatar = sanitizeAvatarConfigValue(pluginConfig.avatar);
@@ -1830,7 +1844,13 @@ function applyAvatarSetupToConfig(
 
   const plugins = asObjectRecord(config.plugins);
   const entries = asObjectRecord(plugins.entries);
-  const pluginEntry = asObjectRecord(entries[AVATAR_PLUGIN_ID]);
+  const { [LEGACY_AVATAR_PLUGIN_ID]: legacyPluginEntryValue, ...entriesWithoutLegacy } = entries;
+  const primaryEntry = entries[AVATAR_PLUGIN_ID];
+  const pluginEntry = isObjectRecord(primaryEntry)
+    ? primaryEntry
+    : isObjectRecord(legacyPluginEntryValue)
+      ? legacyPluginEntryValue
+      : {};
   const existingPluginConfig = asObjectRecord(pluginEntry.config);
 
   const avatarRecord = asObjectRecord(sanitizeAvatarConfigValue(effective.avatar));
@@ -1856,7 +1876,7 @@ function applyAvatarSetupToConfig(
     plugins: {
       ...plugins,
       entries: {
-        ...entries,
+        ...entriesWithoutLegacy,
         [AVATAR_PLUGIN_ID]: {
           ...pluginEntry,
           config: {
@@ -2154,7 +2174,8 @@ async function runAvatarSetupCli(api: OpenClawPluginApi, options: unknown): Prom
 function registerAvatarSetupCli(api: OpenClawPluginApi): void {
   api.registerCli(({ program }: { program: any }) => {
       program
-        .command("avatar-setup")
+        .command(AVATAR_SETUP_COMMAND)
+        .alias(LEGACY_AVATAR_SETUP_COMMAND)
         .description("Configure OpenClaw gateway auth and Avatar provider credentials")
         .option("--gateway-token <token>", "OpenClaw gateway token")
         .option("--lemonslice-api-key <key>", "LemonSlice API key")
@@ -2164,7 +2185,7 @@ function registerAvatarSetupCli(api: OpenClawPluginApi): void {
         .action(async (options: unknown) => {
           await runAvatarSetupCli(api, options);
         });
-    }, { commands: ["avatar-setup"] });
+    }, { commands: [AVATAR_SETUP_COMMAND, LEGACY_AVATAR_SETUP_COMMAND] });
 }
 
 async function readRequestBody(request: IncomingMessage): Promise<string> {
@@ -2390,12 +2411,23 @@ function resolveReadmeHref(target: string): string {
     return trimmed;
   }
   if (trimmed === "README.md" || trimmed === "./README.md") {
-    return "/plugins/avatar/readme";
+    return `${AVATAR_PLUGIN_ROUTE_BASE}/readme`;
   }
   if (trimmed.startsWith("assets/")) {
-    return `/plugins/avatar/assets/${encodePathSegments(trimmed.slice("assets/".length))}`;
+    return `${AVATAR_PLUGIN_ROUTE_BASE}/assets/${encodePathSegments(trimmed.slice("assets/".length))}`;
   }
   return trimmed;
+}
+
+function normalizeAvatarPluginRequestPath(pathname: string, fallbackPath: string): string {
+  const normalized = pathname.replace(/\/+$/, "") || fallbackPath;
+  if (
+    normalized === LEGACY_AVATAR_PLUGIN_ROUTE_BASE ||
+    normalized.startsWith(`${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/`)
+  ) {
+    return `${AVATAR_PLUGIN_ROUTE_BASE}${normalized.slice(LEGACY_AVATAR_PLUGIN_ROUTE_BASE.length)}`;
+  }
+  return normalized;
 }
 
 function renderMarkdownInline(value: string): string {
@@ -3040,24 +3072,23 @@ function registerAvatarHttpRoutes(
     };
   };
 
-  api.registerHttpRoute({
-    path: "/plugins/avatar/api",
-    auth: "gateway",
-    match: "prefix",
-    handler: async (req: IncomingMessage, res: ServerResponse) => {
+  const apiHandler = async (req: IncomingMessage, res: ServerResponse) => {
       const pathname = parseRequestPathname(req.url);
       if (!pathname) {
         return false;
       }
-      const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/avatar/api";
-      if (!normalizedPath.startsWith("/plugins/avatar/api")) {
+      const normalizedPath = normalizeAvatarPluginRequestPath(
+        pathname,
+        `${AVATAR_PLUGIN_ROUTE_BASE}/api`,
+      );
+      if (!normalizedPath.startsWith(`${AVATAR_PLUGIN_ROUTE_BASE}/api`)) {
         return false;
       }
 
       const method = (req.method ?? "GET").toUpperCase();
 
       try {
-        if (normalizedPath === "/plugins/avatar/api/setup") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/setup`) {
           if (method === "GET") {
             const cfg = api.runtime.config.loadConfig();
             sendHttpResponse(
@@ -3104,7 +3135,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/session") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session`) {
           if (method === "POST") {
             const params = await readRequestJson(req);
             if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
@@ -3189,7 +3220,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/session/status" && method === "GET") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session/status` && method === "GET") {
           const requestUrl = parseRequestUrl(req.url);
           const roomName = normalizeOptionalString(requestUrl?.searchParams.get("roomName"));
           if (!roomName) {
@@ -3214,7 +3245,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/session/stop" && method === "POST") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session/stop` && method === "POST") {
           const params = await readRequestJson(req);
           if (typeof params.roomName !== "string") {
             throw new Error("invalid avatar.session.stop params");
@@ -3238,7 +3269,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/sidecar/restart" && method === "POST") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/sidecar/restart` && method === "POST") {
           const cfg = api.runtime.config.loadConfig();
           logAvatarEvent(logger, "info", "http.sidecar.restart.requested");
           const result = await handlers.restartSidecar({
@@ -3258,7 +3289,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/sidecar/stop" && method === "POST") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/sidecar/stop` && method === "POST") {
           logAvatarEvent(logger, "info", "http.sidecar.stop.requested");
           const result = await handlers.stopSidecar({
             reason: "http-sidecar-stop",
@@ -3276,7 +3307,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/chat/history" && method === "POST") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/chat/history` && method === "POST") {
           const params = await readChatHistoryParams(req);
           logAvatarEvent(logger, "info", "http.chat.history.requested", {
             sessionKey: params.sessionKey,
@@ -3297,7 +3328,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/chat/send" && method === "POST") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/chat/send` && method === "POST") {
           const params = await readChatSendParams(req);
           logAvatarEvent(logger, "info", "http.chat.send.requested", {
             sessionKey: params.sessionKey,
@@ -3322,7 +3353,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/transcribe" && method === "POST") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/transcribe` && method === "POST") {
           const params = await readRequestJson(req);
           if (typeof params.data !== "string") {
             throw new Error("invalid avatar.audio.transcribe params");
@@ -3384,7 +3415,7 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
-        if (normalizedPath === "/plugins/avatar/api/synthesize" && method === "POST") {
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/synthesize` && method === "POST") {
           const params = await readRequestJson(req);
           if (typeof params.text !== "string") {
             throw new Error("invalid avatar.audio.synthesize params");
@@ -3439,19 +3470,30 @@ function registerAvatarHttpRoutes(
         );
         return true;
       }
-    },
-  });
+    };
+
+  for (const routePath of [
+    `${AVATAR_PLUGIN_ROUTE_BASE}/api`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/api`,
+  ]) {
+    api.registerHttpRoute({
+      path: routePath,
+      auth: "gateway",
+      match: "prefix",
+      handler: apiHandler,
+    });
+  }
 
   const uiHandler = async (req: IncomingMessage, res: ServerResponse) => {
     const pathname = parseRequestPathname(req.url);
     if (!pathname) {
       return false;
     }
-    const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/avatar";
+    const normalizedPath = normalizeAvatarPluginRequestPath(pathname, AVATAR_PLUGIN_ROUTE_BASE);
     try {
-      if (normalizedPath.startsWith("/plugins/avatar/assets/")) {
+      if (normalizedPath.startsWith(`${AVATAR_PLUGIN_ROUTE_BASE}/assets/`)) {
         const assetPath = decodeURIComponent(
-          normalizedPath.slice("/plugins/avatar/assets/".length),
+          normalizedPath.slice(`${AVATAR_PLUGIN_ROUTE_BASE}/assets/`.length),
         );
         const asset = await readAssetBuffer(assetPath);
         sendHttpResponse(
@@ -3464,15 +3506,15 @@ function registerAvatarHttpRoutes(
         );
         return true;
       }
-      if (normalizedPath.startsWith("/plugins/avatar/styles/")) {
+      if (normalizedPath.startsWith(`${AVATAR_PLUGIN_ROUTE_BASE}/styles/`)) {
         const assetPath = decodeURIComponent(
-          normalizedPath.slice("/plugins/avatar/styles/".length),
+          normalizedPath.slice(`${AVATAR_PLUGIN_ROUTE_BASE}/styles/`.length),
         );
         const css = await readStyleAsset(assetPath);
         sendHttpResponse(res, asTextResponse(css, "text/css; charset=utf-8"));
         return true;
       }
-      if (normalizedPath === "/plugins/avatar") {
+      if (normalizedPath === AVATAR_PLUGIN_ROUTE_BASE) {
         const html = await readRenderedHtmlAsset("index.html");
         sendHttpResponse(
           res,
@@ -3480,7 +3522,7 @@ function registerAvatarHttpRoutes(
         );
         return true;
       }
-      if (normalizedPath === "/plugins/avatar/readme") {
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/readme`) {
         const html = await readRenderedReadmePage();
         sendHttpResponse(
           res,
@@ -3489,8 +3531,8 @@ function registerAvatarHttpRoutes(
         return true;
       }
       if (
-        normalizedPath === "/plugins/avatar/settings" ||
-        normalizedPath === "/plugins/avatar/config"
+        normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/settings` ||
+        normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/config`
       ) {
         const html = await readRenderedHtmlAsset("settings.html");
         sendHttpResponse(
@@ -3499,7 +3541,7 @@ function registerAvatarHttpRoutes(
         );
         return true;
       }
-      if (normalizedPath === "/plugins/avatar/app.js") {
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/app.js`) {
         const script = await readWebAsset("app.js");
         sendHttpResponse(
           res,
@@ -3507,7 +3549,7 @@ function registerAvatarHttpRoutes(
         );
         return true;
       }
-      if (normalizedPath === "/plugins/avatar/avatar-aspect-ratio.js") {
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/avatar-aspect-ratio.js`) {
         const script = await readFile(new URL("./avatar-aspect-ratio.js", import.meta.url), "utf8");
         sendHttpResponse(
           res,
@@ -3537,45 +3579,34 @@ function registerAvatarHttpRoutes(
     }
   };
 
-  api.registerHttpRoute({
-    path: "/plugins/avatar",
-    auth: "plugin",
-    match: "exact",
-    handler: uiHandler,
-  });
+  for (const routePath of [
+    AVATAR_PLUGIN_ROUTE_BASE,
+    `${AVATAR_PLUGIN_ROUTE_BASE}/config`,
+    `${AVATAR_PLUGIN_ROUTE_BASE}/readme`,
+    `${AVATAR_PLUGIN_ROUTE_BASE}/settings`,
+    LEGACY_AVATAR_PLUGIN_ROUTE_BASE,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/config`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/readme`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/settings`,
+  ]) {
+    api.registerHttpRoute({
+      path: routePath,
+      auth: "plugin",
+      match: "exact",
+      handler: uiHandler,
+    });
+  }
 
-  api.registerHttpRoute({
-    path: "/plugins/avatar/config",
-    auth: "plugin",
-    match: "exact",
-    handler: uiHandler,
-  });
-
-  api.registerHttpRoute({
-    path: "/plugins/avatar/readme",
-    auth: "plugin",
-    match: "exact",
-    handler: uiHandler,
-  });
-
-  api.registerHttpRoute({
-    path: "/plugins/avatar/settings",
-    auth: "plugin",
-    match: "exact",
-    handler: uiHandler,
-  });
-
-  api.registerHttpRoute({
-    path: "/plugins/avatar/bootstrap",
-    auth: "plugin",
-    match: "exact",
-    handler: async (req: IncomingMessage, res: ServerResponse) => {
+  const bootstrapHandler = async (req: IncomingMessage, res: ServerResponse) => {
       const pathname = parseRequestPathname(req.url);
       if (!pathname) {
         return false;
       }
-      const normalizedPath = pathname.replace(/\/+$/, "") || "/plugins/avatar/bootstrap";
-      if (normalizedPath !== "/plugins/avatar/bootstrap") {
+      const normalizedPath = normalizeAvatarPluginRequestPath(
+        pathname,
+        `${AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`,
+      );
+      if (normalizedPath !== `${AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`) {
         return false;
       }
       setNoStoreHeaders(res);
@@ -3598,36 +3629,47 @@ function registerAvatarHttpRoutes(
         );
         return true;
       }
-    },
-  });
+    };
 
-  api.registerHttpRoute({
-    path: "/plugins/avatar/app.js",
-    auth: "plugin",
-    match: "exact",
-    handler: uiHandler,
-  });
+  for (const routePath of [
+    `${AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`,
+  ]) {
+    api.registerHttpRoute({
+      path: routePath,
+      auth: "plugin",
+      match: "exact",
+      handler: bootstrapHandler,
+    });
+  }
 
-  api.registerHttpRoute({
-    path: "/plugins/avatar/avatar-aspect-ratio.js",
-    auth: "plugin",
-    match: "exact",
-    handler: uiHandler,
-  });
+  for (const routePath of [
+    `${AVATAR_PLUGIN_ROUTE_BASE}/app.js`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/app.js`,
+    `${AVATAR_PLUGIN_ROUTE_BASE}/avatar-aspect-ratio.js`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/avatar-aspect-ratio.js`,
+  ]) {
+    api.registerHttpRoute({
+      path: routePath,
+      auth: "plugin",
+      match: "exact",
+      handler: uiHandler,
+    });
+  }
 
-  api.registerHttpRoute({
-    path: "/plugins/avatar/assets",
-    auth: "plugin",
-    match: "prefix",
-    handler: uiHandler,
-  });
-
-  api.registerHttpRoute({
-    path: "/plugins/avatar/styles",
-    auth: "plugin",
-    match: "prefix",
-    handler: uiHandler,
-  });
+  for (const routePath of [
+    `${AVATAR_PLUGIN_ROUTE_BASE}/assets`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/assets`,
+    `${AVATAR_PLUGIN_ROUTE_BASE}/styles`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/styles`,
+  ]) {
+    api.registerHttpRoute({
+      path: routePath,
+      auth: "plugin",
+      match: "prefix",
+      handler: uiHandler,
+    });
+  }
 }
 
 type SidecarLaunchCommand = {

@@ -660,7 +660,7 @@ function parseGatewayHttpErrorMessage(status, rawBody) {
 }
 
 async function requestGatewaySpeechSynthesis(text) {
-  const response = await fetch(buildGatewayHttpUrl("/plugins/avatar/api/synthesize"), {
+  const response = await fetch(buildGatewayHttpUrl("/plugins/openclaw-avatar/api/synthesize"), {
     method: "POST",
     headers: {
       "content-type": "application/json",

@@ -1,5 +1,5 @@
 {
-  "id": "avatar",
+  "id": "openclaw-avatar",
   "name": "Avatar",
   "description": "Avatar gateway methods and sidecar worker",
   "version": "0.1.36",

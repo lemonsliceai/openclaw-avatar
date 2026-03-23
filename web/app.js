@@ -85,6 +85,7 @@ const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "avatar.avatarAutoStartInPictureInP
 const SESSION_IMAGE_URL_STORAGE_KEY = "avatar.sessionImageUrl";
 const SESSION_ASPECT_RATIO_STORAGE_KEY = "avatar.sessionAspectRatio";
 const SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY = "avatar.sessionAvatarTimeoutSeconds";
+const AVATAR_PLUGIN_BASE_PATH = "/plugins/openclaw-avatar";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -1905,7 +1906,7 @@ function hydrateOpenClawCompatibility(payload) {
 }
 
 async function requestBrowserBootstrapPayload() {
-  const response = await fetch("/plugins/avatar/bootstrap");
+  const response = await fetch(`${AVATAR_PLUGIN_BASE_PATH}/bootstrap`);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     throw new Error("Failed to load browser bootstrap payload.");
@@ -2032,7 +2033,7 @@ async function submitVoiceTranscript(rawTranscript) {
     setAvatarMutedForPendingChatReply(true);
     await requestAvatarInterrupt("voice-transcript");
     const liveUpdatesReady = await primeGatewaySocketForChat();
-    const payload = await requestJson("/plugins/avatar/api/chat/send", {
+    const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/chat/send`, {
       method: "POST",
       body: JSON.stringify({
         sessionKey,
@@ -2422,7 +2423,7 @@ function buildServerSpeechFallbackWavBytes() {
 async function requestServerSpeechTranscript(audioBytes, mimeType) {
   const base64Data = base64EncodeBytes(audioBytes);
   const sessionKey = resolveChatSessionKey();
-  const payload = await requestJson("/plugins/avatar/api/transcribe", {
+  const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/transcribe`, {
     method: "POST",
     body: JSON.stringify({
       data: base64Data,
@@ -7231,7 +7232,7 @@ async function loadChatHistory() {
   if (!sessionKey) {
     return;
   }
-  const history = await requestJson("/plugins/avatar/api/chat/history", {
+  const history = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/chat/history`, {
     method: "POST",
     body: JSON.stringify({
       sessionKey,
@@ -7317,7 +7318,7 @@ function historyHasAssistantReplyAfterIdempotencyKey(messages, idempotencyKey) {
 
 async function refreshChatHistoryAfterDisconnectedSend(sessionKey, idempotencyKey) {
   try {
-    const history = await requestJson("/plugins/avatar/api/chat/history", {
+    const history = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/chat/history`, {
       method: "POST",
       body: JSON.stringify({
         sessionKey,
@@ -7368,7 +7369,7 @@ async function backfillAssistantMessageMetadataFromHistory(params = {}) {
     return;
   }
 
-  const history = await requestJson("/plugins/avatar/api/chat/history", {
+  const history = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/chat/history`, {
     method: "POST",
     body: JSON.stringify({
       sessionKey,
@@ -7676,7 +7677,7 @@ async function fetchAvatarSessionStatus(roomName, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : AVATAR_STATUS_REQUEST_TIMEOUT_MS;
   try {
     const payload = await requestJsonWithTimeout(
-      `/plugins/avatar/api/session/status?roomName=${encodeURIComponent(roomName.trim())}`,
+      `${AVATAR_PLUGIN_BASE_PATH}/api/session/status?roomName=${encodeURIComponent(roomName.trim())}`,
       {},
       timeoutMs,
     );
@@ -7781,7 +7782,7 @@ async function waitForAvatarParticipant(room, options = {}) {
 }
 
 async function restartAvatarSidecar() {
-  const payload = await requestJson("/plugins/avatar/api/sidecar/restart", {
+  const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/sidecar/restart`, {
     method: "POST",
     body: JSON.stringify({}),
   });
@@ -7798,7 +7799,7 @@ async function restartAvatarSidecar() {
 }
 
 async function stopAvatarSidecar() {
-  const payload = await requestJson("/plugins/avatar/api/sidecar/stop", {
+  const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/sidecar/stop`, {
     method: "POST",
     body: JSON.stringify({}),
   });
@@ -8235,7 +8236,7 @@ async function reconnectAvatarSession(options = {}) {
     disconnectRoom({
       keepDocumentPictureInPicture,
     });
-    await requestJson("/plugins/avatar/api/session/stop", {
+    await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/session/stop`, {
       method: "POST",
       body: JSON.stringify({
         roomName: priorRoomName,
@@ -8245,7 +8246,7 @@ async function reconnectAvatarSession(options = {}) {
       setAvatarLoadingState(true, "Restarting Avatar worker...");
       await restartAvatarSidecar();
     }
-    const payload = await requestJson("/plugins/avatar/api/session", {
+    const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/session`, {
       method: "POST",
       body: JSON.stringify(
         buildSessionCreatePayload(priorSessionKey, {
@@ -8323,7 +8324,7 @@ async function stopActiveSession() {
     sessionOutput = { action: "session-stopped" };
   } else {
     try {
-      await requestJson("/plugins/avatar/api/session/stop", {
+      await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/session/stop`, {
         method: "POST",
         body: JSON.stringify({ roomName: session.roomName }),
       });
@@ -8429,7 +8430,7 @@ function syncSetupEditorsFromCurrentForm() {
 }
 
 async function saveSetupPayload(body) {
-  const payload = await requestJson("/plugins/avatar/api/setup", {
+  const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/setup`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -8465,7 +8466,7 @@ async function refreshSetupStatus() {
   setKeysHealthStatus("warn", "Checking");
   try {
     const [payload] = await Promise.all([
-      requestJson("/plugins/avatar/api/setup"),
+      requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/setup`),
       refreshOpenClawCompatibility(),
     ]);
     clearAllSetupSectionErrors();
@@ -8667,7 +8668,7 @@ if (sessionForm) {
       await validateSessionImageUrl(avatarImageUrl);
       setAvatarLoadingState(true, "Restarting Avatar worker...");
       await restartAvatarSidecar();
-      const payload = await requestJson("/plugins/avatar/api/session", {
+      const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/session`, {
         method: "POST",
         body: JSON.stringify(
           buildSessionCreatePayload(sessionKey, {
@@ -8883,7 +8884,7 @@ async function submitChatMessage(rawMessage, options = {}) {
   try {
     await requestAvatarInterrupt("chat-send");
     const liveUpdatesReady = await primeGatewaySocketForChat();
-    const payload = await requestJson("/plugins/avatar/api/chat/send", {
+    const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/chat/send`, {
       method: "POST",
       body: JSON.stringify({
         sessionKey,

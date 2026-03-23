@@ -129,6 +129,10 @@ const baseConfig = {
 };
 
 const DEFAULT_GATEWAY_PORT = 1;
+const PLUGIN_ID = "openclaw-avatar";
+const LEGACY_PLUGIN_ID = "avatar";
+const PLUGIN_ROUTE_BASE = `/plugins/${PLUGIN_ID}`;
+const LEGACY_PLUGIN_ROUTE_BASE = `/plugins/${LEGACY_PLUGIN_ID}`;
 const SIDE_CAR_INSTANCE_ARG = `--openclaw-avatar-instance=gateway-port-${DEFAULT_GATEWAY_PORT}`;
 const SERVICE_GATEWAY_INSTANCE_ARG = "--openclaw-avatar-instance=gateway-port-4321";
 const DEFAULT_TEST_AVATAR_IMAGE_URL = "https://example.com/avatar.png";
@@ -179,7 +183,7 @@ function setup(
   });
 
   plugin.register({
-    id: "avatar",
+    id: PLUGIN_ID,
     name: "Avatar",
     source: "test",
     config,
@@ -397,56 +401,76 @@ describe("avatar plugin", () => {
     expect(methods.has("avatar.session.stop")).toBe(true);
     expect(methods.has("avatar.audio.transcribe")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(10);
+    expect(httpRoutes).toHaveLength(20);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          path: "/plugins/avatar/api",
+          path: `${PLUGIN_ROUTE_BASE}/api`,
           auth: "gateway",
           match: "prefix",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar",
+          path: `${LEGACY_PLUGIN_ROUTE_BASE}/api`,
+          auth: "gateway",
+          match: "prefix",
+        }),
+        expect.objectContaining({
+          path: PLUGIN_ROUTE_BASE,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar/config",
+          path: `${PLUGIN_ROUTE_BASE}/config`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar/readme",
+          path: `${PLUGIN_ROUTE_BASE}/readme`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar/settings",
+          path: `${PLUGIN_ROUTE_BASE}/settings`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar/bootstrap",
+          path: `${PLUGIN_ROUTE_BASE}/bootstrap`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar/app.js",
+          path: `${PLUGIN_ROUTE_BASE}/app.js`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar/avatar-aspect-ratio.js",
+          path: `${PLUGIN_ROUTE_BASE}/avatar-aspect-ratio.js`,
           auth: "plugin",
           match: "exact",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar/assets",
+          path: `${PLUGIN_ROUTE_BASE}/assets`,
           auth: "plugin",
           match: "prefix",
         }),
         expect.objectContaining({
-          path: "/plugins/avatar/styles",
+          path: `${PLUGIN_ROUTE_BASE}/styles`,
+          auth: "plugin",
+          match: "prefix",
+        }),
+        expect.objectContaining({
+          path: LEGACY_PLUGIN_ROUTE_BASE,
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: `${LEGACY_PLUGIN_ROUTE_BASE}/bootstrap`,
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: `${LEGACY_PLUGIN_ROUTE_BASE}/styles`,
           auth: "plugin",
           match: "prefix",
         }),
@@ -462,8 +486,13 @@ describe("avatar plugin", () => {
       | ((ctx: { program: unknown }) => void)
       | undefined;
     const optionFlags: string[] = [];
+    const aliases: string[] = [];
     let actionHandler: unknown;
     const commandApi = {
+      alias(name: string) {
+        aliases.push(name);
+        return commandApi;
+      },
       description(description: string) {
         expect(description).toContain("gateway auth");
         return commandApi;
@@ -481,14 +510,17 @@ describe("avatar plugin", () => {
     registerCli?.({
       program: {
         command(name: string) {
-          expect(name).toBe("avatar-setup");
+          expect(name).toBe("openclaw-avatar-setup");
           return commandApi;
         },
       },
     });
 
     expect(optionFlags[0]).toBe("--gateway-token <token>");
-    expect(cliRegistration?.metadata).toEqual({ commands: ["avatar-setup"] });
+    expect(aliases).toEqual(["avatar-setup"]);
+    expect(cliRegistration?.metadata).toEqual({
+      commands: ["openclaw-avatar-setup", "avatar-setup"],
+    });
     expect(actionHandler).toBeTypeOf("function");
   });
 
@@ -890,7 +922,7 @@ describe("avatar plugin", () => {
       ...baseConfig,
       plugins: {
         entries: {
-          "avatar": {
+          [LEGACY_PLUGIN_ID]: {
             config: {
               avatar: {
                 ...baseConfig.avatar,
@@ -941,7 +973,7 @@ describe("avatar plugin", () => {
       tools: baseConfig.tools,
       plugins: {
         entries: {
-          "avatar": {
+          [LEGACY_PLUGIN_ID]: {
             config: {
               avatar: baseConfig.avatar,
             },
@@ -2069,7 +2101,7 @@ describe("avatar plugin", () => {
       | {
           plugins?: {
             entries?: {
-              "avatar"?: {
+              "openclaw-avatar"?: {
                 config?: {
                   avatar?: {
                     lemonSlice?: { apiKey?: string; imageUrl?: string };
@@ -2081,7 +2113,7 @@ describe("avatar plugin", () => {
           };
         }
       | undefined;
-    const pluginConfig = savedConfig?.plugins?.entries?.["avatar"]?.config;
+    const pluginConfig = savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config;
     expect(pluginConfig?.avatar?.lemonSlice?.apiKey).toBe("ls-key");
     expect(pluginConfig?.avatar?.lemonSlice?.imageUrl).toBe(DEFAULT_TEST_AVATAR_IMAGE_URL);
     expect(pluginConfig?.avatar?.livekit?.url).toBe("wss://new.livekit.cloud");
@@ -2094,7 +2126,7 @@ describe("avatar plugin", () => {
       ...baseConfig,
       plugins: {
         entries: {
-          "avatar": {
+          [LEGACY_PLUGIN_ID]: {
             config: {
               avatar: {
                 ...baseConfig.avatar,
@@ -2116,7 +2148,7 @@ describe("avatar plugin", () => {
       | {
           plugins?: {
             entries?: {
-              "avatar"?: {
+              "openclaw-avatar"?: {
                 config?: {
                   avatar?: {
                     verbose?: boolean;
@@ -2128,8 +2160,8 @@ describe("avatar plugin", () => {
           };
         }
       | undefined;
-    expect(savedConfig?.plugins?.entries?.["avatar"]?.config?.avatar?.verbose).toBe(true);
-    expect(savedConfig?.plugins?.entries?.["avatar"]?.config?.avatar?.livekit?.url).toBe(
+    expect(savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config?.avatar?.verbose).toBe(true);
+    expect(savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config?.avatar?.livekit?.url).toBe(
       "wss://new.livekit.cloud",
     );
   });
@@ -2208,7 +2240,7 @@ describe("avatar plugin", () => {
       | {
           plugins?: {
             entries?: {
-              "avatar"?: {
+              "openclaw-avatar"?: {
                 config?: {
                   avatar?: {
                     lemonSlice?: { apiKey?: string; imageUrl?: string };
@@ -2220,7 +2252,7 @@ describe("avatar plugin", () => {
           };
         }
       | undefined;
-    const pluginConfig = savedConfig?.plugins?.entries?.["avatar"]?.config;
+    const pluginConfig = savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config;
     expect(pluginConfig?.avatar?.lemonSlice?.apiKey).toBe("ls-key");
     expect(pluginConfig?.avatar?.lemonSlice?.imageUrl).toBe(DEFAULT_TEST_AVATAR_IMAGE_URL);
     expect(pluginConfig?.avatar?.livekit?.url).toBe("wss://new.livekit.cloud");
@@ -2233,7 +2265,7 @@ describe("avatar plugin", () => {
       ...baseConfig,
       plugins: {
         entries: {
-          "avatar": {
+          [LEGACY_PLUGIN_ID]: {
             config: {
               avatar: {
                 provider: "removed-provider",
@@ -2271,7 +2303,7 @@ describe("avatar plugin", () => {
       | {
           plugins?: {
             entries?: {
-              "avatar"?: {
+              "openclaw-avatar"?: {
                 config?: {
                   avatar?: Record<string, unknown>;
                 };
@@ -2280,7 +2312,7 @@ describe("avatar plugin", () => {
           };
         }
       | undefined;
-    const avatarConfig = savedConfig?.plugins?.entries?.["avatar"]?.config?.avatar;
+    const avatarConfig = savedConfig?.plugins?.entries?.["openclaw-avatar"]?.config?.avatar;
     expect(avatarConfig).toEqual({
       provider: "lemonslice",
       lemonSlice: {
@@ -2506,7 +2538,7 @@ describe("avatar plugin", () => {
     expect(readmePage.res.body).toContain('id="package-version-value"');
     expect(readmePage.res.body).toContain('id="theme-toggle"');
     expect(readmePage.res.body).toContain('id="nav-collapse-toggle"');
-    expect(readmePage.res.body).toContain('/plugins/avatar/app.js?v=');
+    expect(readmePage.res.body).toContain('/plugins/openclaw-avatar/app.js?v=');
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
     expect(readmePage.res.body).not.toContain("__README_HTML__");
 

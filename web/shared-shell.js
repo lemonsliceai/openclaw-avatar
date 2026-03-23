@@ -68,7 +68,7 @@ const TOPBAR_STATUS_VARIANTS = {
 const NAV_ITEMS = [
   {
     key: "home",
-    href: "/plugins/avatar",
+    href: "/plugins/openclaw-avatar",
     label: "Avatar",
     icon: `
       <svg viewBox="0 0 24 24">
@@ -79,7 +79,7 @@ const NAV_ITEMS = [
   },
   {
     key: "config",
-    href: "/plugins/avatar/config",
+    href: "/plugins/openclaw-avatar/config",
     label: "Config",
     icon: `
       <svg viewBox="0 0 24 24">
@@ -92,7 +92,7 @@ const NAV_ITEMS = [
   },
   {
     key: "readme",
-    href: "/plugins/avatar/readme",
+    href: "/plugins/openclaw-avatar/readme",
     label: "README",
     icon: `
       <svg viewBox="0 0 24 24">
