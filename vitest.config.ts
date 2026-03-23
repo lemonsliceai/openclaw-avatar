@@ -9,8 +9,18 @@ export default defineConfig({
     environment: "node",
   },
   resolve: {
-    alias: {
-      "openclaw/plugin-sdk": path.join(__dirname, "test-utils/openclaw-plugin-sdk.ts"),
-    },
+    alias: [
+      {
+        find: "openclaw/plugin-sdk/plugin-entry",
+        replacement: path.join(
+          __dirname,
+          "test-utils/openclaw-plugin-sdk-plugin-entry.ts",
+        ),
+      },
+      {
+        find: "openclaw/plugin-sdk",
+        replacement: path.join(__dirname, "test-utils/openclaw-plugin-sdk.ts"),
+      },
+    ],
   },
 });

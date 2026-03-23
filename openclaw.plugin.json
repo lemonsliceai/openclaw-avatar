@@ -2,6 +2,7 @@
   "id": "avatar",
   "name": "Avatar",
   "description": "Avatar gateway methods and sidecar worker",
+  "version": "0.1.36",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
@@ -136,6 +137,34 @@
           }
         }
       }
+    }
+  },
+  "uiHints": {
+    "avatar.provider": {
+      "label": "Provider"
+    },
+    "avatar.verbose": {
+      "label": "Verbose Avatar Logs"
+    },
+    "avatar.lemonSlice.apiKey": {
+      "label": "LemonSlice API Key",
+      "sensitive": true
+    },
+    "avatar.lemonSlice.imageUrl": {
+      "label": "Avatar Image URL",
+      "placeholder": "https://example.com/avatar.png"
+    },
+    "avatar.livekit.url": {
+      "label": "LiveKit URL",
+      "placeholder": "wss://your-project.livekit.cloud"
+    },
+    "avatar.livekit.apiKey": {
+      "label": "LiveKit API Key",
+      "sensitive": true
+    },
+    "avatar.livekit.apiSecret": {
+      "label": "LiveKit API Secret",
+      "sensitive": true
     }
   }
 }

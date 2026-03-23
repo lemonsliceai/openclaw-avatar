@@ -21,6 +21,7 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 - [Quickstart](#quickstart)
 - [Join avatar session](#join-avatar-session)
 - [Config](#config)
+- [ClawHub release](#clawhub-release)
 - [Usage tips](#usage-tips)
 - [Update](#update)
 - [License](#license)
@@ -57,7 +58,16 @@ You will also need API keys with the following service providers:
 <a id="quickstart"></a>
 ## Quickstart
 
-1. Install and enable the plugin:
+1. Install and enable the plugin.
+
+Install from ClawHub:
+
+```bash
+openclaw plugins install clawhub:@lemonslice/avatar
+openclaw plugins enable avatar
+```
+
+Or install directly from npm:
 
 ```bash
 openclaw plugins install @lemonslice/avatar@latest
@@ -133,6 +143,25 @@ In `openclaw.json`
 ```
 
 `avatar.verbose` defaults to `false`. When it is `false`, the gateway log only receives Avatar sidecar-ready, session start/end lifecycle events, and the worker progress state changes shown above the avatar in the main view. Set it to `true` to restore the full Avatar event stream.
+
+<a id="clawhub-release"></a>
+## ClawHub release
+
+ClawHub now supports native OpenClaw plugins. This package is set up as a code plugin and can be published directly from the repo root after you build and validate it.
+
+```bash
+npm run validate
+clawhub login
+clawhub package publish . \
+  --source-repo lemonsliceai/videoChatPlugin \
+  --source-commit $(git rev-parse HEAD)
+```
+
+Notes:
+
+- `npm run validate` runs typecheck, tests, and a dry-run package build.
+- `clawhub package publish` uploads the package artifact and links it to the exact GitHub commit used for the release.
+- For broad compatibility, you can continue publishing the same version to npm as `@lemonslice/avatar`.
 
 <a id="usage-tips"></a>
 ## Usage tips

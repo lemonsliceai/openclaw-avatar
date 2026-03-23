@@ -15,6 +15,7 @@ import type {
   OpenClawPluginServiceContext,
   RespondFn,
 } from "openclaw/plugin-sdk";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   resetProcessGroupChildren,
   stopChildProcess,
@@ -4659,7 +4660,7 @@ function assertMethodParams(
   return true;
 }
 
-const avatarPlugin = {
+const avatarPlugin = definePluginEntry({
   id: AVATAR_PLUGIN_ID,
   name: "Avatar",
   description: "Avatar gateway methods and sidecar worker",
@@ -5922,6 +5923,6 @@ const avatarPlugin = {
       },
     });
   },
-};
+});
 
 export default avatarPlugin;
