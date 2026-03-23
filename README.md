@@ -113,6 +113,7 @@ In `openclaw.json`
         "config": {
           "avatar": {
             "provider": "lemonslice",
+            "verbose": false,
             "lemonSlice": {
               "apiKey": "<lemonslice-api-key>",
               "imageUrl": "https://example.com/avatar-image.jpg"
@@ -130,6 +131,8 @@ In `openclaw.json`
   }
 }
 ```
+
+`avatar.verbose` defaults to `false`. When it is `false`, the gateway log only receives Avatar sidecar-ready, session start/end lifecycle events, and the worker progress state changes shown above the avatar in the main view. Set it to `true` to restore the full Avatar event stream.
 
 <a id="usage-tips"></a>
 ## Usage tips

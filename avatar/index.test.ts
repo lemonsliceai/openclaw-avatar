@@ -163,6 +163,12 @@ function setup(
   const services: unknown[] = [];
   const httpRoutes: unknown[] = [];
   const cliCommands: Array<{ definition: unknown; metadata?: unknown }> = [];
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
 
   vi.mocked(runtime.config.loadConfig).mockReturnValue(config as never);
   if (options.disableVideoAvatarRuntime) {
@@ -179,12 +185,7 @@ function setup(
     config,
     pluginConfig: {},
     runtime,
-    logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    },
+    logger,
     registerGatewayMethod: (method: string, handler: unknown) => methods.set(method, handler),
     registerService: (service: unknown) => services.push(service),
     registerTool: () => {},
@@ -201,7 +202,7 @@ function setup(
     version: "0",
   } as Parameters<typeof plugin.register>[0]);
 
-  return { runtime, methods, services, httpRoutes, cliCommands };
+  return { runtime, methods, services, httpRoutes, cliCommands, logger };
 }
 
 function createSpawnedChild(
@@ -248,6 +249,10 @@ function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => {
     queueMicrotask(() => resolve());
   });
+}
+
+function loggedMessages(mockFn: ReturnType<typeof vi.fn>): string[] {
+  return mockFn.mock.calls.map(([message]) => String(message));
 }
 
 class MockHttpResponse {
@@ -695,6 +700,175 @@ describe("avatar plugin", () => {
     await service?.stop?.();
   });
 
+  it("only emits sidecar-ready and session lifecycle logs when verbose is false", async () => {
+    const config = {
+      ...baseConfig,
+      avatar: {
+        ...baseConfig.avatar,
+        verbose: false,
+      },
+    };
+    const child = createSpawnedChild(4111);
+    mockSpawn.mockImplementationOnce(() => child);
+    const { services, methods, logger } = setup(config);
+    const service = services[0] as
+      | {
+          start?: (ctx: { config: typeof config; gateway: { port: number; auth: object } }) => Promise<void>;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+
+    await service?.start?.({
+      config,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+    await flushMicrotasks();
+
+    const createRespond = await createTestSession(methods);
+    const createCall = createRespond.mock.calls[0] as RespondCall | undefined;
+    expect(createCall?.[0]).toBe(true);
+
+    const roomName = (createCall?.[1] as { roomName?: string } | undefined)?.roomName;
+    expect(typeof roomName).toBe("string");
+
+    child.stdout.emit(
+      "data",
+      `[avatar-agent] request func accepted job jobId=AJ_test roomName=${roomName} agentName=openclaw-avatar-1-1-12345678\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] agent-session.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="SyncedAudioOutput"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] avatar.start.begin sessionKey="agent:main:main" roomName="${roomName}"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] avatar.start.connected sessionKey="agent:main:main" roomName="${roomName}" outputAudioSink="DataStreamAudioOutput" avatarParticipantIdentity="lemonslice-avatar-agent"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] speech.begin sessionKey="agent:main:main" roomName="${roomName}" runId="run-1" textLength=42 interruptible=true outputAudioSink="DataStreamAudioOutput"\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `[avatar-agent/job pid=999] speech.finished sessionKey="agent:main:main" roomName="${roomName}" runId="run-1" interrupted=false outputAudioSink="DataStreamAudioOutput"\n`,
+    );
+
+    await flushMicrotasks();
+
+    const stopRespond = await invoke(methods, "avatar.session.stop", {
+      roomName,
+    });
+    const stopCall = stopRespond.mock.calls[0] as RespondCall | undefined;
+    expect(stopCall?.[0]).toBe(true);
+
+    const infoMessages = loggedMessages(logger.info);
+    expect(infoMessages.some((message) => message.startsWith("[avatar] sidecar.ready"))).toBe(true);
+    expect(
+      infoMessages.some((message) => message.startsWith("[avatar] session.create.succeeded")),
+    ).toBe(true);
+    expect(
+      infoMessages.some((message) => message.startsWith("[avatar] session.stop.completed")),
+    ).toBe(true);
+    expect(
+      infoMessages.every((message) =>
+        message.startsWith("[avatar] sidecar.ready") ||
+        message.startsWith("[avatar] session.progress.job.accepted") ||
+        message.startsWith("[avatar] session.progress.agent.connected") ||
+        message.startsWith("[avatar] session.progress.avatar.starting") ||
+        message.startsWith("[avatar] session.progress.avatar.connected") ||
+        message.startsWith("[avatar] speech.playback.begin") ||
+        message.startsWith("[avatar] speech.playback.finished") ||
+        message.startsWith("[avatar] session.create.succeeded") ||
+        message.startsWith("[avatar] session.stop.completed"),
+      ),
+    ).toBe(true);
+    expect(
+      infoMessages.some(
+        (message) =>
+          message.startsWith("[avatar] sidecar.ready") &&
+          (message.includes("agentName=") ||
+            message.includes("gatewayPort=") ||
+            message.includes("configFingerprint=")),
+      ),
+    ).toBe(false);
+    expect(
+      infoMessages.some(
+        (message) =>
+          message.startsWith("[avatar] session.create.succeeded") &&
+          (message.includes("participantIdentity=") ||
+            message.includes("agentName=") ||
+            message.includes("dispatchId=") ||
+            message.includes("interruptReplyOnNewMessage=")),
+      ),
+    ).toBe(false);
+    expect(
+      infoMessages.some(
+        (message) =>
+          message.startsWith("[avatar] session.progress.job.accepted") &&
+          message.includes("jobId="),
+      ),
+    ).toBe(false);
+    expect(
+      infoMessages.some(
+        (message) =>
+          (message.startsWith("[avatar] session.progress.agent.connected") ||
+            message.startsWith("[avatar] session.progress.avatar.connected") ||
+            message.startsWith("[avatar] speech.playback.begin") ||
+            message.startsWith("[avatar] speech.playback.finished")) &&
+          (message.includes("outputAudioSink=") ||
+            message.includes("runId=") ||
+            message.includes("avatarParticipantIdentity=") ||
+            message.includes("interruptible=") ||
+            message.includes("interrupted=")),
+      ),
+    ).toBe(false);
+    expect(infoMessages.some((message) => message.includes("service.start"))).toBe(false);
+    expect(infoMessages.some((message) => message.startsWith("[avatar-agent]"))).toBe(false);
+
+    await service?.stop?.();
+  });
+
+  it("keeps detailed gateway logs when verbose is true", async () => {
+    const config = {
+      ...baseConfig,
+      avatar: {
+        ...baseConfig.avatar,
+        verbose: true,
+      },
+    };
+    const { services, methods, logger } = setup(config);
+    const service = services[0] as
+      | {
+          start?: (ctx: { config: typeof config; gateway: { port: number; auth: object } }) => Promise<void>;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
+
+    await service?.start?.({
+      config,
+      gateway: {
+        port: 4321,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+    await flushMicrotasks();
+    await createTestSession(methods);
+
+    const infoMessages = loggedMessages(logger.info);
+    expect(infoMessages.some((message) => message.startsWith("[avatar] service.start"))).toBe(true);
+    expect(
+      infoMessages.some((message) => message.startsWith("[avatar] sidecar.ensure.attempt")),
+    ).toBe(true);
+
+    await service?.stop?.();
+  });
+
   it("returns redacted Avatar config state", async () => {
     const { methods } = setup();
     const respond = await invoke(methods, "avatar.config", {});
@@ -704,6 +878,31 @@ describe("avatar plugin", () => {
     expect(
       (call?.[1] as { config?: { configured?: boolean } } | undefined)?.config?.configured,
     ).toBe(true);
+  });
+
+  it("returns the avatar verbose flag from config", async () => {
+    const { methods } = setup({
+      ...baseConfig,
+      plugins: {
+        entries: {
+          "avatar": {
+            config: {
+              avatar: {
+                ...baseConfig.avatar,
+                verbose: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const respond = await invoke(methods, "avatar.config", {});
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    expect((call?.[1] as { config?: { verbose?: boolean } } | undefined)?.config?.verbose).toBe(
+      true,
+    );
   });
 
   it("treats runtime stt as a valid transcription capability in config status", async () => {
@@ -1883,6 +2082,51 @@ describe("avatar plugin", () => {
     expect(pluginConfig?.avatar?.livekit?.url).toBe("wss://new.livekit.cloud");
     expect(pluginConfig?.avatar?.livekit?.apiKey).toBe("lk-key");
     expect(pluginConfig?.avatar?.livekit?.apiSecret).toBe("lk-secret");
+  });
+
+  it("preserves the existing verbose flag when saving setup", async () => {
+    const { methods, runtime } = setup({
+      ...baseConfig,
+      plugins: {
+        entries: {
+          "avatar": {
+            config: {
+              avatar: {
+                ...baseConfig.avatar,
+                verbose: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const respond = await invoke(methods, "avatar.setup.save", {
+      livekitUrl: "wss://new.livekit.cloud",
+    });
+
+    const call = respond.mock.calls[0] as RespondCall | undefined;
+    expect(call?.[0]).toBe(true);
+    const savedConfig = vi.mocked(runtime.config.writeConfigFile).mock.calls[0]?.[0] as
+      | {
+          plugins?: {
+            entries?: {
+              "avatar"?: {
+                config?: {
+                  avatar?: {
+                    verbose?: boolean;
+                    livekit?: { url?: string };
+                  };
+                };
+              };
+            };
+          };
+        }
+      | undefined;
+    expect(savedConfig?.plugins?.entries?.["avatar"]?.config?.avatar?.verbose).toBe(true);
+    expect(savedConfig?.plugins?.entries?.["avatar"]?.config?.avatar?.livekit?.url).toBe(
+      "wss://new.livekit.cloud",
+    );
   });
 
   it("saves gateway token into the root gateway auth config", async () => {

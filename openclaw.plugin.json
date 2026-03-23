@@ -14,6 +14,9 @@
             "type": "string",
             "enum": ["lemonslice"]
           },
+          "verbose": {
+            "type": "boolean"
+          },
           "lemonSlice": {
             "type": "object",
             "additionalProperties": false,

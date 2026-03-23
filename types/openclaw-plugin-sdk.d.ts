@@ -21,6 +21,7 @@ declare module "openclaw/plugin-sdk" {
     };
     avatar?: {
       provider?: "lemonslice" | string;
+      verbose?: boolean;
       lemonSlice?: {
         apiKey?: unknown;
         imageUrl?: string;
