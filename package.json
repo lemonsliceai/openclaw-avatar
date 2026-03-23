@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/avatar",
+  "name": "@lemonslice/avatar",
   "version": "0.1.36",
   "description": "OpenClaw Avatar plugin",
   "license": "MIT",
@@ -27,11 +27,11 @@
     ]
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.11"
+    "openclaw": ">=2026.3.22"
   },
   "dependencies": {
-    "@livekit/agents": "1.0.51",
-    "@livekit/agents-plugin-lemonslice": "1.0.51",
+    "@livekit/agents": "1.2.0",
+    "@livekit/agents-plugin-lemonslice": "1.2.0",
     "@livekit/rtc-node": "0.13.24",
     "ws": "8.19.0",
     "zod": "4.3.6"

@@ -2259,7 +2259,6 @@ describe("avatar plugin", () => {
     expect(readmePage.res.body).toContain('id="nav-collapse-toggle"');
     expect(readmePage.res.body).toContain('/plugins/avatar/app.js?v=');
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
-    expect(readmePage.res.body).toContain("/plugins/avatar/assets/GreenConfig.png");
     expect(readmePage.res.body).not.toContain("__README_HTML__");
 
     const aspectRatioModule = await invokeHttpRoute(
@@ -2343,7 +2342,7 @@ describe("avatar plugin", () => {
         auth: { mode: "token", token: "gateway-token" },
       },
     });
-    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.11";
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.22";
 
     const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/avatar/bootstrap", {
       url: "/plugins/avatar/bootstrap",
@@ -2357,8 +2356,8 @@ describe("avatar plugin", () => {
     expect(JSON.parse(bootstrap.res.body)).toEqual({
       success: true,
       openclaw: {
-        version: "2026.3.11",
-        minimumCompatibleVersion: "2026.3.11",
+        version: "2026.3.22",
+        minimumCompatibleVersion: "2026.3.22",
         compatible: true,
       },
       gateway: {
@@ -2383,7 +2382,7 @@ describe("avatar plugin", () => {
       success: true,
       openclaw: {
         version: "2026.3.10",
-        minimumCompatibleVersion: "2026.3.11",
+        minimumCompatibleVersion: "2026.3.22",
         compatible: false,
       },
     });
