@@ -16,24 +16,10 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 - Design your own avatar (just one photo!) 
 - Picture-in-picture experience (have the avatar hangout while you work) 
 
-
-<div>
-  <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
-    <p>Avatar Demo - Watch Video</p>
-  </a>
-  <a href="https://www.loom.com/share/307a34384a0b4dc4a5391d8bbc9accf7">
-    <img
-      src="https://cdn.loom.com/sessions/thumbnails/307a34384a0b4dc4a5391d8bbc9accf7-5fbac2c9d95c536d-full-play.gif#t=0.1"
-      alt="Avatar demo video thumbnail"
-    />
-  </a>
-</div>
-
 **Outline**
 
 - [Prerequisites](#prerequisites)
 - [Quickstart](#quickstart)
-- [Install](#install)
 - [Configure](#configure)
 - [Join avatar session](#join-avatar-session)
 - [Usage tips](#usage-tips)
@@ -50,43 +36,22 @@ Before installing and running this plugin, you must have an OpenClaw instance in
 
 - OpenClaw [install guide](https://docs.openclaw.ai/install#npm-pnpm)
 
-After installing OpenClaw, configure at least one LLM provider before you install this plugin. We highly recommend using a fast model for a better experience. Examples below.
-- qwen3-30B-A3B
-- gpt-5-nano
-- claude-haiku-4-5
+After installing OpenClaw, configure at least one LLM provider before you install this plugin. We highly recommend using a fast model for a better experience. e.g. gpt-5-nano
 
 ```bash
 openclaw config
 ```
 
-For plugin submission and reviewer setup, this `openclaw config` step is required. After configuring a valid LLM provider, make sure your agent is also set up with a primary model:
-
-```text
-http://127.0.0.1:18789/agents
-```
-
 ### Providers
 
-You will also need accounts with the following service providers:
+You will also need API keys with the following service providers:
 
-- **LemonSlice** — provides the avatar/character rendering for the avatar experience.
-  Sign up at https://www.lemonslice.com
+- **LemonSlice** — real-time avatar. Get API key: https://lemonslice.com/agents/api  
 
-- **OpenClaw speech/media providers** — Avatar now prefers whatever TTS and audio-transcription capabilities you have already configured in OpenClaw for your agents.
-  Configure those first in OpenClaw so avatar reply speech and browser voice transcription can use the shared runtime contracts.
-
-- **LiveKit** — provides the real-time video/audio room infrastructure.
-  Sign up at https://livekit.io
-
-- **Publicly Accessible Image URL** - The source image for the avatar.
-  Sample image URL: `https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtNkoagYf5CBjh3ZkFEumULAJYeQriWT8tg79y`
-
-Once you have accounts, retrieve API keys from each service and supply them during plugin setup. Enter the avatar image URL on the main session page when you start a session.
+- **LiveKit** — real-time video/audio infrastructure. Sign up at https://livekit.io
 
 <a id="quickstart"></a>
 ## Quickstart
-
-If you want the shortest path from install to first conversation, follow these steps in order:
 
 1. Install and configure OpenClaw with a working LLM provider by running `openclaw config`.
 
@@ -109,7 +74,7 @@ openclaw avatar-setup
 openclaw gateway run
 ```
 
-5. Open the session UI:
+5. Open the session UI for OpenClaw Avatar Chat:
 
 ```text
 http://127.0.0.1:18789/plugins/avatar/
@@ -123,20 +88,6 @@ When setup is complete, the plugin config page should show green `OK` indicators
 http://127.0.0.1:18789/plugins/avatar/config
 ```
 
-<a id="install"></a>
-## Install
-
-Plugin installation:
-
-```bash
-openclaw plugins install openclaw-avatar-do-not-install-7f3c9d1@latest
-openclaw plugins enable avatar
-openclaw plugins list
-```
-
-Verify that Avatar is listed. 
-
-<a id="configure"></a>
 ## Configure
 
 The plugin can be configured with either the CLI (recommended) or the browser UI. The CLI path is the fastest option for most users. If you choose the browser UI, you must first [run the OpenClaw gateway](#run-gateway).
@@ -230,20 +181,6 @@ Typical first run:
 
 5. Start the session and begin chatting through the page controls.
 
-<a id="usage-tips"></a>
-## Usage tips
-
-- The plugin is best used in a Chromium-based browser.
-
-Best image sizes:
-
-| aspect_ratio | resolution |
-|--------------|------------|
-| 2x3          | 368×560    |
-| 3x2          | 560×368    |
-| 9x16         | 336×608    |
-| 16x9         | 608×336    |
-
 <a id="update"></a>
 ## Update
 
@@ -252,32 +189,6 @@ The plugin can be updated to the latest version using:
 ```bash
 openclaw plugins update avatar  
 ```
-
-<a id="about-the-install-warning"></a>
-## About The Install Warning
-
-OpenClaw may show a warning like this during install:
-
-```text
-WARNING: Plugin "avatar" contains dangerous code patterns: Shell command execution detected (child_process) (.../avatar/index.ts:1727); Environment variable access combined with network send — possible credential harvesting (.../avatar/index.ts:212)
-```
-
-That warning is expected for this plugin. It is flagging two real implementation details:
-
-- `child_process` in `avatar/index.ts` is used to start a local sidecar worker for the `avatar-agent` service. That worker runs the long-lived LiveKit agent runtime in a separate process so it can be started, stopped, restarted, and isolated from the main gateway process.
-- `process.env` plus network activity in `avatar/index.ts` is used to read setup defaults and plugin-specific runtime variables, then connect to the local OpenClaw gateway and the configured LiveKit, LemonSlice, and OpenClaw speech/media runtime services that power the plugin.
-
-What this plugin is not doing:
-
-- It does not execute arbitrary shell snippets from user input.
-- The plugin does not scan unrelated environment variables and send them to a third-party endpoint.
-- Outbound connections are limited to the services required for the avatar flow and the local OpenClaw gateway bridge.
-
-What it does do:
-
-- Launch a local worker process for the avatar agent runtime.
-- Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
-- Send audio, transcript, and session traffic only to the configured providers needed for Avatar to function.
 
 <a id="license"></a>
 ## License
