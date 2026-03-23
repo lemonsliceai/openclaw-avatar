@@ -79,6 +79,7 @@ const THEME_STORAGE_KEY = "avatar.themePreference";
 const NAV_COLLAPSE_STORAGE_KEY = "avatar.navCollapsed";
 const CHAT_PANE_STORAGE_KEY = "avatar.chatPaneOpen";
 const CHAT_PANE_WIDTH_STORAGE_KEY = "avatar.chatPaneWidth";
+const CHAT_PANE_WIDTH_CSS_VARIABLE = "--chat-pane-width";
 const MIC_MUTED_STORAGE_KEY = "avatar.microphoneMuted";
 const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "avatar.avatarSpeakerMuted";
 const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "avatar.avatarAutoStartInPictureInPicture";
@@ -102,6 +103,7 @@ const GATEWAY_WS_SCOPES = ["operator.read", "operator.write"];
 const CHAT_PANE_MIN_WIDTH = 300;
 const CHAT_PANE_MAX_WIDTH = 640;
 const AVATAR_PANE_WIDTH_STORAGE_KEY = "avatar.avatarPaneWidth";
+const AVATAR_PANE_WIDTH_CSS_VARIABLE = "--avatar-pane-width";
 const AVATAR_PANE_MIN_WIDTH = 0;
 const AVATAR_PANE_MAX_WIDTH = 1200;
 // Debug logging is opt-in because even sanitized entries can still expose session timing and flow details.
@@ -194,6 +196,7 @@ const AVATAR_AUTO_HELLO_MESSAGE = "hello";
 let activeSession = null;
 let activeRoom = null;
 let localAudioTrack = null;
+let localAudioTrackPublished = false;
 let browserSpeechRecognition = null;
 let browserSpeechRecognitionActive = false;
 let browserSpeechRecognitionShouldRun = false;
@@ -212,7 +215,11 @@ let serverSpeechRecorderCaptureError = "";
 let serverSpeechRecorderDiscardNextCapture = false;
 let serverSpeechRecorderEncodedChunks = [];
 let serverSpeechRecorderPendingFallbackWavBytes = null;
+let serverSpeechRecorderPendingTranscriptRequest = null;
+let serverSpeechRecorderQueuedTranscriptRequest = null;
 let serverSpeechRecorderStartPromise = null;
+let serverSpeechRecorderDrainPromise = null;
+let serverSpeechRecorderResolveDrainPromise = null;
 let serverSpeechRecorderSpeechActive = false;
 let serverSpeechRecorderSpeechStartedAt = 0;
 let serverSpeechRecorderSilenceStartedAt = 0;
@@ -1434,6 +1441,10 @@ function debugLogRoomState(event, room = activeRoom, details = {}) {
 
 function syncAvatarDebugGlobals() {
   try {
+    if (!isAvatarDebugLoggingEnabled()) {
+      delete globalThis.__avatarDebug;
+      return;
+    }
     globalThis.__avatarDebug = {
       get entries() {
         return debugLogEntries.slice();
@@ -2079,7 +2090,7 @@ function serverSpeechTranscriptionSupported() {
 }
 
 function shouldRunVoiceTranscription() {
-  return Boolean(activeSession && activeRoom);
+  return Boolean(activeSession && activeRoom && hasUsableMic());
 }
 
 function shouldPreferBrowserSpeechRecognition() {
@@ -2191,6 +2202,15 @@ function resolveServerSpeechCaptureMimeType() {
     SERVER_SPEECH_CAPTURE_MIME_TYPES.find((candidate) =>
       MediaRecorderCtor.isTypeSupported(candidate),
     ) || ""
+  );
+}
+
+function hasUsableMic() {
+  const mediaStreamTrack = localAudioTrack?.mediaStreamTrack;
+  return Boolean(
+    localAudioTrackPublished &&
+      mediaStreamTrack &&
+      (typeof mediaStreamTrack.readyState !== "string" || mediaStreamTrack.readyState === "live"),
   );
 }
 
@@ -2375,17 +2395,22 @@ function discardServerSpeechCapture() {
   clearVoiceTranscriptionPending();
   resetServerSpeechCaptureState();
   serverSpeechRecorderPendingFallbackWavBytes = null;
+  serverSpeechRecorderPendingTranscriptRequest = null;
+  serverSpeechRecorderQueuedTranscriptRequest = null;
   serverSpeechRecorderEncodedChunks = [];
   const mediaRecorder = serverSpeechRecorderMediaRecorder;
   if (mediaRecorder?.state === "recording") {
     serverSpeechRecorderDiscardNextCapture = true;
+    beginServerSpeechRecorderDrain();
     try {
       mediaRecorder.requestData?.();
     } catch {}
     try {
       mediaRecorder.stop();
       return;
-    } catch {}
+    } catch {
+      resolveServerSpeechRecorderDrain();
+    }
   }
   serverSpeechRecorderDiscardNextCapture = false;
 }
@@ -2420,21 +2445,100 @@ function buildServerSpeechFallbackWavBytes() {
   return buildWaveBytesFromPcm(pcmBytes, SERVER_SPEECH_SAMPLE_RATE);
 }
 
-async function requestServerSpeechTranscript(audioBytes, mimeType) {
+function createServerSpeechTranscriptRequest(options = {}) {
+  return {
+    sessionKey:
+      typeof options.sessionKey === "string" ? options.sessionKey : resolveChatSessionKey(),
+    captureSource:
+      typeof options.captureSource === "string"
+        ? options.captureSource
+        : serverSpeechRecorderCaptureSource,
+    roomTrackMuted:
+      typeof options.roomTrackMuted === "boolean"
+        ? options.roomTrackMuted
+        : serverSpeechRecorderRoomTrackMuted,
+    captureError:
+      typeof options.captureError === "string"
+        ? options.captureError
+        : serverSpeechRecorderCaptureError,
+  };
+}
+
+function beginServerSpeechRecorderDrain() {
+  if (serverSpeechRecorderDrainPromise) {
+    return serverSpeechRecorderDrainPromise;
+  }
+  serverSpeechRecorderDrainPromise = new Promise((resolve) => {
+    serverSpeechRecorderResolveDrainPromise = () => {
+      serverSpeechRecorderResolveDrainPromise = null;
+      serverSpeechRecorderDrainPromise = null;
+      resolve();
+    };
+  });
+  return serverSpeechRecorderDrainPromise;
+}
+
+function resolveServerSpeechRecorderDrain() {
+  serverSpeechRecorderResolveDrainPromise?.();
+}
+
+async function startServerSpeechRecorderMediaRecorder(mediaRecorder, mimeType) {
+  if (!mediaRecorder || mediaRecorder.state !== "inactive" || serverSpeechRecorderDiscardNextCapture) {
+    return;
+  }
+  if (serverSpeechRecorderDrainPromise) {
+    await serverSpeechRecorderDrainPromise;
+  }
+  if (
+    mediaRecorder !== serverSpeechRecorderMediaRecorder ||
+    mediaRecorder.state !== "inactive" ||
+    serverSpeechRecorderDiscardNextCapture ||
+    !serverSpeechRecorderSpeechActive
+  ) {
+    if (
+      mediaRecorder !== serverSpeechRecorderMediaRecorder ||
+      serverSpeechRecorderDiscardNextCapture ||
+      !serverSpeechRecorderSpeechActive
+    ) {
+      serverSpeechRecorderQueuedTranscriptRequest = null;
+    }
+    return;
+  }
+  serverSpeechRecorderEncodedChunks = [];
+  serverSpeechRecorderPendingFallbackWavBytes = null;
+  serverSpeechRecorderPendingTranscriptRequest =
+    serverSpeechRecorderQueuedTranscriptRequest ||
+    serverSpeechRecorderPendingTranscriptRequest ||
+    createServerSpeechTranscriptRequest();
+  serverSpeechRecorderQueuedTranscriptRequest = null;
+  try {
+    mediaRecorder.start();
+  } catch (error) {
+    setOutput({
+      action: "server-speech-recorder-encoding-start-failed",
+      error: String(error),
+      mimeType,
+    });
+  }
+}
+
+async function requestServerSpeechTranscript(
+  audioBytes,
+  mimeType,
+  sessionKey,
+  captureSource,
+  roomTrackMuted,
+  captureError,
+) {
   const base64Data = base64EncodeBytes(audioBytes);
-  const sessionKey = resolveChatSessionKey();
   const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/transcribe`, {
     method: "POST",
     body: JSON.stringify({
       data: base64Data,
       mimeType,
-      ...(serverSpeechRecorderCaptureSource
-        ? { captureSource: serverSpeechRecorderCaptureSource }
-        : {}),
-      ...(serverSpeechRecorderRoomTrackMuted ? { roomTrackMuted: true } : {}),
-      ...(serverSpeechRecorderCaptureError
-        ? { captureError: serverSpeechRecorderCaptureError }
-        : {}),
+      ...(captureSource ? { captureSource } : {}),
+      ...(roomTrackMuted ? { roomTrackMuted: true } : {}),
+      ...(captureError ? { captureError } : {}),
       ...(sessionKey ? { sessionKey } : {}),
     }),
   });
@@ -2442,9 +2546,17 @@ async function requestServerSpeechTranscript(audioBytes, mimeType) {
 }
 
 function queueServerSpeechCaptureUpload(audioBytes, mimeType, options = {}) {
+  const transcriptRequest = createServerSpeechTranscriptRequest(options.transcriptRequest);
   serverSpeechSubmissionQueue = serverSpeechSubmissionQueue
     .then(async () => {
-      let transcript = await requestServerSpeechTranscript(audioBytes, mimeType);
+      let transcript = await requestServerSpeechTranscript(
+        audioBytes,
+        mimeType,
+        transcriptRequest.sessionKey,
+        transcriptRequest.captureSource,
+        transcriptRequest.roomTrackMuted,
+        transcriptRequest.captureError,
+      );
       let transcriptMimeType = mimeType;
 
       if (!transcript && options.fallbackAudioBytes && options.fallbackMimeType) {
@@ -2456,6 +2568,10 @@ function queueServerSpeechCaptureUpload(audioBytes, mimeType, options = {}) {
         transcript = await requestServerSpeechTranscript(
           options.fallbackAudioBytes,
           options.fallbackMimeType,
+          transcriptRequest.sessionKey,
+          transcriptRequest.captureSource,
+          transcriptRequest.roomTrackMuted,
+          transcriptRequest.captureError,
         );
         transcriptMimeType = options.fallbackMimeType;
       }
@@ -2494,9 +2610,12 @@ function flushServerSpeechCapture() {
     resetServerSpeechCaptureState();
     return;
   }
+  const transcriptRequest = createServerSpeechTranscriptRequest();
   if (serverSpeechRecorderMediaRecorder?.state === "recording") {
     serverSpeechRecorderPendingFallbackWavBytes = fallbackWavBytes;
+    serverSpeechRecorderPendingTranscriptRequest = transcriptRequest;
     resetServerSpeechCaptureState();
+    beginServerSpeechRecorderDrain();
     try {
       serverSpeechRecorderMediaRecorder.requestData?.();
     } catch {}
@@ -2505,11 +2624,15 @@ function flushServerSpeechCapture() {
       return;
     } catch {
       serverSpeechRecorderPendingFallbackWavBytes = null;
+      serverSpeechRecorderPendingTranscriptRequest = null;
+      resolveServerSpeechRecorderDrain();
     }
   }
   resetServerSpeechCaptureState();
   if (fallbackWavBytes) {
-    queueServerSpeechCaptureUpload(fallbackWavBytes, "audio/wav");
+    queueServerSpeechCaptureUpload(fallbackWavBytes, "audio/wav", {
+      transcriptRequest,
+    });
   }
 }
 
@@ -2531,13 +2654,19 @@ function cleanupServerSpeechTranscriptionResources(options = {}) {
   resetServerSpeechDetectorState();
   serverSpeechRecorderEncodedChunks = [];
   serverSpeechRecorderPendingFallbackWavBytes = null;
+  serverSpeechRecorderPendingTranscriptRequest = null;
+  serverSpeechRecorderQueuedTranscriptRequest = null;
   serverSpeechRecorderDiscardNextCapture = false;
   const mediaRecorder = options.mediaRecorder ?? serverSpeechRecorderMediaRecorder;
+  const waitingForMediaRecorderStop = Boolean(mediaRecorder && mediaRecorder.state !== "inactive");
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     serverSpeechRecorderDiscardNextCapture = true;
+    beginServerSpeechRecorderDrain();
     try {
       mediaRecorder.stop();
-    } catch {}
+    } catch {
+      resolveServerSpeechRecorderDrain();
+    }
   }
   const processorNode = options.processorNode ?? serverSpeechRecorderProcessorNode;
   if (processorNode) {
@@ -2586,6 +2715,9 @@ function cleanupServerSpeechTranscriptionResources(options = {}) {
   }
   if (serverSpeechRecorderCaptureTrack === captureTrack) {
     serverSpeechRecorderCaptureTrack = null;
+  }
+  if (!waitingForMediaRecorderStop) {
+    resolveServerSpeechRecorderDrain();
   }
   serverSpeechRecorderStartPromise = null;
 }
@@ -2709,17 +2841,23 @@ async function startServerSpeechTranscription() {
           const discardCapture = serverSpeechRecorderDiscardNextCapture;
           const encodedChunks = serverSpeechRecorderEncodedChunks.slice();
           const fallbackBytes = serverSpeechRecorderPendingFallbackWavBytes;
+          const transcriptRequest =
+            serverSpeechRecorderPendingTranscriptRequest || createServerSpeechTranscriptRequest();
           const mimeType =
             serverSpeechRecorderMimeType || mediaRecorder?.mimeType || encodedCaptureMimeType;
           serverSpeechRecorderDiscardNextCapture = false;
           serverSpeechRecorderEncodedChunks = [];
           serverSpeechRecorderPendingFallbackWavBytes = null;
+          serverSpeechRecorderPendingTranscriptRequest = null;
+          resolveServerSpeechRecorderDrain();
           if (discardCapture) {
             clearVoiceTranscriptionPending();
             return;
           }
           if (fallbackBytes) {
-            queueServerSpeechCaptureUpload(fallbackBytes, "audio/wav");
+            queueServerSpeechCaptureUpload(fallbackBytes, "audio/wav", {
+              transcriptRequest,
+            });
             return;
           }
           if (encodedChunks.length > 0) {
@@ -2727,7 +2865,9 @@ async function startServerSpeechTranscription() {
             void captureBlob
               .arrayBuffer()
               .then((arrayBuffer) => {
-                queueServerSpeechCaptureUpload(new Uint8Array(arrayBuffer), mimeType);
+                queueServerSpeechCaptureUpload(new Uint8Array(arrayBuffer), mimeType, {
+                  transcriptRequest,
+                });
               })
               .catch((error) => {
                 clearVoiceTranscriptionPending();
@@ -2812,17 +2952,11 @@ async function startServerSpeechTranscription() {
         justActivatedSpeechCapture = true;
         if (mediaRecorder?.state === "inactive") {
           serverSpeechRecorderDiscardNextCapture = false;
-          serverSpeechRecorderEncodedChunks = [];
-          serverSpeechRecorderPendingFallbackWavBytes = null;
-          try {
-            mediaRecorder.start();
-          } catch (error) {
-            setOutput({
-              action: "server-speech-recorder-encoding-start-failed",
-              error: String(error),
-              mimeType: serverSpeechRecorderMimeType || encodedCaptureMimeType || "",
-            });
-          }
+          serverSpeechRecorderQueuedTranscriptRequest = createServerSpeechTranscriptRequest();
+          void startServerSpeechRecorderMediaRecorder(
+            mediaRecorder,
+            serverSpeechRecorderMimeType || encodedCaptureMimeType || "",
+          );
         }
         requestAvatarInterruptForVoiceTranscription("voice-transcription");
       }
@@ -4046,7 +4180,7 @@ function applyChatPaneWidth(nextWidth, options = {}) {
   const shouldPersist = options.persist !== false;
   const { min, max } = getChatPaneWidthBounds();
   const clamped = Math.min(max, Math.max(min, Math.round(nextWidth)));
-  shellEl.style.setProperty("--avatar-pane-width", `${clamped}px`);
+  shellEl.style.setProperty(CHAT_PANE_WIDTH_CSS_VARIABLE, `${clamped}px`);
   if (!shouldPersist) {
     return;
   }
@@ -4146,9 +4280,12 @@ async function doInitChatPane() {
 
   mobileChatPaneMedia?.addEventListener("change", () => {
     const open = shellEl ? shellEl.classList.contains("shell--chat-pane-open") : true;
-    applyChatPaneWidth(parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "360", 10), {
-      persist: false,
-    });
+    applyChatPaneWidth(
+      parseInt(shellEl?.style.getPropertyValue(CHAT_PANE_WIDTH_CSS_VARIABLE) || "360", 10),
+      {
+        persist: false,
+      },
+    );
     setChatPaneOpen(open, { persist: false });
   });
 
@@ -4191,14 +4328,20 @@ async function doInitChatPane() {
         return;
       }
       event.preventDefault();
-      const currentWidth = parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "360", 10);
+      const currentWidth = parseInt(
+        shellEl?.style.getPropertyValue(CHAT_PANE_WIDTH_CSS_VARIABLE) || "360",
+        10,
+      );
       const delta = event.key === "ArrowLeft" ? 24 : -24;
       applyChatPaneWidth(currentWidth + delta);
     });
   }
 
   window.addEventListener("resize", () => {
-    const currentWidth = parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "360", 10);
+    const currentWidth = parseInt(
+      shellEl?.style.getPropertyValue(CHAT_PANE_WIDTH_CSS_VARIABLE) || "360",
+      10,
+    );
     applyChatPaneWidth(currentWidth, { persist: false });
   });
 
@@ -4248,7 +4391,7 @@ function applyAvatarPaneWidth(nextWidth, options = {}) {
   const shouldPersist = options.persist !== false;
   const { min, max } = getAvatarPaneWidthBounds();
   const clamped = Math.min(max, Math.max(min, Math.round(nextWidth)));
-  shellEl.style.setProperty("--avatar-pane-width", `${clamped}px`);
+  shellEl.style.setProperty(AVATAR_PANE_WIDTH_CSS_VARIABLE, `${clamped}px`);
   if (!shouldPersist) {
     return;
   }
@@ -4264,7 +4407,10 @@ function getCurrentAvatarPaneWidth() {
   if (Number.isFinite(measuredWidth) && measuredWidth > 0) {
     return measuredWidth;
   }
-  const storedWidth = parseInt(shellEl?.style.getPropertyValue("--avatar-pane-width") || "760", 10);
+  const storedWidth = parseInt(
+    shellEl?.style.getPropertyValue(AVATAR_PANE_WIDTH_CSS_VARIABLE) || "760",
+    10,
+  );
   if (Number.isFinite(storedWidth) && storedWidth > 0) {
     return storedWidth;
   }
@@ -7585,6 +7731,7 @@ function releaseLocalTracks() {
     } catch {}
   }
   localAudioTrack = null;
+  localAudioTrackPublished = false;
 }
 
 function markAvatarConnected() {
@@ -7874,7 +8021,7 @@ function updateRoomButtons() {
   }
   if (toggleMicButton) {
     const micMuted = localAudioTrack ? Boolean(localAudioTrack.isMuted) : preferredMicMuted;
-    toggleMicButton.disabled = !hasRoom || !localAudioTrack;
+    toggleMicButton.disabled = !hasRoom || !hasUsableMic();
     toggleMicButton.classList.toggle("is-muted", micMuted);
     toggleMicButton.setAttribute("aria-label", micMuted ? "Unmute microphone" : "Mute microphone");
     toggleMicButton.setAttribute("title", micMuted ? "Unmute microphone" : "Mute microphone");
@@ -7925,6 +8072,7 @@ async function publishLocalTracks(room) {
     updateRoomButtons();
     throw error;
   }
+  localAudioTrackPublished = false;
   for (const track of tracks) {
     if (track.kind === "audio") {
       localAudioTrack = track;
@@ -7935,6 +8083,9 @@ async function publishLocalTracks(room) {
       }
     }
     await room.localParticipant.publishTrack(track);
+    if (track.kind === "audio") {
+      localAudioTrackPublished = true;
+    }
     debugLogRoomState("livekit:local-track-published", room, {
       trackKind: track.kind,
     });

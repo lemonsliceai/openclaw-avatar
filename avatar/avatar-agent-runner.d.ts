@@ -1,12 +1,8 @@
-declare const avatarAgent: {
+import type { AvatarAspectRatio } from "./avatar-aspect-ratio.js";
+
+export declare const avatarAgent: {
   entry: (ctx: unknown) => Promise<void>;
 };
-
-export declare const AVATAR_ASPECT_RATIOS: readonly ["2x3", "3x2", "9x16", "16x9"];
-export declare const AVATAR_ASPECT_RATIO_DEFAULT: (typeof AVATAR_ASPECT_RATIOS)[number];
-export declare const AVATAR_ASPECT_RATIO_LOOKUP: ReadonlySet<
-  (typeof AVATAR_ASPECT_RATIOS)[number]
->;
 
 export class GatewayWsClient {
   ws: unknown;
@@ -28,7 +24,7 @@ export function computeStreamingTextDelta(
 ): string | null;
 
 export function buildLemonSliceAspectRatioPayload(aspectRatio?: string): {
-  aspect_ratio: (typeof AVATAR_ASPECT_RATIOS)[number];
+  aspect_ratio: AvatarAspectRatio;
 };
 
 export default avatarAgent;

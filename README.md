@@ -19,7 +19,6 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 
 - [Prerequisites](#prerequisites)
 - [Quickstart](#quickstart)
-- [Join avatar session](#join-avatar-session)
 - [Config](#config)
 - [ClawHub release](#clawhub-release)
 - [Usage tips](#usage-tips)

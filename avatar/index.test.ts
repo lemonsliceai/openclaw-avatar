@@ -2513,8 +2513,8 @@ describe("avatar plugin", () => {
       await readFile(new URL("../package.json", import.meta.url), "utf8"),
     ) as { version: string };
 
-    const page = await invokeHttpRoute(httpRoutes, "/plugins/avatar", {
-      url: "/plugins/avatar",
+    const page = await invokeHttpRoute(httpRoutes, PLUGIN_ROUTE_BASE, {
+      url: PLUGIN_ROUTE_BASE,
     });
     expect(page.handled).toBe(true);
     expect(page.res.statusCode).toBe(200);

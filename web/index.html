@@ -75,7 +75,6 @@
     <link rel="stylesheet" href="/plugins/openclaw-avatar/styles/components.css" />
     <style>
       .avatar-shell .shell {
-        --avatar-pane-width: 360px;
         --avatar-pane-width: 760px;
         --avatar-aspect-ratio: 16 / 9;
       }
@@ -146,7 +145,7 @@
 
       .avatar-chatpane {
         grid-column: 3;
-        width: var(--avatar-pane-width, min(360px, 32vw));
+        width: var(--chat-pane-width, min(360px, 32vw));
         min-width: 300px;
         max-height: calc(100dvh - var(--shell-topbar-height) - 24px);
         position: sticky;
@@ -428,6 +427,7 @@
         display: grid;
         width: 100%;
         max-width: 100%;
+        --chat-pane-width: 360px;
       }
 
       .avatar-pane {

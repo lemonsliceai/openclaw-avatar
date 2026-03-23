@@ -1,3 +1,4 @@
+/** Canonical avatar aspect ratio exports live in `./avatar-aspect-ratio.js`. */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -5,6 +6,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
   AVATAR_ASPECT_RATIO_DEFAULT,
+  AVATAR_ASPECT_RATIO_LOOKUP,
   AVATAR_ASPECT_RATIOS,
 } from "./avatar-aspect-ratio.js";
 
@@ -12,8 +14,6 @@ const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
 const AVATAR_CONTROL_EVENT_TOPIC = "avatar.avatar-control";
 const AVATAR_CONTROL_ACK_EVENT_TOPIC = "avatar.avatar-control-ack";
-const AVATAR_ASPECT_RATIO_LOOKUP = new Set(AVATAR_ASPECT_RATIOS);
-
 function requireEnv(name) {
   const value = process.env[name]?.trim();
   if (!value) {
@@ -680,12 +680,7 @@ async function requestGatewaySpeechSynthesis(text) {
       payload = null;
     }
   }
-  const body =
-    payload && payload.success === true && payload.audioBase64
-      ? payload
-      : payload && payload.success === true && payload
-        ? payload
-        : null;
+  const body = payload && payload.success === true ? payload : null;
   if (!body) {
     throw new Error("gateway speech response returned no payload");
   }
@@ -700,11 +695,13 @@ function createGatewaySpeechTts(params) {
 
     constructor(tts, text, connOptions, abortSignal) {
       super(text, tts, connOptions, abortSignal);
+      this.tts = tts;
     }
 
     async run() {
       const payload = await requestGatewaySpeechSynthesis(this.inputText);
-      const frameStream = new deps.agents.AudioByteStream(payload.sampleRate, 1);
+      this.tts.setSampleRate(payload.sampleRate);
+      const frameStream = new deps.agents.AudioByteStream(this.tts.sampleRate, 1);
       const arrayBuffer = payload.audioBuffer.buffer.slice(
         payload.audioBuffer.byteOffset,
         payload.audioBuffer.byteOffset + payload.audioBuffer.byteLength,
@@ -733,8 +730,19 @@ function createGatewaySpeechTts(params) {
   class GatewaySpeechTTS extends deps.agents.tts.TTS {
     label = "openclaw.GatewaySpeechTTS";
 
-    constructor() {
-      super(16_000, 1, { streaming: false });
+    constructor(sampleRate = 16_000) {
+      super(sampleRate, 1, { streaming: false });
+      this.outputSampleRate = sampleRate;
+    }
+
+    get sampleRate() {
+      return this.outputSampleRate;
+    }
+
+    setSampleRate(sampleRate) {
+      if (Number.isFinite(sampleRate) && sampleRate > 0) {
+        this.outputSampleRate = Math.floor(sampleRate);
+      }
     }
 
     synthesize(text, connOptions, abortSignal) {
@@ -1385,10 +1393,5 @@ async function runAvatarAgentEntry(ctx) {
 }
 
 export const avatarAgent = { entry: runAvatarAgentEntry };
-export {
-  GatewayWsClient,
-  AVATAR_ASPECT_RATIO_DEFAULT,
-  AVATAR_ASPECT_RATIOS,
-  AVATAR_ASPECT_RATIO_LOOKUP,
-};
+export { GatewayWsClient };
 export default avatarAgent;

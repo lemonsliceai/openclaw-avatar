@@ -5,7 +5,7 @@ export function definePluginEntry<T extends {
   register: (...args: any[]) => any;
 }>(entry: T): T & { configSchema: Record<string, never> } {
   return {
-    configSchema: {},
     ...entry,
+    configSchema: {},
   };
 }

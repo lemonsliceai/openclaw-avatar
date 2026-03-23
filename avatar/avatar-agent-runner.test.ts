@@ -5,13 +5,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import avatarAgent, {
   GatewayWsClient,
-  AVATAR_ASPECT_RATIO_DEFAULT as RUNNER_AVATAR_ASPECT_RATIO_DEFAULT,
-  AVATAR_ASPECT_RATIO_LOOKUP,
   buildLemonSliceAspectRatioPayload,
   computeStreamingTextDelta,
 } from "./avatar-agent-runner.js";
 import {
   AVATAR_ASPECT_RATIO_DEFAULT,
+  AVATAR_ASPECT_RATIO_LOOKUP,
   AVATAR_ASPECT_RATIOS,
 } from "./avatar-aspect-ratio.js";
 
@@ -215,9 +214,7 @@ describe("avatar aspect ratio constants", () => {
     expect(Array.from(AVATAR_ASPECT_RATIO_LOOKUP)).toEqual([
       ...AVATAR_ASPECT_RATIOS,
     ]);
-    expect(RUNNER_AVATAR_ASPECT_RATIO_DEFAULT).toBe(
-      AVATAR_ASPECT_RATIO_DEFAULT,
-    );
+    expect(AVATAR_ASPECT_RATIO_DEFAULT).toBe("16x9");
   });
 
   it("maps aspect ratio into the LemonSlice request payload", () => {
