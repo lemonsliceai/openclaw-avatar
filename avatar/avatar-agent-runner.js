@@ -14,12 +14,23 @@ const GATEWAY_PROTOCOL_VERSION = 3;
 const GATEWAY_CLIENT_ID = "gateway-client";
 const AVATAR_CONTROL_EVENT_TOPIC = "avatar.avatar-control";
 const AVATAR_CONTROL_ACK_EVENT_TOPIC = "avatar.avatar-control-ack";
+
 function requireEnv(name) {
   const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(`Missing required env var ${name}`);
   }
   return value;
+}
+
+function normalizeAspectRatio(rawAspectRatio) {
+  if (typeof rawAspectRatio !== "string") {
+    return AVATAR_ASPECT_RATIO_DEFAULT;
+  }
+  const normalized = rawAspectRatio.trim();
+  return AVATAR_ASPECT_RATIO_LOOKUP.has(normalized)
+    ? normalized
+    : AVATAR_ASPECT_RATIO_DEFAULT;
 }
 
 function resolveDepsBaseRunnerPath() {
@@ -100,11 +111,7 @@ function parseJobMetadata(raw) {
     typeof parsed.avatarTimeoutSeconds === "number" && Number.isFinite(parsed.avatarTimeoutSeconds)
       ? Math.min(600, Math.max(1, Math.floor(parsed.avatarTimeoutSeconds)))
       : 60;
-  const aspectRatio =
-    typeof parsed.aspectRatio === "string" &&
-    AVATAR_ASPECT_RATIO_LOOKUP.has(parsed.aspectRatio.trim())
-      ? parsed.aspectRatio.trim()
-      : AVATAR_ASPECT_RATIO_DEFAULT;
+  const aspectRatio = normalizeAspectRatio(parsed.aspectRatio);
   const interruptReplyOnNewMessage = parsed.interruptReplyOnNewMessage === true;
   if (!sessionKey || !imageUrl) {
     throw new Error("LiveKit Avatar job metadata is incomplete");
@@ -113,12 +120,7 @@ function parseJobMetadata(raw) {
 }
 
 export function buildLemonSliceAspectRatioPayload(aspectRatio) {
-  const normalized =
-    typeof aspectRatio === "string" &&
-    AVATAR_ASPECT_RATIO_LOOKUP.has(aspectRatio.trim())
-      ? aspectRatio.trim()
-      : AVATAR_ASPECT_RATIO_DEFAULT;
-  return { aspect_ratio: normalized };
+  return { aspect_ratio: normalizeAspectRatio(aspectRatio) };
 }
 
 function extractTextFromMessage(message) {
@@ -659,32 +661,47 @@ function parseGatewayHttpErrorMessage(status, rawBody) {
   return `gateway speech request failed with status ${status}: ${trimmed}`;
 }
 
-async function requestGatewaySpeechSynthesis(text) {
-  const response = await fetch(buildGatewayHttpUrl("/plugins/openclaw-avatar/api/synthesize"), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...buildGatewayHttpAuthHeaders(),
-    },
-    body: JSON.stringify({ text }),
-  });
-  const rawBody = await response.text();
-  if (!response.ok) {
-    throw new Error(parseGatewayHttpErrorMessage(response.status, rawBody));
-  }
-  let payload = null;
-  if (rawBody.trim()) {
-    try {
-      payload = JSON.parse(rawBody);
-    } catch {
-      payload = null;
+function isAbortError(error) {
+  return (
+    (typeof DOMException === "function" && error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+async function requestGatewaySpeechSynthesis(text, signal) {
+  try {
+    const response = await fetch(buildGatewayHttpUrl("/plugins/openclaw-avatar/api/synthesize"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...buildGatewayHttpAuthHeaders(),
+      },
+      body: JSON.stringify({ text }),
+      signal,
+    });
+    const rawBody = await response.text();
+    if (!response.ok) {
+      throw new Error(parseGatewayHttpErrorMessage(response.status, rawBody));
     }
+    let payload = null;
+    if (rawBody.trim()) {
+      try {
+        payload = JSON.parse(rawBody);
+      } catch {
+        payload = null;
+      }
+    }
+    const body = payload && payload.success === true ? payload : null;
+    if (!body) {
+      throw new Error("gateway speech response returned no payload");
+    }
+    return normalizeGatewaySpeechPayload(body);
+  } catch (error) {
+    if (isAbortError(error)) {
+      return null;
+    }
+    throw error;
   }
-  const body = payload && payload.success === true ? payload : null;
-  if (!body) {
-    throw new Error("gateway speech response returned no payload");
-  }
-  return normalizeGatewaySpeechPayload(body);
 }
 
 function createGatewaySpeechTts(params) {
@@ -699,7 +716,10 @@ function createGatewaySpeechTts(params) {
     }
 
     async run() {
-      const payload = await requestGatewaySpeechSynthesis(this.inputText);
+      const payload = await requestGatewaySpeechSynthesis(this.inputText, this.abortSignal);
+      if (!payload) {
+        return;
+      }
       this.tts.setSampleRate(payload.sampleRate);
       const frameStream = new deps.agents.AudioByteStream(this.tts.sampleRate, 1);
       const arrayBuffer = payload.audioBuffer.buffer.slice(

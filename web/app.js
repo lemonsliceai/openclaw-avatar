@@ -1991,15 +1991,15 @@ async function handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idem
   return replyReceived;
 }
 
-async function submitVoiceTranscript(rawTranscript) {
+async function submitVoiceTranscript(rawTranscript, sessionKey = resolveChatSessionKey()) {
   const transcript = typeof rawTranscript === "string" ? rawTranscript.trim() : "";
   if (!transcript) {
     clearVoiceTranscriptionPending();
     return false;
   }
 
-  const sessionKey = resolveChatSessionKey();
-  if (!sessionKey) {
+  const normalizedSessionKey = typeof sessionKey === "string" ? sessionKey.trim() : "";
+  if (!normalizedSessionKey) {
     clearVoiceTranscriptionPending();
     return false;
   }
@@ -2013,7 +2013,7 @@ async function submitVoiceTranscript(rawTranscript) {
     return false;
   }
 
-  const dedupeKey = getVoiceTranscriptDeduplicationKey(sessionKey);
+  const dedupeKey = getVoiceTranscriptDeduplicationKey(normalizedSessionKey);
   const priorTranscriptEntry = lastVoiceTranscriptByConnection.get(dedupeKey);
   const duplicateTranscript =
     transcript.length >= VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH &&
@@ -2047,7 +2047,7 @@ async function submitVoiceTranscript(rawTranscript) {
     const payload = await requestJson(`${AVATAR_PLUGIN_BASE_PATH}/api/chat/send`, {
       method: "POST",
       body: JSON.stringify({
-        sessionKey,
+        sessionKey: normalizedSessionKey,
         message: transcript,
         idempotencyKey,
       }),
@@ -2055,11 +2055,11 @@ async function submitVoiceTranscript(rawTranscript) {
     const response = payload?.response ?? {};
     setOutput({
       action: "voice-chat-sent",
-      sessionKey,
+      sessionKey: normalizedSessionKey,
       idempotencyKey,
       response,
     });
-    await handleDisconnectedSendFallback(liveUpdatesReady, sessionKey, idempotencyKey);
+    await handleDisconnectedSendFallback(liveUpdatesReady, normalizedSessionKey, idempotencyKey);
     return true;
   } catch (error) {
     clearAvatarInterruptPending({
@@ -2580,7 +2580,7 @@ function queueServerSpeechCaptureUpload(audioBytes, mimeType, options = {}) {
         clearVoiceTranscriptionPending();
         return;
       }
-      const submitted = await submitVoiceTranscript(transcript);
+      const submitted = await submitVoiceTranscript(transcript, transcriptRequest.sessionKey);
       if (!submitted) {
         clearVoiceTranscriptionPending();
       }
@@ -2778,6 +2778,8 @@ async function startServerSpeechTranscription() {
         sourceNode,
         processorNode,
         silenceNode,
+        mediaRecorder,
+        captureTrack,
       });
       return;
     }
@@ -2902,6 +2904,8 @@ async function startServerSpeechTranscription() {
         sourceNode,
         processorNode,
         silenceNode,
+        mediaRecorder,
+        captureTrack,
       });
       return;
     }
@@ -2988,6 +2992,8 @@ async function startServerSpeechTranscription() {
         sourceNode,
         processorNode,
         silenceNode,
+        mediaRecorder,
+        captureTrack,
       });
       return;
     }
@@ -3013,6 +3019,8 @@ async function startServerSpeechTranscription() {
         sourceNode,
         processorNode,
         silenceNode,
+        mediaRecorder,
+        captureTrack,
       });
       reportServerSpeechTranscriptionFailure("server-speech-recorder-start-failed", error);
       scheduleServerSpeechStartRetry("server-speech-recorder-start-failed");

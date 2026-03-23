@@ -30,7 +30,7 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 
 ### OpenClaw
 
-Before installing and running this plugin, you must have an OpenClaw instance installed and configured with at least one LLM provider, and TTS and STT capabilties.
+Before installing and running this plugin, you must have an OpenClaw instance installed and configured with at least one LLM provider, and TTS and STT capabilities.
 
 - OpenClaw [getting started](https://docs.openclaw.ai/start/getting-started)
 
@@ -76,7 +76,7 @@ openclaw plugins enable openclaw-avatar
 2. Allow the Avatar plugin:
 
 `openclaw.json`
-```
+```json
 "plugins": {
     ...
     "allow": [
