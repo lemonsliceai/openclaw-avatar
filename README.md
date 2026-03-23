@@ -20,11 +20,10 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 
 - [Prerequisites](#prerequisites)
 - [Quickstart](#quickstart)
-- [Configure](#configure)
 - [Join avatar session](#join-avatar-session)
+- [Config](#config)
 - [Usage tips](#usage-tips)
 - [Update](#update)
-- [About The Install Warning](#about-the-install-warning)
 - [License](#license)
 
 <a id="prerequisites"></a>
@@ -32,15 +31,21 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 
 ### OpenClaw
 
-Before installing and running this plugin, you must have an OpenClaw instance installed and configured.
+Before installing and running this plugin, you must have an OpenClaw instance installed and configured with at least one LLM provider, and TTS and STT capabilties.
 
-- OpenClaw [install guide](https://docs.openclaw.ai/install#npm-pnpm)
+- OpenClaw [getting started](https://docs.openclaw.ai/start/getting-started)
 
-After installing OpenClaw, configure at least one LLM provider before you install this plugin. We highly recommend using a fast model for a better experience. e.g. gpt-5-nano
+We recommend using a fast model for a better experience. e.g. gpt-5-nano
 
-```bash
-openclaw config
-```
+<a id="tts-for-avatar"></a>
+### TTS for avatar
+
+Avatar uses the core `messages.tts` configuration for avatar speech playback. Configure it in your main OpenClaw config. Provider setup, examples, and caveats live here: https://docs.openclaw.ai/tts
+
+<a id="stt-for-avatar"></a>
+### STT for avatar
+
+Avatar uses the core `tools.media.audio` configuration for speech-to-text during avatar sessions. Configure it in your main OpenClaw config. Provider setup, examples, and transcription model options live here: https://docs.openclaw.ai/audio
 
 ### Providers
 
@@ -53,14 +58,28 @@ You will also need API keys with the following service providers:
 <a id="quickstart"></a>
 ## Quickstart
 
-1. Install and configure OpenClaw with a working LLM provider by running `openclaw config`.
-
-2. Install and enable the plugin:
+1. Install and enable the plugin:
 
 ```bash
-openclaw plugins install openclaw-avatar-do-not-install-7f3c9d1@latest
+openclaw plugins install @openclaw/avatar@latest
 openclaw plugins enable avatar
 ```
+
+2. Allow the Avatar plugin:
+
+`openclaw.json`
+```
+"plugins": {
+    ...
+    "allow": [
+      "avatar"
+    ],
+    ...
+}
+```
+or via gateway UI
+
+http://127.0.0.1:18789/automation
 
 3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Avatar:
 
@@ -68,10 +87,10 @@ openclaw plugins enable avatar
 openclaw avatar-setup
 ```
 
-4. Start the OpenClaw gateway:
+4. Restart the OpenClaw gateway:
 
 ```bash
-openclaw gateway run
+openclaw gateway run --force
 ```
 
 5. Open the session UI for OpenClaw Avatar Chat:
@@ -82,104 +101,45 @@ http://127.0.0.1:18789/plugins/avatar/
 
 6. Paste a public avatar image URL, leave the session key as `main` unless you already use a different OpenClaw session, and start the session.
 
-When setup is complete, the plugin config page should show green `OK` indicators for both Gateway and Config:
+<a id="config"></a>
+## Config
 
-```text
-http://127.0.0.1:18789/plugins/avatar/config
+In `openclaw.json`
+
+```json
+{
+  "plugins": {
+    ...
+    "entries": {
+      "avatar": {
+        "config": {
+          "avatar": {
+            "provider": "lemonslice",
+            "lemonSlice": {
+              "apiKey": "<lemonslice-api-key>",
+              "imageUrl": "https://example.com/avatar-image.jpg"
+            },
+            "livekit": {
+              "url": "wss://your-project.livekit.cloud",
+              "apiKey": "<livekit-api-key>",
+              "apiSecret": "<livekit-api-secret>"
+            }
+          }
+        }
+      }
+    },
+    ...
+  }
+}
 ```
 
-## Configure
+<a id="usage-tips"></a>
+## Usage tips
 
-The plugin can be configured with either the CLI (recommended) or the browser UI. The CLI path is the fastest option for most users. If you choose the browser UI, you must first [run the OpenClaw gateway](#run-gateway).
-
-### CLI Config 
-
-```bash
-openclaw avatar-setup
-```
-
-This command is the recommended setup flow because it walks you through the required plugin credentials in one place.
-
-### Browser Config
-
-1. [Run the gateway](#run-gateway)
-
-2. [Open the plugin UI](http://127.0.0.1:18789/plugins/avatar/config)
-
-3. Set gateway token, click "Use Token"
-
-4. Set provider values, click "Save"
-
-Browser Config link
-```text
-http://127.0.0.1:18789/plugins/avatar/config
-```
-
-**Once the plugin is properly configured the Gateway and Config status indicators (top bar of plugin web UI) will read "OK" and show green lights.**
-
-![Green Config](assets/GreenConfig.png)
-
-<a id="run-gateway"></a>
-### Run Gateway
-
-Start
-
-```bash
-openclaw gateway run
-```
-
-If the gateway is currently running, it can be stopped by using:
-
-```bash
-openclaw gateway stop
-```
-
-The gateway can also be forcefully re-run:
-
-```bash
-openclaw gateway run --force
-```
-
-<a id="join-avatar-session"></a>
-## Join avatar session
-
-Open the session UI, fill in the form, and start your avatar session:
-
-```text
-http://127.0.0.1:18789/plugins/avatar/
-```
-
-Plugin documentation is also available in the web UI at:
-
-```text
-http://127.0.0.1:18789/plugins/avatar/readme
-```
-
-If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
-
-Session form fields:
-
-- **Avatar image URL** - required for each session start.
-- **Avatar timeout (seconds)** - defaults to `60`.
-
-Session key tips:
-
-- Leave the Session key field blank, or enter `main`, to use the default OpenClaw session key from `session.mainKey` (fallback: `main`).
-- Enter a plain key like `research` if that is the session name you started in OpenClaw.
-- For the default OpenClaw main agent, the fully qualified agent session key format is `agent:main:<sessionKey>`, for example `agent:main:main`.
-- If OpenClaw already shows a full agent session key, paste it into the field exactly as-is.
-
-Typical first run:
-
-1. Keep the session key as `main`.
-
-2. Paste your public avatar image URL.
-
-3. Pick an avatar aspect ratio. Leave it at `16x9` unless your source image works better in one of the supported portrait or landscape ratios below.
-
-4. Leave avatar timeout at `60` unless you need a different value.
-
-5. Start the session and begin chatting through the page controls.
+- The plugin is best used in a Chromium-based browser.
+- If you choose to use the picture-in-picture view for the avatar, do not close the avatar tab.
+- Avatar image tips: https://lemonslice.com/docs/avatar-design 
+- **Avatar timeout (seconds)** - defaults to `60`. This defines how long your avatar will remain in the chat without interaction.
 
 <a id="update"></a>
 ## Update

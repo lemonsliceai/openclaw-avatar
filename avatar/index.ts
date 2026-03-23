@@ -1995,7 +1995,7 @@ function registerAvatarSetupCli(api: OpenClawPluginApi): void {
         .action(async (options: unknown) => {
           await runAvatarSetupCli(api, options);
         });
-    });
+    }, { commands: ["avatar-setup"] });
 }
 
 async function readRequestBody(request: IncomingMessage): Promise<string> {

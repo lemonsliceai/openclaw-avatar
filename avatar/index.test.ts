@@ -162,7 +162,7 @@ function setup(
   const methods = new Map<string, unknown>();
   const services: unknown[] = [];
   const httpRoutes: unknown[] = [];
-  const cliCommands: unknown[] = [];
+  const cliCommands: Array<{ definition: unknown; metadata?: unknown }> = [];
 
   vi.mocked(runtime.config.loadConfig).mockReturnValue(config as never);
   if (options.disableVideoAvatarRuntime) {
@@ -192,7 +192,8 @@ function setup(
     registerHttpRoute: (route: unknown) => httpRoutes.push(route),
     registerChannel: () => {},
     registerProvider: () => {},
-    registerCli: (command: unknown) => cliCommands.push(command),
+    registerCli: (definition: unknown, metadata?: unknown) =>
+      cliCommands.push({ definition, metadata }),
     registerCommand: () => {},
     resolvePath: options.resolvePath ?? ((input: string) => `/tmp/${input}`),
     on: () => {},
@@ -451,7 +452,10 @@ describe("avatar plugin", () => {
 
   it("registers gateway token as the first avatar setup CLI option", () => {
     const { cliCommands } = setup();
-    const registerCli = cliCommands[0] as ((ctx: { program: unknown }) => void) | undefined;
+    const cliRegistration = cliCommands[0];
+    const registerCli = cliRegistration?.definition as
+      | ((ctx: { program: unknown }) => void)
+      | undefined;
     const optionFlags: string[] = [];
     let actionHandler: unknown;
     const commandApi = {
@@ -479,6 +483,7 @@ describe("avatar plugin", () => {
     });
 
     expect(optionFlags[0]).toBe("--gateway-token <token>");
+    expect(cliRegistration?.metadata).toEqual({ commands: ["avatar-setup"] });
     expect(actionHandler).toBeTypeOf("function");
   });
 

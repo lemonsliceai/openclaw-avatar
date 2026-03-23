@@ -122,7 +122,12 @@ declare module "openclaw/plugin-sdk" {
       stop: () => Promise<void>;
     }) => void;
     registerHttpRoute: (route: unknown) => void;
-    registerCli: (definition: unknown) => void;
+    registerCli: (
+      definition: unknown,
+      metadata?: {
+        commands?: string[];
+      },
+    ) => void;
     resolvePath: (input: string) => string;
     [key: string]: unknown;
   };
