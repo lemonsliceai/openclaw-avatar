@@ -14,7 +14,7 @@ import type {
   OpenClawPluginApi,
   OpenClawPluginServiceContext,
   RespondFn,
-} from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/core";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   resetProcessGroupChildren,

@@ -1,4 +1,4 @@
-declare module "openclaw/plugin-sdk" {
+declare module "openclaw/plugin-sdk/core" {
   export type RespondFn = (
     success: boolean,
     result?: unknown,
