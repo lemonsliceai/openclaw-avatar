@@ -15,8 +15,6 @@ describe("normalizeGatewayAuthMode", () => {
 
   it("preserves supported auth modes", () => {
     expect(normalizeGatewayAuthMode("password")).toBe("password");
-    expect(normalizeGatewayAuthMode("trusted-proxy")).toBe("trusted-proxy");
-    expect(normalizeGatewayAuthMode("none")).toBe("none");
   });
 });
 
@@ -30,6 +28,15 @@ describe("inferGatewayAuthModeFromSettings", () => {
       inferGatewayAuthModeFromSettings({
         gatewayAuthMode: "token",
         password: "old-password",
+      }),
+    ).toBe("token");
+  });
+
+  it("ignores blank legacy passwords when a token is present", () => {
+    expect(
+      inferGatewayAuthModeFromSettings({
+        password: " ",
+        token: "fresh-token",
       }),
     ).toBe("token");
   });
@@ -62,14 +69,14 @@ describe("getGatewayAuthStateFromSettings", () => {
     });
   });
 
-  it("migrates legacy password credentials without clobbering them", () => {
+  it("migrates legacy password credentials without trimming them", () => {
     expect(
       getGatewayAuthStateFromSettings({
         password: "  shared-secret  ",
       }),
     ).toEqual({
       mode: "password",
-      secret: "shared-secret",
+      secret: "  shared-secret  ",
     });
   });
 

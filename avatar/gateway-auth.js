@@ -14,6 +14,13 @@ function trimStoredSecret(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function readStoredSecret(value, options = {}) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return options.trim === false ? value : value.trim();
+}
+
 export function normalizeGatewayAuthMode(rawValue) {
   return readExplicitGatewayAuthMode(rawValue) || "token";
 }
@@ -24,11 +31,8 @@ export function inferGatewayAuthModeFromSettings(settings = {}) {
   if (explicitMode) {
     return explicitMode;
   }
-  if (typeof normalizedSettings.password === "string") {
+  if (typeof normalizedSettings.password === "string" && normalizedSettings.password.trim().length > 0) {
     return "password";
-  }
-  if (typeof normalizedSettings.token === "string") {
-    return "token";
   }
   return "token";
 }
@@ -36,10 +40,15 @@ export function inferGatewayAuthModeFromSettings(settings = {}) {
 export function getGatewayAuthStateFromSettings(settings = {}, legacyToken = "") {
   const normalizedSettings = settings && typeof settings === "object" ? settings : {};
   const mode = inferGatewayAuthModeFromSettings(normalizedSettings);
-  const gatewayAuthSecret = trimStoredSecret(normalizedSettings.gatewayAuthSecret);
-  const password = trimStoredSecret(normalizedSettings.password);
-  const token = trimStoredSecret(normalizedSettings.token);
-  const legacy = trimStoredSecret(legacyToken);
+  const shouldTrimPasswordSecret = mode !== "password";
+  const gatewayAuthSecret = readStoredSecret(normalizedSettings.gatewayAuthSecret, {
+    trim: shouldTrimPasswordSecret,
+  });
+  const password = readStoredSecret(normalizedSettings.password, {
+    trim: shouldTrimPasswordSecret,
+  });
+  const token = readStoredSecret(normalizedSettings.token);
+  const legacy = readStoredSecret(legacyToken);
   const preferredSharedSecret = mode === "password" ? password : token;
   const secondarySharedSecret = mode === "password" ? token : password;
 
