@@ -214,7 +214,7 @@ describe("avatar aspect ratio constants", () => {
     expect(Array.from(AVATAR_ASPECT_RATIO_LOOKUP)).toEqual([
       ...AVATAR_ASPECT_RATIOS,
     ]);
-    expect(AVATAR_ASPECT_RATIO_DEFAULT).toBe("16x9");
+    expect(AVATAR_ASPECT_RATIO_DEFAULT).toBe("3x2");
   });
 
   it("maps aspect ratio into the LemonSlice request payload", () => {

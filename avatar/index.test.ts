@@ -1000,7 +1000,6 @@ describe("avatar plugin", () => {
     const respond = await invoke(methods, "avatar.session.create", {
       sessionKey: "agent:main/main",
       avatarImageUrl: "https://example.com/browser-avatar.png",
-      aspectRatio: "9x16",
       avatarTimeoutSeconds: 75,
       interruptReplyOnNewMessage: true,
     });
@@ -1019,7 +1018,7 @@ describe("avatar plugin", () => {
     expect(payload?.roomName).toContain("openclaw-agent-main-main-");
     expect(payload?.participantToken?.split(".")).toHaveLength(3);
     expectEphemeralAgentName(payload?.agentName);
-    expect(payload?.aspectRatio).toBe("9x16");
+    expect(payload?.aspectRatio).toBe("3x2");
     expect(payload?.interruptReplyOnNewMessage).toBe(true);
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       video: {
@@ -1041,7 +1040,7 @@ describe("avatar plugin", () => {
         sessionKey: "agent:main/main",
         imageUrl: "https://example.com/browser-avatar.png",
         avatarTimeoutSeconds: 75,
-        aspectRatio: "9x16",
+        aspectRatio: "3x2",
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -1096,7 +1095,7 @@ describe("avatar plugin", () => {
       | undefined;
     expect(payload?.sessionKey).toBe("main");
     expect(payload?.chatSessionKey).toBe("agent:main:main");
-    expect(payload?.aspectRatio).toBe("16x9");
+    expect(payload?.aspectRatio).toBe("3x2");
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       video: {
         roomJoin: true,
@@ -1114,7 +1113,7 @@ describe("avatar plugin", () => {
         sessionKey: "agent:main:main",
         imageUrl: "https://example.com/default-avatar.png",
         avatarTimeoutSeconds: 60,
-        aspectRatio: "16x9",
+        aspectRatio: "3x2",
         interruptReplyOnNewMessage: true,
       }),
     );
