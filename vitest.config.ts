@@ -18,7 +18,7 @@ export default defineConfig({
         ),
       },
       {
-        find: "openclaw/plugin-sdk",
+        find: "openclaw/plugin-sdk/core",
         replacement: path.join(__dirname, "test-utils/openclaw-plugin-sdk.ts"),
       },
     ],
