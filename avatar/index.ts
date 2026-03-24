@@ -209,7 +209,6 @@ type GatewayErrorShape = {
 };
 
 type AvatarSetupInput = {
-  gatewayToken?: string;
   lemonSliceApiKey?: string;
   livekitUrl?: string;
   livekitApiKey?: string;
@@ -1897,7 +1896,6 @@ function parseAvatarSetupInput(
   };
 
   const parsed: AvatarSetupInput = {
-    gatewayToken: readInput("gatewayToken"),
     lemonSliceApiKey: readInput("lemonSliceApiKey"),
     livekitUrl: readInput("livekitUrl"),
     livekitApiKey: readInput("livekitApiKey"),
@@ -1918,9 +1916,6 @@ function applyAvatarSetupToConfig(
   setupInput: AvatarSetupInput,
 ): OpenClawConfig {
   const effective = resolveEffectiveAvatarConfig(config);
-  const gatewayRecord = asObjectRecord(config.gateway);
-  const gatewayAuthRecord = asObjectRecord(gatewayRecord.auth);
-  const gatewayToken = normalizeOptionalSetupSecretString(setupInput.gatewayToken);
   const lemonSliceApiKey =
     normalizeOptionalSetupSecretString(setupInput.lemonSliceApiKey) ??
     effective.avatar?.lemonSlice?.apiKey;
@@ -1952,18 +1947,6 @@ function applyAvatarSetupToConfig(
 
   return {
     ...config,
-    ...(gatewayToken
-      ? {
-          gateway: {
-            ...gatewayRecord,
-            auth: {
-              ...gatewayAuthRecord,
-              mode: "token",
-              token: gatewayToken,
-            },
-          },
-        }
-      : {}),
     plugins: {
       ...plugins,
       entries: {
@@ -2202,10 +2185,6 @@ async function runAvatarSetupCli(api: OpenClawPluginApi, options: unknown): Prom
   const effectiveCurrentConfig = resolveEffectiveAvatarConfig(currentConfig);
 
   let setupInput: AvatarSetupInput = {
-    gatewayToken:
-      readCliOption(options, "gatewayToken") ??
-      process.env.AVATAR_GATEWAY_TOKEN ??
-      process.env.OPENCLAW_GATEWAY_TOKEN,
     lemonSliceApiKey:
       readCliOption(options, "lemonsliceApiKey") ??
       readCliOption(options, "lemonSliceApiKey") ??
@@ -2225,7 +2204,6 @@ async function runAvatarSetupCli(api: OpenClawPluginApi, options: unknown): Prom
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
       setupInput = {
-        gatewayToken: await promptTerminalField({ rl, label: "Gateway token" }),
         lemonSliceApiKey: await promptTerminalField({ rl, label: "LemonSlice API key" }),
         livekitUrl: await promptTerminalField({
           rl,
@@ -2267,8 +2245,7 @@ function registerAvatarSetupCli(api: OpenClawPluginApi): void {
       program
         .command(AVATAR_SETUP_COMMAND)
         .alias(LEGACY_AVATAR_SETUP_COMMAND)
-        .description("Configure OpenClaw gateway auth and Avatar provider credentials")
-        .option("--gateway-token <token>", "OpenClaw gateway token")
+        .description("Configure Avatar provider credentials")
         .option("--lemonslice-api-key <key>", "LemonSlice API key")
         .option("--livekit-url <url>", "LiveKit URL")
         .option("--livekit-api-key <key>", "LiveKit API key")
@@ -3227,7 +3204,17 @@ function registerAvatarHttpRoutes(
         gateway: {
           auth: {
             mode: "token" as const,
-            token: gateway.auth.token ?? "",
+          },
+        },
+      };
+    }
+    if (gateway.auth.mode === "password") {
+      return {
+        success: true,
+        openclaw,
+        gateway: {
+          auth: {
+            mode: "password" as const,
           },
         },
       };

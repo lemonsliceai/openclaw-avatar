@@ -111,7 +111,9 @@ openclaw gateway run --force
 http://127.0.0.1:18789/plugins/openclaw-avatar/
 ```
 
-6. Paste a public avatar image URL.
+6. Enter your gateway auth credential on the main page and click Connect.
+
+7. Paste a public avatar image URL (optional, default provided).
 
 <a id="config"></a>
 ## Config
