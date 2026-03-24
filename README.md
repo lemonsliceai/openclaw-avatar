@@ -6,7 +6,7 @@ The avatar listens to you, sends your speech to your OpenClaw agent, and speaks 
 Design your OpenClaw’s face to match its personality. Unlimited avatar options. Powered by LemonSlice, real-time AI avatar technology. 
 
 ## How it Works
-You speak (or type) → Avatar transcribes → OpenClaw processes → Avatar speaks response
+You speak (or type) → OpenClaw TTS → OpenClaw processes → OpenClaw TTS response -> LemonSlice
 This plugin works with the OpenClaw gateway. It allows you to have a floating FaceTime-style avatar on your screen while you work. 
 ## Features
 - Real-time video avatar 
@@ -20,9 +20,10 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 - [Prerequisites](#prerequisites)
 - [Quickstart](#quickstart)
 - [Config](#config)
-- [ClawHub release](#clawhub-release)
 - [Usage tips](#usage-tips)
 - [Update](#update)
+- [About The Install Warning](#about-the-install-warning)
+- [Minimum Openclaw config](#minimum-openclaw-config)
 - [License](#license)
 
 <a id="prerequisites"></a>
@@ -30,11 +31,17 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 
 ### OpenClaw
 
-Before installing and running this plugin, you must have an OpenClaw instance installed and configured with at least one LLM provider, and TTS and STT capabilities.
+Before installing and running this plugin, you must have an OpenClaw instance installed and configured with at least one LLM provider, and TTS and STT capabilities. A minimum OpenClaw config example [can be found below](#minimum-openclaw-config).
 
 - OpenClaw [getting started](https://docs.openclaw.ai/start/getting-started)
 
 We recommend using a fast model for a better experience. e.g. gpt-5-nano
+
+### About OpenClaw Config
+
+- OpenClaw stores its config in a JSON file on your machine, for example `~/.openclaw/openclaw.json`.
+- Config settings are usually referenced with dot notation, for example `gateway.auth.token`.
+- A minimum OpenClaw config example [can be found below](#minimum-openclaw-config).
 
 <a id="tts-for-avatar"></a>
 ### TTS for avatar
@@ -75,18 +82,13 @@ openclaw plugins enable openclaw-avatar
 
 2. Allow the Avatar plugin:
 
-`openclaw.json`
+`openclaw.json` - `plugins.allow`
 ```json
 "plugins": {
-    ...
     "allow": [
       "openclaw-avatar"],
-    ...
 }
 ```
-or via gateway UI
-
-http://127.0.0.1:18789/automation
 
 3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Avatar:
 
@@ -106,17 +108,16 @@ openclaw gateway run --force
 http://127.0.0.1:18789/plugins/openclaw-avatar/
 ```
 
-6. Paste a public avatar image URL, leave the session key as `main` unless you already use a different OpenClaw session, and start the session.
+6. Paste a public avatar image URL.
 
 <a id="config"></a>
 ## Config
 
-In `openclaw.json`
+In `openclaw.json` under `plugins.entries`
 
 ```json
 {
   "plugins": {
-    ...
     "entries": {
       "openclaw-avatar": {
         "config": {
@@ -135,32 +136,12 @@ In `openclaw.json`
           }
         }
       }
-    },
-    ...
+    }
   }
 }
 ```
 
 `avatar.verbose` defaults to `false`. When it is `false`, the gateway log only receives Avatar sidecar-ready, session start/end lifecycle events, and the worker progress state changes shown above the avatar in the main view. Set it to `true` to restore the full Avatar event stream.
-
-<a id="clawhub-release"></a>
-## ClawHub release
-
-ClawHub now supports native OpenClaw plugins. This package is set up as a code plugin and can be published directly from the repo root after you build and validate it.
-
-```bash
-npm run validate
-clawhub login
-clawhub package publish . \
-  --source-repo lemonsliceai/videoChatPlugin \
-  --source-commit $(git rev-parse HEAD)
-```
-
-Notes:
-
-- `npm run validate` runs typecheck, tests, and a dry-run package build.
-- `clawhub package publish` uploads the package artifact and links it to the exact GitHub commit used for the release.
-- Publish the same version to npm as `@lemonsliceai/openclaw-avatar`.
 
 <a id="usage-tips"></a>
 ## Usage tips
@@ -178,6 +159,117 @@ The plugin can be updated to the latest version using:
 ```bash
 openclaw plugins update openclaw-avatar  
 ```
+
+<a id="about-the-install-warning"></a>
+## About The Install Warning
+
+OpenClaw may show a warning like this during install:
+
+```text
+WARNING: Plugin "avatar" contains dangerous code patterns: Shell command execution detected (child_process) (.../avatar/index.ts:1727); Environment variable access combined with network send — possible credential harvesting (.../avatar/index.ts:212)
+```
+
+That warning is expected for this plugin. It is flagging two real implementation details:
+
+- `child_process` in `avatar/index.ts` is used to start a local sidecar worker for the `avatar-agent` service. That worker runs the long-lived LiveKit agent runtime in a separate process so it can be started, stopped, restarted, and isolated from the main gateway process.
+- `process.env` plus network activity in `avatar/index.ts` is used to read setup defaults and plugin-specific runtime variables, then connect to the local OpenClaw gateway and the configured LiveKit, LemonSlice, and OpenClaw speech/media runtime services that power the plugin.
+
+What this plugin is not doing:
+
+- It does not execute arbitrary shell snippets from user input.
+- The plugin does not scan unrelated environment variables and send them to a third-party endpoint.
+- Outbound connections are limited to the services required for the avatar flow and the local OpenClaw gateway bridge.
+
+What it does do:
+
+- Launch a local worker process for the avatar agent runtime.
+- Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
+- Send audio, transcript, and session traffic only to the configured providers needed for Avatar to function.
+
+<a id="minimum-openclaw-config"></a>
+## Minimum Openclaw config
+
+This example is assembled from a working local `openclaw.json` and trimmed down to the minimum sections Avatar depends on. Replace each placeholder with your own value.
+
+```json
+{
+  "models": {
+    "providers": {
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "<openai-api-key>"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openai/gpt-5.1-codex"
+      }
+    },
+    "list": [
+      {
+        "id": "main"
+      }
+    ]
+  },
+  "messages": {
+    "tts": {
+      "auto": "always",
+      "provider": "elevenlabs",
+      "elevenlabs": {
+        "apiKey": "<elevenlabs-api-key>",
+        "voiceId": "<elevenlabs-voice-id>",
+        "modelId": "eleven_flash_v2_5",
+        "applyTextNormalization": "auto"
+      }
+    }
+  },
+  "tools": {
+    "media": {
+      "audio": {
+        "enabled": true,
+        "models": [
+          {
+            "provider": "groq",
+            "model": "whisper-large-v3-turbo",
+            "type": "provider",
+            "timeoutSeconds": 60,
+            "language": "en"
+          }
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "allow": ["openclaw-avatar"],
+    "entries": {
+      "openclaw-avatar": {
+        "enabled": true,
+        "config": {
+          "avatar": {
+            "provider": "lemonslice",
+            "verbose": false,
+            "lemonSlice": {
+              "apiKey": "<lemonslice-api-key>"
+            },
+            "livekit": {
+              "url": "wss://<your-project>.livekit.cloud",
+              "apiKey": "<livekit-api-key>",
+              "apiSecret": "<livekit-api-secret>"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- `avatar.lemonSlice.imageUrl` is optional if you plan to paste a public avatar image URL into the session UI.
+- `session.mainKey` is optional; if you leave it unset, the Avatar UI defaults to `main`.
 
 <a id="license"></a>
 ## License

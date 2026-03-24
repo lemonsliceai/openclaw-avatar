@@ -2472,24 +2472,48 @@ function parseMarkdownTableRow(line: string): string[] {
   return trimmed.split("|").map((cell) => cell.trim());
 }
 
+type MarkdownListItemMatch = {
+  indentLength: number;
+  ordered: boolean;
+  content: string;
+};
+
+function matchMarkdownListItem(line: string): MarkdownListItemMatch | null {
+  const match = line.match(/^(\s*)(?:([-*])|(\d+)\.)\s+(.*)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    indentLength: match[1]?.length ?? 0,
+    ordered: Boolean(match[3]),
+    content: match[4] ?? "",
+  };
+}
+
 function renderMarkdownList(lines: string[], startIndex: number, indentLength: number) {
   const items: string[] = [];
   let index = startIndex;
+  const startItem = matchMarkdownListItem(lines[startIndex] ?? "");
+  const ordered = startItem?.ordered ?? false;
+  const listTag = ordered ? "ol" : "ul";
 
   while (index < lines.length) {
-    const itemMatch = lines[index]?.match(/^(\s*)-\s+(.*)$/);
+    const itemMatch = matchMarkdownListItem(lines[index] ?? "");
     if (!itemMatch) {
       break;
     }
-    const currentIndent = itemMatch[1]?.length ?? 0;
+    const currentIndent = itemMatch.indentLength;
     if (currentIndent < indentLength) {
       break;
     }
     if (currentIndent !== indentLength) {
       break;
     }
+    if (itemMatch.ordered !== ordered) {
+      break;
+    }
 
-    const itemParts = [renderMarkdownInline(itemMatch[2] ?? "")];
+    const itemParts = [renderMarkdownInline(itemMatch.content)];
     index += 1;
 
     while (index < lines.length) {
@@ -2499,9 +2523,9 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
         break;
       }
 
-      const nestedItemMatch = nextLine.match(/^(\s*)-\s+(.*)$/);
+      const nestedItemMatch = matchMarkdownListItem(nextLine);
       if (nestedItemMatch) {
-        const nestedIndent = nestedItemMatch[1]?.length ?? 0;
+        const nestedIndent = nestedItemMatch.indentLength;
         if (nestedIndent === indentLength) {
           break;
         }
@@ -2524,9 +2548,9 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
             index += 1;
             break;
           }
-          const candidateListMatch = candidate.match(/^(\s*)-\s+(.*)$/);
+          const candidateListMatch = matchMarkdownListItem(candidate);
           if (candidateListMatch) {
-            const candidateIndent = candidateListMatch[1]?.length ?? 0;
+            const candidateIndent = candidateListMatch.indentLength;
             if (candidateIndent <= continuationIndent) {
               break;
             }
@@ -2549,7 +2573,7 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
   }
 
   return {
-    html: `<ul>${items.join("")}</ul>`,
+    html: `<${listTag}>${items.join("")}</${listTag}>`,
     nextIndex: index,
   };
 }
@@ -2635,9 +2659,9 @@ function renderMarkdownToHtml(markdown: string): string {
       continue;
     }
 
-    const listMatch = line.match(/^(\s*)-\s+(.*)$/);
+    const listMatch = matchMarkdownListItem(line);
     if (listMatch) {
-      const list = renderMarkdownList(lines, index, listMatch[1]?.length ?? 0);
+      const list = renderMarkdownList(lines, index, listMatch.indentLength);
       html.push(list.html);
       index = list.nextIndex;
       continue;
@@ -2652,7 +2676,7 @@ function renderMarkdownToHtml(markdown: string): string {
         !nextTrimmed ||
         /^```/.test(nextTrimmed) ||
         /^#{1,6}\s+/.test(nextLine) ||
-        /^(\s*)-\s+/.test(nextLine) ||
+        matchMarkdownListItem(nextLine) !== null ||
         nextTrimmed.startsWith("<") ||
         (nextLine.includes("|") &&
           index + 1 < lines.length &&

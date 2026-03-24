@@ -2539,7 +2539,11 @@ describe("avatar plugin", () => {
     expect(readmePage.res.body).toContain('id="theme-toggle"');
     expect(readmePage.res.body).toContain('id="nav-collapse-toggle"');
     expect(readmePage.res.body).toContain('/plugins/openclaw-avatar/app.js?v=');
+    expect(readmePage.res.body).toContain("<ol>");
+    expect(readmePage.res.body).toContain("<h3>About OpenClaw Config</h3>");
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
+    expect(readmePage.res.body).toContain("<h2>About The Install Warning</h2>");
+    expect(readmePage.res.body).toContain("<h2>Minimum Openclaw config</h2>");
     expect(readmePage.res.body).not.toContain("__README_HTML__");
 
     const aspectRatioModule = await invokeHttpRoute(
