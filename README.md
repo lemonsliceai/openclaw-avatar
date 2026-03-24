@@ -6,7 +6,7 @@ The avatar listens to you, sends your speech to your OpenClaw agent, and speaks 
 Design your OpenClaw’s face to match its personality. Unlimited avatar options. Powered by LemonSlice, real-time AI avatar technology. 
 
 ## How it Works
-You speak (or type) → OpenClaw TTS → OpenClaw processes → OpenClaw TTS response -> LemonSlice
+You speak (or type) → Microphone / Speech Input → OpenClaw processes → OpenClaw TTS response -> LemonSlice
 This plugin works with the OpenClaw gateway. It allows you to have a floating FaceTime-style avatar on your screen while you work. 
 ## Features
 - Real-time video avatar 
@@ -84,9 +84,12 @@ openclaw plugins enable openclaw-avatar
 
 `openclaw.json` - `plugins.allow`
 ```json
-"plugins": {
+{
+  "plugins": {
     "allow": [
-      "openclaw-avatar"],
+      "openclaw-avatar"
+    ]
+  }
 }
 ```
 
@@ -265,11 +268,6 @@ This example is assembled from a working local `openclaw.json` and trimmed down 
   }
 }
 ```
-
-Notes:
-
-- `avatar.lemonSlice.imageUrl` is optional if you plan to paste a public avatar image URL into the session UI.
-- `session.mainKey` is optional; if you leave it unset, the Avatar UI defaults to `main`.
 
 <a id="license"></a>
 ## License

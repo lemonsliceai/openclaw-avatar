@@ -43,7 +43,7 @@ const AVATAR_PLUGIN_ROUTE_BASE = `/plugins/${AVATAR_PLUGIN_ID}`;
 const LEGACY_AVATAR_PLUGIN_ROUTE_BASE = `/plugins/${LEGACY_AVATAR_PLUGIN_ID}`;
 const AVATAR_SETUP_COMMAND = "openclaw-avatar-setup";
 const LEGACY_AVATAR_SETUP_COMMAND = "avatar-setup";
-const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.22";
+const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.23-1";
 const AVATAR_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-avatar-instance=";
 const AVATAR_SIDECAR_RESET_SETTLE_MS = 1_000;
 const AVATAR_SIDECAR_READY_TIMEOUT_MS = 12_000;
@@ -708,30 +708,115 @@ function parseAvatarDebugFields(rawFields: string): Record<string, unknown> {
   return fields;
 }
 
-function parseVersionSegments(value: unknown): number[] | null {
+type ParsedSemverIdentifier =
+  | { numeric: true; value: number }
+  | { numeric: false; value: string };
+
+type ParsedSemverVersion = {
+  core: [number, number, number];
+  prerelease: ParsedSemverIdentifier[] | null;
+};
+
+function parseSemverIdentifiers(value: string): ParsedSemverIdentifier[] | null {
+  if (!value) {
+    return null;
+  }
+  const identifiers = value.split(".");
+  if (!identifiers.every((identifier) => /^[0-9A-Za-z-]+$/.test(identifier))) {
+    return null;
+  }
+  return identifiers.map((identifier) => {
+    if (/^\d+$/.test(identifier)) {
+      return {
+        numeric: true,
+        value: Number.parseInt(identifier, 10),
+      };
+    }
+    return {
+      numeric: false,
+      value: identifier,
+    };
+  });
+}
+
+function parseSemverVersion(value: unknown): ParsedSemverVersion | null {
   const normalized = normalizeOptionalString(value);
   if (!normalized) {
     return null;
   }
-  const segments = normalized.match(/\d+/g);
-  if (!segments?.length) {
+  const match = normalized.match(
+    /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
+  );
+  if (!match) {
     return null;
   }
-  const parsed = segments.map((segment) => Number.parseInt(segment, 10));
-  return parsed.every((segment) => Number.isFinite(segment)) ? parsed : null;
+  const core = match.slice(1, 4).map((segment) => Number.parseInt(segment ?? "", 10));
+  if (core.some((segment) => !Number.isFinite(segment))) {
+    return null;
+  }
+  const prerelease = match[4] ? parseSemverIdentifiers(match[4]) : null;
+  if (match[4] && !prerelease) {
+    return null;
+  }
+  return {
+    core: [core[0] ?? 0, core[1] ?? 0, core[2] ?? 0],
+    prerelease,
+  };
 }
 
 function normalizeVersionString(value: unknown): string | null {
   const normalized = normalizeOptionalString(value);
-  return normalized && parseVersionSegments(normalized) ? normalized : null;
+  return normalized && parseSemverVersion(normalized) ? normalized : null;
 }
 
-function compareVersionSegments(left: number[], right: number[]): number {
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+function compareSemverCore(left: [number, number, number], right: [number, number, number]): number {
+  for (let index = 0; index < left.length; index += 1) {
+    const delta = left[index] - right[index];
     if (delta !== 0) {
       return delta > 0 ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+function compareSemverPrerelease(
+  left: ParsedSemverIdentifier[] | null,
+  right: ParsedSemverIdentifier[] | null,
+): number {
+  if (!left?.length && !right?.length) {
+    return 0;
+  }
+  if (!left?.length) {
+    return 1;
+  }
+  if (!right?.length) {
+    return -1;
+  }
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftIdentifier = left[index];
+    const rightIdentifier = right[index];
+    if (!leftIdentifier) {
+      return -1;
+    }
+    if (!rightIdentifier) {
+      return 1;
+    }
+    if (leftIdentifier.numeric && rightIdentifier.numeric) {
+      const delta = leftIdentifier.value - rightIdentifier.value;
+      if (delta !== 0) {
+        return delta > 0 ? 1 : -1;
+      }
+      continue;
+    }
+    if (leftIdentifier.numeric !== rightIdentifier.numeric) {
+      return leftIdentifier.numeric ? -1 : 1;
+    }
+    const leftValue = String(leftIdentifier.value);
+    const rightValue = String(rightIdentifier.value);
+    const comparison = leftValue.localeCompare(rightValue);
+    if (comparison !== 0) {
+      return comparison > 0 ? 1 : -1;
     }
   }
   return 0;
@@ -741,12 +826,18 @@ function isOpenClawVersionCompatible(
   version: unknown,
   minimumVersion: string = OPENCLAW_MIN_COMPATIBLE_VERSION,
 ): boolean | null {
-  const normalizedVersion = parseVersionSegments(version);
-  const normalizedMinimumVersion = parseVersionSegments(minimumVersion);
+  const normalizedVersion = parseSemverVersion(version);
+  const normalizedMinimumVersion = parseSemverVersion(minimumVersion);
   if (!normalizedVersion || !normalizedMinimumVersion) {
     return null;
   }
-  return compareVersionSegments(normalizedVersion, normalizedMinimumVersion) >= 0;
+  const coreComparison = compareSemverCore(normalizedVersion.core, normalizedMinimumVersion.core);
+  if (coreComparison !== 0) {
+    return coreComparison >= 0;
+  }
+  return (
+    compareSemverPrerelease(normalizedVersion.prerelease, normalizedMinimumVersion.prerelease) >= 0
+  );
 }
 
 function normalizeOptionalSetupSecretString(value: unknown): string | undefined {
@@ -2475,6 +2566,7 @@ function parseMarkdownTableRow(line: string): string[] {
 type MarkdownListItemMatch = {
   indentLength: number;
   ordered: boolean;
+  startNumber: number | null;
   content: string;
 };
 
@@ -2486,6 +2578,7 @@ function matchMarkdownListItem(line: string): MarkdownListItemMatch | null {
   return {
     indentLength: match[1]?.length ?? 0,
     ordered: Boolean(match[3]),
+    startNumber: match[3] ? Number.parseInt(match[3], 10) : null,
     content: match[4] ?? "",
   };
 }
@@ -2515,6 +2608,11 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
   const startItem = matchMarkdownListItem(lines[startIndex] ?? "");
   const ordered = startItem?.ordered ?? false;
   const listTag = ordered ? "ol" : "ul";
+  const startNumber = startItem?.startNumber ?? null;
+  const listStartAttribute =
+    ordered && startNumber !== null && startNumber !== 1
+      ? ` start="${startNumber}"`
+      : "";
 
   while (index < lines.length) {
     const itemMatch = matchMarkdownListItem(lines[index] ?? "");
@@ -2571,6 +2669,16 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
 
       const continuationIndent = nextLine.match(/^\s*/)?.[0].length ?? 0;
       if (continuationIndent > indentLength || sawBlankSeparator) {
+        const startsBlockOutsideListItem =
+          continuationIndent <= indentLength &&
+          (/^#{1,6}\s+/.test(nextLine) ||
+            trimmedNextLine.startsWith("<") ||
+            (nextLine.includes("|") &&
+              index + 1 < lines.length &&
+              isMarkdownTableSeparator(lines[index + 1] ?? "")));
+        if (startsBlockOutsideListItem) {
+          break;
+        }
         const paragraphLines = [nextLine.trim()];
         index += 1;
         while (index < lines.length) {
@@ -2619,7 +2727,7 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
   }
 
   return {
-    html: `<${listTag}>${items.join("")}</${listTag}>`,
+    html: `<${listTag}${listStartAttribute}>${items.join("")}</${listTag}>`,
     nextIndex: index,
   };
 }

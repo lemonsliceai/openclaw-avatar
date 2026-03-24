@@ -147,6 +147,14 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(normalized, "base64").toString("utf8")) as Record<string, unknown>;
 }
 
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractListItemText(html: string): string[] {
+  return Array.from(html.matchAll(/<li>([\s\S]*?)<\/li>/g), (match) => stripHtml(match[1] ?? ""));
+}
+
 function parseDispatchMetadata(callIndex: number): Record<string, unknown> {
   const options = mockAgentDispatchCreateDispatch.mock.calls[callIndex]?.[2] as
     | { metadata?: string }
@@ -2675,18 +2683,55 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
       expect(readmePage.res.statusCode).toBe(200);
       expect(readmePage.res.body.match(/<ol>/g)).toHaveLength(1);
       expect(readmePage.res.body.match(/<li>/g)).toHaveLength(3);
-      expect(readmePage.res.body).toContain(
-        "<ol><li>Install and enable the plugin.<p>Install from ClawHub:</p>",
-      );
-      expect(readmePage.res.body).toContain(
-        "</code></pre><p>Or install directly from npm:</p><pre><code class=\"language-bash\">",
-      );
-      expect(readmePage.res.body).toContain(
-        "</code></pre></li><li>Allow the plugin:<p><code>openclaw.json</code> - <code>plugins.allow</code></p><pre><code class=\"language-json\">",
-      );
-      expect(readmePage.res.body).toContain(
-        "</code></pre></li><li>Configure the plugin.</li></ol>",
-      );
+      const listItems = extractListItemText(readmePage.res.body);
+      expect(listItems).toHaveLength(3);
+      expect(listItems[0]).toContain("Install and enable the plugin");
+      expect(listItems[0]).toContain("Install from ClawHub");
+      expect(listItems[0]).toContain("Or install directly from npm");
+      expect(listItems[1]).toContain("Allow the plugin");
+      expect(listItems[1]).toContain("openclaw.json");
+      expect(listItems[1]).toContain("plugins.allow");
+      expect(listItems[2]).toContain("Configure the plugin");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves ordered list start numbers in rendered README lists", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "avatar-readme-ordered-start-"));
+    const fakePluginRoot = path.join(tempRoot, "plugins", "avatar");
+
+    await mkdir(fakePluginRoot, { recursive: true });
+    await writeFile(
+      path.join(fakePluginRoot, "openclaw.plugin.json"),
+      JSON.stringify({ id: "openclaw-avatar", name: "Avatar" }, null, 2),
+    );
+    await writeFile(
+      path.join(fakePluginRoot, "README.md"),
+      `# Test README
+
+## Quickstart
+
+3. Third step.
+4. Fourth step.
+`,
+    );
+
+    try {
+      const { httpRoutes } = setup(baseConfig, {
+        resolvePath: (input: string) => path.join(fakePluginRoot, input),
+      });
+
+      const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/avatar/readme", {
+        url: "/plugins/avatar/readme",
+      });
+
+      expect(readmePage.handled).toBe(true);
+      expect(readmePage.res.statusCode).toBe(200);
+      expect(readmePage.res.body).toContain('<ol start="3">');
+      const listItems = extractListItemText(readmePage.res.body);
+      expect(listItems).toContain("Third step.");
+      expect(listItems).toContain("Fourth step.");
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
@@ -2700,7 +2745,7 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
         auth: { mode: "token", token: "gateway-token" },
       },
     });
-    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.22";
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.23";
 
     const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/avatar/bootstrap", {
       url: "/plugins/avatar/bootstrap",
@@ -2714,8 +2759,8 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
     expect(JSON.parse(bootstrap.res.body)).toEqual({
       success: true,
       openclaw: {
-        version: "2026.3.22",
-        minimumCompatibleVersion: "2026.3.22",
+        version: "2026.3.23",
+        minimumCompatibleVersion: "2026.3.23-1",
         compatible: true,
       },
       gateway: {
@@ -2740,8 +2785,52 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
       success: true,
       openclaw: {
         version: "2026.3.10",
-        minimumCompatibleVersion: "2026.3.22",
+        minimumCompatibleVersion: "2026.3.23-1",
         compatible: false,
+      },
+    });
+  });
+
+  it("treats OpenClaw prerelease versions with semver ordering", async () => {
+    const prereleaseSetup = setup();
+    (prereleaseSetup.runtime as typeof prereleaseSetup.runtime & { openclawVersion: string }).openclawVersion =
+      "2026.3.23-0";
+
+    const prereleaseBootstrap = await invokeHttpRoute(prereleaseSetup.httpRoutes, "/plugins/avatar/bootstrap", {
+      url: "/plugins/avatar/bootstrap",
+    });
+    expect(prereleaseBootstrap.handled).toBe(true);
+    expect(prereleaseBootstrap.res.statusCode).toBe(200);
+    expect(JSON.parse(prereleaseBootstrap.res.body)).toMatchObject({
+      success: true,
+      openclaw: {
+        version: "2026.3.23-0",
+        minimumCompatibleVersion: "2026.3.23-1",
+        compatible: false,
+      },
+    });
+
+    const matchingPrereleaseSetup = setup();
+    (
+      matchingPrereleaseSetup.runtime as typeof matchingPrereleaseSetup.runtime & {
+        openclawVersion: string;
+      }
+    ).openclawVersion = "2026.3.23-1";
+    const matchingPrereleaseBootstrap = await invokeHttpRoute(
+      matchingPrereleaseSetup.httpRoutes,
+      "/plugins/avatar/bootstrap",
+      {
+      url: "/plugins/avatar/bootstrap",
+      },
+    );
+    expect(matchingPrereleaseBootstrap.handled).toBe(true);
+    expect(matchingPrereleaseBootstrap.res.statusCode).toBe(200);
+    expect(JSON.parse(matchingPrereleaseBootstrap.res.body)).toMatchObject({
+      success: true,
+      openclaw: {
+        version: "2026.3.23-1",
+        minimumCompatibleVersion: "2026.3.23-1",
+        compatible: true,
       },
     });
   });

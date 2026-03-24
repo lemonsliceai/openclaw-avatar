@@ -1831,12 +1831,14 @@ async function validateSessionImageUrl(imageUrl) {
 function syncSessionInputsFromSetupStatus(setup) {
   const storedImageUrl = getStoredStringPreference(SESSION_IMAGE_URL_STORAGE_KEY, "");
   const normalizedStoredImageUrl = storedImageUrl?.trim();
+  const hasStoredCustomImageUrl =
+    Boolean(normalizedStoredImageUrl) && normalizedStoredImageUrl !== DEFAULT_SESSION_IMAGE_URL;
   const currentImageUrl = resolveSessionImageUrlValue(sessionImageUrlInput?.value);
   const setupImageUrl = resolveSessionImageUrlValue(setup?.lemonSlice?.imageUrl);
   if (
     sessionImageUrlInput &&
     typeof sessionImageUrlInput.value === "string" &&
-    !normalizedStoredImageUrl &&
+    !hasStoredCustomImageUrl &&
     (!currentImageUrl || currentImageUrl === DEFAULT_SESSION_IMAGE_URL) &&
     setupImageUrl
   ) {
