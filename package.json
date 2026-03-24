@@ -1,6 +1,6 @@
 {
   "name": "@lemonsliceai/openclaw-avatar",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "description": "OpenClaw Avatar plugin",
   "license": "MIT",
   "type": "module",
@@ -47,7 +47,7 @@
     ]
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.22"
+    "openclaw": ">=2026.3.23-1"
   },
   "dependencies": {
     "@livekit/agents": "1.2.0",

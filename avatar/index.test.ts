@@ -147,6 +147,14 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(normalized, "base64").toString("utf8")) as Record<string, unknown>;
 }
 
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractListItemText(html: string): string[] {
+  return Array.from(html.matchAll(/<li>([\s\S]*?)<\/li>/g), (match) => stripHtml(match[1] ?? ""));
+}
+
 function parseDispatchMetadata(callIndex: number): Record<string, unknown> {
   const options = mockAgentDispatchCreateDispatch.mock.calls[callIndex]?.[2] as
     | { metadata?: string }
@@ -1000,7 +1008,6 @@ describe("avatar plugin", () => {
     const respond = await invoke(methods, "avatar.session.create", {
       sessionKey: "agent:main/main",
       avatarImageUrl: "https://example.com/browser-avatar.png",
-      aspectRatio: "9x16",
       avatarTimeoutSeconds: 75,
       interruptReplyOnNewMessage: true,
     });
@@ -1019,7 +1026,7 @@ describe("avatar plugin", () => {
     expect(payload?.roomName).toContain("openclaw-agent-main-main-");
     expect(payload?.participantToken?.split(".")).toHaveLength(3);
     expectEphemeralAgentName(payload?.agentName);
-    expect(payload?.aspectRatio).toBe("9x16");
+    expect(payload?.aspectRatio).toBe("3x2");
     expect(payload?.interruptReplyOnNewMessage).toBe(true);
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       video: {
@@ -1041,7 +1048,7 @@ describe("avatar plugin", () => {
         sessionKey: "agent:main/main",
         imageUrl: "https://example.com/browser-avatar.png",
         avatarTimeoutSeconds: 75,
-        aspectRatio: "9x16",
+        aspectRatio: "3x2",
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -1096,7 +1103,7 @@ describe("avatar plugin", () => {
       | undefined;
     expect(payload?.sessionKey).toBe("main");
     expect(payload?.chatSessionKey).toBe("agent:main:main");
-    expect(payload?.aspectRatio).toBe("16x9");
+    expect(payload?.aspectRatio).toBe("3x2");
     expect(decodeJwtPayload(payload?.participantToken ?? "")).toMatchObject({
       video: {
         roomJoin: true,
@@ -1114,7 +1121,7 @@ describe("avatar plugin", () => {
         sessionKey: "agent:main:main",
         imageUrl: "https://example.com/default-avatar.png",
         avatarTimeoutSeconds: 60,
-        aspectRatio: "16x9",
+        aspectRatio: "3x2",
         interruptReplyOnNewMessage: true,
       }),
     );
@@ -2539,7 +2546,11 @@ describe("avatar plugin", () => {
     expect(readmePage.res.body).toContain('id="theme-toggle"');
     expect(readmePage.res.body).toContain('id="nav-collapse-toggle"');
     expect(readmePage.res.body).toContain('/plugins/openclaw-avatar/app.js?v=');
+    expect(readmePage.res.body).toContain("<ol>");
+    expect(readmePage.res.body).toContain("<h3>About OpenClaw Config</h3>");
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
+    expect(readmePage.res.body).toContain("<h2>About The Install Warning</h2>");
+    expect(readmePage.res.body).toContain("<h2>Minimum Openclaw config</h2>");
     expect(readmePage.res.body).not.toContain("__README_HTML__");
 
     const aspectRatioModule = await invokeHttpRoute(
@@ -2615,6 +2626,117 @@ describe("avatar plugin", () => {
     }
   });
 
+  it("keeps ordered list items open across blank-line continuations in the README renderer", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "avatar-readme-loose-list-"));
+    const fakePluginRoot = path.join(tempRoot, "plugins", "avatar");
+
+    await mkdir(fakePluginRoot, { recursive: true });
+    await writeFile(
+      path.join(fakePluginRoot, "openclaw.plugin.json"),
+      JSON.stringify({ id: "openclaw-avatar", name: "Avatar" }, null, 2),
+    );
+    await writeFile(
+      path.join(fakePluginRoot, "README.md"),
+      `# Test README
+
+## Quickstart
+
+1. Install and enable the plugin.
+
+Install from ClawHub:
+
+\`\`\`bash
+openclaw plugins install clawhub:@lemonsliceai/openclaw-avatar
+\`\`\`
+
+Or install directly from npm:
+
+\`\`\`bash
+openclaw plugins install @lemonsliceai/openclaw-avatar@latest
+\`\`\`
+
+2. Allow the plugin:
+
+\`openclaw.json\` - \`plugins.allow\`
+\`\`\`json
+{
+  "plugins": {
+    "allow": ["openclaw-avatar"]
+  }
+}
+\`\`\`
+
+3. Configure the plugin.
+`,
+    );
+
+    try {
+      const { httpRoutes } = setup(baseConfig, {
+        resolvePath: (input: string) => path.join(fakePluginRoot, input),
+      });
+
+      const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/avatar/readme", {
+        url: "/plugins/avatar/readme",
+      });
+
+      expect(readmePage.handled).toBe(true);
+      expect(readmePage.res.statusCode).toBe(200);
+      expect(readmePage.res.body.match(/<ol>/g)).toHaveLength(1);
+      expect(readmePage.res.body.match(/<li>/g)).toHaveLength(3);
+      const listItems = extractListItemText(readmePage.res.body);
+      expect(listItems).toHaveLength(3);
+      expect(listItems[0]).toContain("Install and enable the plugin");
+      expect(listItems[0]).toContain("Install from ClawHub");
+      expect(listItems[0]).toContain("Or install directly from npm");
+      expect(listItems[1]).toContain("Allow the plugin");
+      expect(listItems[1]).toContain("openclaw.json");
+      expect(listItems[1]).toContain("plugins.allow");
+      expect(listItems[2]).toContain("Configure the plugin");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves ordered list start numbers in rendered README lists", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "avatar-readme-ordered-start-"));
+    const fakePluginRoot = path.join(tempRoot, "plugins", "avatar");
+
+    await mkdir(fakePluginRoot, { recursive: true });
+    await writeFile(
+      path.join(fakePluginRoot, "openclaw.plugin.json"),
+      JSON.stringify({ id: "openclaw-avatar", name: "Avatar" }, null, 2),
+    );
+    await writeFile(
+      path.join(fakePluginRoot, "README.md"),
+      `# Test README
+
+## Quickstart
+
+3. Third step.
+4. Fourth step.
+`,
+    );
+
+    try {
+      const { httpRoutes } = setup(baseConfig, {
+        resolvePath: (input: string) => path.join(fakePluginRoot, input),
+      });
+
+      const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/avatar/readme", {
+        url: "/plugins/avatar/readme",
+      });
+
+      expect(readmePage.handled).toBe(true);
+      expect(readmePage.res.statusCode).toBe(200);
+      expect(readmePage.res.body).toContain('<ol start="3">');
+      const listItems = extractListItemText(readmePage.res.body);
+      expect(listItems).toContain("Third step.");
+      expect(listItems).toContain("Fourth step.");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("bootstraps the configured gateway token for the browser settings page", async () => {
     const { httpRoutes, runtime } = setup({
       ...baseConfig,
@@ -2623,7 +2745,7 @@ describe("avatar plugin", () => {
         auth: { mode: "token", token: "gateway-token" },
       },
     });
-    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.22";
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.23";
 
     const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/avatar/bootstrap", {
       url: "/plugins/avatar/bootstrap",
@@ -2637,8 +2759,8 @@ describe("avatar plugin", () => {
     expect(JSON.parse(bootstrap.res.body)).toEqual({
       success: true,
       openclaw: {
-        version: "2026.3.22",
-        minimumCompatibleVersion: "2026.3.22",
+        version: "2026.3.23",
+        minimumCompatibleVersion: "2026.3.23-1",
         compatible: true,
       },
       gateway: {
@@ -2663,8 +2785,52 @@ describe("avatar plugin", () => {
       success: true,
       openclaw: {
         version: "2026.3.10",
-        minimumCompatibleVersion: "2026.3.22",
+        minimumCompatibleVersion: "2026.3.23-1",
         compatible: false,
+      },
+    });
+  });
+
+  it("treats OpenClaw prerelease versions with semver ordering", async () => {
+    const prereleaseSetup = setup();
+    (prereleaseSetup.runtime as typeof prereleaseSetup.runtime & { openclawVersion: string }).openclawVersion =
+      "2026.3.23-0";
+
+    const prereleaseBootstrap = await invokeHttpRoute(prereleaseSetup.httpRoutes, "/plugins/avatar/bootstrap", {
+      url: "/plugins/avatar/bootstrap",
+    });
+    expect(prereleaseBootstrap.handled).toBe(true);
+    expect(prereleaseBootstrap.res.statusCode).toBe(200);
+    expect(JSON.parse(prereleaseBootstrap.res.body)).toMatchObject({
+      success: true,
+      openclaw: {
+        version: "2026.3.23-0",
+        minimumCompatibleVersion: "2026.3.23-1",
+        compatible: false,
+      },
+    });
+
+    const matchingPrereleaseSetup = setup();
+    (
+      matchingPrereleaseSetup.runtime as typeof matchingPrereleaseSetup.runtime & {
+        openclawVersion: string;
+      }
+    ).openclawVersion = "2026.3.23-1";
+    const matchingPrereleaseBootstrap = await invokeHttpRoute(
+      matchingPrereleaseSetup.httpRoutes,
+      "/plugins/avatar/bootstrap",
+      {
+      url: "/plugins/avatar/bootstrap",
+      },
+    );
+    expect(matchingPrereleaseBootstrap.handled).toBe(true);
+    expect(matchingPrereleaseBootstrap.res.statusCode).toBe(200);
+    expect(JSON.parse(matchingPrereleaseBootstrap.res.body)).toMatchObject({
+      success: true,
+      openclaw: {
+        version: "2026.3.23-1",
+        minimumCompatibleVersion: "2026.3.23-1",
+        compatible: true,
       },
     });
   });

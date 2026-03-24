@@ -43,7 +43,7 @@ const AVATAR_PLUGIN_ROUTE_BASE = `/plugins/${AVATAR_PLUGIN_ID}`;
 const LEGACY_AVATAR_PLUGIN_ROUTE_BASE = `/plugins/${LEGACY_AVATAR_PLUGIN_ID}`;
 const AVATAR_SETUP_COMMAND = "openclaw-avatar-setup";
 const LEGACY_AVATAR_SETUP_COMMAND = "avatar-setup";
-const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.22";
+const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.23-1";
 const AVATAR_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-avatar-instance=";
 const AVATAR_SIDECAR_RESET_SETTLE_MS = 1_000;
 const AVATAR_SIDECAR_READY_TIMEOUT_MS = 12_000;
@@ -708,30 +708,115 @@ function parseAvatarDebugFields(rawFields: string): Record<string, unknown> {
   return fields;
 }
 
-function parseVersionSegments(value: unknown): number[] | null {
+type ParsedSemverIdentifier =
+  | { numeric: true; value: number }
+  | { numeric: false; value: string };
+
+type ParsedSemverVersion = {
+  core: [number, number, number];
+  prerelease: ParsedSemverIdentifier[] | null;
+};
+
+function parseSemverIdentifiers(value: string): ParsedSemverIdentifier[] | null {
+  if (!value) {
+    return null;
+  }
+  const identifiers = value.split(".");
+  if (!identifiers.every((identifier) => /^[0-9A-Za-z-]+$/.test(identifier))) {
+    return null;
+  }
+  return identifiers.map((identifier) => {
+    if (/^\d+$/.test(identifier)) {
+      return {
+        numeric: true,
+        value: Number.parseInt(identifier, 10),
+      };
+    }
+    return {
+      numeric: false,
+      value: identifier,
+    };
+  });
+}
+
+function parseSemverVersion(value: unknown): ParsedSemverVersion | null {
   const normalized = normalizeOptionalString(value);
   if (!normalized) {
     return null;
   }
-  const segments = normalized.match(/\d+/g);
-  if (!segments?.length) {
+  const match = normalized.match(
+    /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
+  );
+  if (!match) {
     return null;
   }
-  const parsed = segments.map((segment) => Number.parseInt(segment, 10));
-  return parsed.every((segment) => Number.isFinite(segment)) ? parsed : null;
+  const core = match.slice(1, 4).map((segment) => Number.parseInt(segment ?? "", 10));
+  if (core.some((segment) => !Number.isFinite(segment))) {
+    return null;
+  }
+  const prerelease = match[4] ? parseSemverIdentifiers(match[4]) : null;
+  if (match[4] && !prerelease) {
+    return null;
+  }
+  return {
+    core: [core[0] ?? 0, core[1] ?? 0, core[2] ?? 0],
+    prerelease,
+  };
 }
 
 function normalizeVersionString(value: unknown): string | null {
   const normalized = normalizeOptionalString(value);
-  return normalized && parseVersionSegments(normalized) ? normalized : null;
+  return normalized && parseSemverVersion(normalized) ? normalized : null;
 }
 
-function compareVersionSegments(left: number[], right: number[]): number {
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+function compareSemverCore(left: [number, number, number], right: [number, number, number]): number {
+  for (let index = 0; index < left.length; index += 1) {
+    const delta = left[index] - right[index];
     if (delta !== 0) {
       return delta > 0 ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+function compareSemverPrerelease(
+  left: ParsedSemverIdentifier[] | null,
+  right: ParsedSemverIdentifier[] | null,
+): number {
+  if (!left?.length && !right?.length) {
+    return 0;
+  }
+  if (!left?.length) {
+    return 1;
+  }
+  if (!right?.length) {
+    return -1;
+  }
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftIdentifier = left[index];
+    const rightIdentifier = right[index];
+    if (!leftIdentifier) {
+      return -1;
+    }
+    if (!rightIdentifier) {
+      return 1;
+    }
+    if (leftIdentifier.numeric && rightIdentifier.numeric) {
+      const delta = leftIdentifier.value - rightIdentifier.value;
+      if (delta !== 0) {
+        return delta > 0 ? 1 : -1;
+      }
+      continue;
+    }
+    if (leftIdentifier.numeric !== rightIdentifier.numeric) {
+      return leftIdentifier.numeric ? -1 : 1;
+    }
+    const leftValue = String(leftIdentifier.value);
+    const rightValue = String(rightIdentifier.value);
+    const comparison = leftValue.localeCompare(rightValue);
+    if (comparison !== 0) {
+      return comparison > 0 ? 1 : -1;
     }
   }
   return 0;
@@ -741,12 +826,18 @@ function isOpenClawVersionCompatible(
   version: unknown,
   minimumVersion: string = OPENCLAW_MIN_COMPATIBLE_VERSION,
 ): boolean | null {
-  const normalizedVersion = parseVersionSegments(version);
-  const normalizedMinimumVersion = parseVersionSegments(minimumVersion);
+  const normalizedVersion = parseSemverVersion(version);
+  const normalizedMinimumVersion = parseSemverVersion(minimumVersion);
   if (!normalizedVersion || !normalizedMinimumVersion) {
     return null;
   }
-  return compareVersionSegments(normalizedVersion, normalizedMinimumVersion) >= 0;
+  const coreComparison = compareSemverCore(normalizedVersion.core, normalizedMinimumVersion.core);
+  if (coreComparison !== 0) {
+    return coreComparison >= 0;
+  }
+  return (
+    compareSemverPrerelease(normalizedVersion.prerelease, normalizedMinimumVersion.prerelease) >= 0
+  );
 }
 
 function normalizeOptionalSetupSecretString(value: unknown): string | undefined {
@@ -2472,36 +2563,89 @@ function parseMarkdownTableRow(line: string): string[] {
   return trimmed.split("|").map((cell) => cell.trim());
 }
 
+type MarkdownListItemMatch = {
+  indentLength: number;
+  ordered: boolean;
+  startNumber: number | null;
+  content: string;
+};
+
+function matchMarkdownListItem(line: string): MarkdownListItemMatch | null {
+  const match = line.match(/^(\s*)(?:([-*])|(\d+)\.)\s+(.*)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    indentLength: match[1]?.length ?? 0,
+    ordered: Boolean(match[3]),
+    startNumber: match[3] ? Number.parseInt(match[3], 10) : null,
+    content: match[4] ?? "",
+  };
+}
+
+function renderMarkdownCodeFence(lines: string[], startIndex: number) {
+  const openingLine = (lines[startIndex] ?? "").trim();
+  const language = openingLine.slice(3).trim();
+  let index = startIndex + 1;
+  const codeLines: string[] = [];
+  while (index < lines.length && !/^```/.test((lines[index] ?? "").trim())) {
+    codeLines.push(lines[index] ?? "");
+    index += 1;
+  }
+  if (index < lines.length) {
+    index += 1;
+  }
+  const languageClass = language ? ` class="language-${escapeHtmlAttribute(language)}"` : "";
+  return {
+    html: `<pre><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+    nextIndex: index,
+  };
+}
+
 function renderMarkdownList(lines: string[], startIndex: number, indentLength: number) {
   const items: string[] = [];
   let index = startIndex;
+  const startItem = matchMarkdownListItem(lines[startIndex] ?? "");
+  const ordered = startItem?.ordered ?? false;
+  const listTag = ordered ? "ol" : "ul";
+  const startNumber = startItem?.startNumber ?? null;
+  const listStartAttribute =
+    ordered && startNumber !== null && startNumber !== 1
+      ? ` start="${startNumber}"`
+      : "";
 
   while (index < lines.length) {
-    const itemMatch = lines[index]?.match(/^(\s*)-\s+(.*)$/);
+    const itemMatch = matchMarkdownListItem(lines[index] ?? "");
     if (!itemMatch) {
       break;
     }
-    const currentIndent = itemMatch[1]?.length ?? 0;
+    const currentIndent = itemMatch.indentLength;
     if (currentIndent < indentLength) {
       break;
     }
     if (currentIndent !== indentLength) {
       break;
     }
+    if (itemMatch.ordered !== ordered) {
+      break;
+    }
 
-    const itemParts = [renderMarkdownInline(itemMatch[2] ?? "")];
+    const itemParts = [renderMarkdownInline(itemMatch.content)];
     index += 1;
+    let sawBlankSeparator = false;
 
     while (index < lines.length) {
       const nextLine = lines[index] ?? "";
-      if (!nextLine.trim()) {
+      const trimmedNextLine = nextLine.trim();
+      if (!trimmedNextLine) {
         index += 1;
-        break;
+        sawBlankSeparator = true;
+        continue;
       }
 
-      const nestedItemMatch = nextLine.match(/^(\s*)-\s+(.*)$/);
+      const nestedItemMatch = matchMarkdownListItem(nextLine);
       if (nestedItemMatch) {
-        const nestedIndent = nestedItemMatch[1]?.length ?? 0;
+        const nestedIndent = nestedItemMatch.indentLength;
         if (nestedIndent === indentLength) {
           break;
         }
@@ -2509,36 +2653,70 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
           const nestedList = renderMarkdownList(lines, index, nestedIndent);
           itemParts.push(nestedList.html);
           index = nestedList.nextIndex;
+          sawBlankSeparator = false;
           continue;
         }
         break;
       }
 
+      if (/^```/.test(trimmedNextLine)) {
+        const codeFence = renderMarkdownCodeFence(lines, index);
+        itemParts.push(codeFence.html);
+        index = codeFence.nextIndex;
+        sawBlankSeparator = false;
+        continue;
+      }
+
       const continuationIndent = nextLine.match(/^\s*/)?.[0].length ?? 0;
-      if (continuationIndent > indentLength) {
+      if (continuationIndent > indentLength || sawBlankSeparator) {
+        const startsBlockOutsideListItem =
+          continuationIndent <= indentLength &&
+          (/^#{1,6}\s+/.test(nextLine) ||
+            trimmedNextLine.startsWith("<") ||
+            (nextLine.includes("|") &&
+              index + 1 < lines.length &&
+              isMarkdownTableSeparator(lines[index + 1] ?? "")));
+        if (startsBlockOutsideListItem) {
+          break;
+        }
         const paragraphLines = [nextLine.trim()];
         index += 1;
         while (index < lines.length) {
           const candidate = lines[index] ?? "";
-          if (!candidate.trim()) {
-            index += 1;
+          const candidateTrimmed = candidate.trim();
+          if (!candidateTrimmed) {
             break;
           }
-          const candidateListMatch = candidate.match(/^(\s*)-\s+(.*)$/);
+          const candidateListMatch = matchMarkdownListItem(candidate);
           if (candidateListMatch) {
-            const candidateIndent = candidateListMatch[1]?.length ?? 0;
-            if (candidateIndent <= continuationIndent) {
+            const candidateIndent = candidateListMatch.indentLength;
+            if (candidateIndent <= indentLength || candidateIndent <= continuationIndent) {
+              break;
+            }
+          }
+          if (/^```/.test(candidateTrimmed)) {
+            break;
+          }
+          if (
+            /^#{1,6}\s+/.test(candidate) ||
+            candidateTrimmed.startsWith("<") ||
+            (candidate.includes("|") &&
+              index + 1 < lines.length &&
+              isMarkdownTableSeparator(lines[index + 1] ?? ""))
+          ) {
+            if (continuationIndent <= indentLength) {
               break;
             }
           }
           const candidateIndent = candidate.match(/^\s*/)?.[0].length ?? 0;
-          if (candidateIndent <= indentLength) {
+          if (candidateIndent <= indentLength && !sawBlankSeparator) {
             break;
           }
-          paragraphLines.push(candidate.trim());
+          paragraphLines.push(candidateTrimmed);
           index += 1;
         }
         itemParts.push(`<p>${renderMarkdownInline(paragraphLines.join(" "))}</p>`);
+        sawBlankSeparator = false;
         continue;
       }
 
@@ -2549,7 +2727,7 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
   }
 
   return {
-    html: `<ul>${items.join("")}</ul>`,
+    html: `<${listTag}${listStartAttribute}>${items.join("")}</${listTag}>`,
     nextIndex: index,
   };
 }
@@ -2569,18 +2747,9 @@ function renderMarkdownToHtml(markdown: string): string {
     }
 
     if (/^```/.test(trimmed)) {
-      const language = trimmed.slice(3).trim();
-      index += 1;
-      const codeLines: string[] = [];
-      while (index < lines.length && !/^```/.test((lines[index] ?? "").trim())) {
-        codeLines.push(lines[index] ?? "");
-        index += 1;
-      }
-      if (index < lines.length) {
-        index += 1;
-      }
-      const languageClass = language ? ` class="language-${escapeHtmlAttribute(language)}"` : "";
-      html.push(`<pre><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      const codeFence = renderMarkdownCodeFence(lines, index);
+      html.push(codeFence.html);
+      index = codeFence.nextIndex;
       continue;
     }
 
@@ -2635,9 +2804,9 @@ function renderMarkdownToHtml(markdown: string): string {
       continue;
     }
 
-    const listMatch = line.match(/^(\s*)-\s+(.*)$/);
+    const listMatch = matchMarkdownListItem(line);
     if (listMatch) {
-      const list = renderMarkdownList(lines, index, listMatch[1]?.length ?? 0);
+      const list = renderMarkdownList(lines, index, listMatch.indentLength);
       html.push(list.html);
       index = list.nextIndex;
       continue;
@@ -2652,7 +2821,7 @@ function renderMarkdownToHtml(markdown: string): string {
         !nextTrimmed ||
         /^```/.test(nextTrimmed) ||
         /^#{1,6}\s+/.test(nextLine) ||
-        /^(\s*)-\s+/.test(nextLine) ||
+        matchMarkdownListItem(nextLine) !== null ||
         nextTrimmed.startsWith("<") ||
         (nextLine.includes("|") &&
           index + 1 < lines.length &&

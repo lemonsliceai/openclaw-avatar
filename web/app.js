@@ -15,7 +15,6 @@ const liveKitErrorEl = document.getElementById("livekit-error");
 const sessionForm = document.getElementById("session-form");
 const startSessionButton = document.getElementById("start-session");
 const sessionImageUrlInput = document.getElementById("session-image-url");
-const sessionAspectRatioInput = document.getElementById("session-aspect-ratio");
 const avatarTimeoutSecondsInput = document.getElementById("avatar-timeout-seconds");
 const startInPictureInPictureCheckbox = document.getElementById("start-in-pip");
 const reloadButton = document.getElementById("reload-status");
@@ -84,9 +83,10 @@ const MIC_MUTED_STORAGE_KEY = "avatar.microphoneMuted";
 const AVATAR_SPEAKER_MUTED_STORAGE_KEY = "avatar.avatarSpeakerMuted";
 const AVATAR_AUTO_START_IN_PIP_STORAGE_KEY = "avatar.avatarAutoStartInPictureInPicture";
 const SESSION_IMAGE_URL_STORAGE_KEY = "avatar.sessionImageUrl";
-const SESSION_ASPECT_RATIO_STORAGE_KEY = "avatar.sessionAspectRatio";
 const SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY = "avatar.sessionAvatarTimeoutSeconds";
 const AVATAR_PLUGIN_BASE_PATH = "/plugins/openclaw-avatar";
+const DEFAULT_SESSION_IMAGE_URL =
+  "https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtNkoagYf5CBjh3ZkFEumULAJYeQriWT8tg79y";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
@@ -1684,14 +1684,9 @@ function loadMediaPreferences() {
 
 function loadSessionFormPreferences() {
   if (sessionImageUrlInput && typeof sessionImageUrlInput.value === "string" && !sessionImageUrlInput.value) {
-    sessionImageUrlInput.value = getStoredStringPreference(SESSION_IMAGE_URL_STORAGE_KEY, "");
-  }
-  if (sessionAspectRatioInput && typeof sessionAspectRatioInput.value === "string") {
-    const storedAspectRatio = getStoredStringPreference(
-      SESSION_ASPECT_RATIO_STORAGE_KEY,
-      sessionAspectRatioInput.value || SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
-    );
-    sessionAspectRatioInput.value = resolveSessionAspectRatioValue(storedAspectRatio);
+    sessionImageUrlInput.value =
+      resolveSessionImageUrlValue(getStoredStringPreference(SESSION_IMAGE_URL_STORAGE_KEY, "")) ||
+      DEFAULT_SESSION_IMAGE_URL;
   }
   if (avatarTimeoutSecondsInput && typeof avatarTimeoutSecondsInput.value === "string") {
     const storedTimeout = getStoredStringPreference(
@@ -1745,7 +1740,7 @@ function getPreferredSessionAspectRatio() {
   if (activeSession && typeof activeSessionAspectRatio === "string" && activeSessionAspectRatio.trim()) {
     return resolveSessionAspectRatioValue(activeSessionAspectRatio);
   }
-  return resolveSessionAspectRatioValue(sessionAspectRatioInput?.value);
+  return SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
 }
 
 function applyPreferredAvatarAspectRatio() {
@@ -1836,12 +1831,15 @@ async function validateSessionImageUrl(imageUrl) {
 function syncSessionInputsFromSetupStatus(setup) {
   const storedImageUrl = getStoredStringPreference(SESSION_IMAGE_URL_STORAGE_KEY, "");
   const normalizedStoredImageUrl = storedImageUrl?.trim();
+  const hasStoredCustomImageUrl =
+    Boolean(normalizedStoredImageUrl) && normalizedStoredImageUrl !== DEFAULT_SESSION_IMAGE_URL;
+  const currentImageUrl = resolveSessionImageUrlValue(sessionImageUrlInput?.value);
   const setupImageUrl = resolveSessionImageUrlValue(setup?.lemonSlice?.imageUrl);
   if (
     sessionImageUrlInput &&
     typeof sessionImageUrlInput.value === "string" &&
-    !resolveSessionImageUrlValue(sessionImageUrlInput.value) &&
-    !normalizedStoredImageUrl &&
+    !hasStoredCustomImageUrl &&
+    (!currentImageUrl || currentImageUrl === DEFAULT_SESSION_IMAGE_URL) &&
     setupImageUrl
   ) {
     sessionImageUrlInput.value = setupImageUrl;
@@ -8860,10 +8858,6 @@ if (sessionForm) {
       resolveSessionImageUrlValue(sessionImageUrlInput?.value),
     );
     persistStringPreference(
-      SESSION_ASPECT_RATIO_STORAGE_KEY,
-      resolveSessionAspectRatioValue(sessionAspectRatioInput?.value),
-    );
-    persistStringPreference(
       SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY,
       String(parseSessionAvatarTimeoutSeconds(avatarTimeoutSecondsInput?.value)),
     );
@@ -8881,7 +8875,6 @@ if (sessionForm) {
     const formData = new FormData(sessionForm);
     const sessionKey = String(formData.get("sessionKey") || "").trim();
     const avatarImageUrl = resolveSessionImageUrlValue(formData.get("avatarImageUrl"));
-    const aspectRatio = resolveSessionAspectRatioValue(formData.get("aspectRatio"));
     const avatarJoinTimeoutMs = resolveSessionAvatarJoinTimeoutMs(
       formData.get("avatarTimeoutSeconds"),
     );
@@ -8900,14 +8893,13 @@ if (sessionForm) {
         body: JSON.stringify(
           buildSessionCreatePayload(sessionKey, {
             avatarImageUrl,
-            aspectRatio,
             avatarTimeoutSeconds: formData.get("avatarTimeoutSeconds"),
           }),
         ),
       });
       activeSession = payload.session;
       activeSessionImageUrl = avatarImageUrl;
-      hydrateSessionAspectSettings(payload, aspectRatio, avatarJoinTimeoutMs);
+      hydrateSessionAspectSettings(payload, SESSION_AVATAR_ASPECT_RATIO_DEFAULT, avatarJoinTimeoutMs);
       resetVoiceTranscriptDeduplication();
       setChatPaneOpen(true);
       setOutput({ action: "session-started", session: activeSession });
