@@ -86,7 +86,7 @@ const SESSION_IMAGE_URL_STORAGE_KEY = "avatar.sessionImageUrl";
 const SESSION_AVATAR_TIMEOUT_SECONDS_STORAGE_KEY = "avatar.sessionAvatarTimeoutSeconds";
 const AVATAR_PLUGIN_BASE_PATH = "/plugins/openclaw-avatar";
 const DEFAULT_SESSION_IMAGE_URL =
-  "https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtNkoagYf5CBjh3ZkFEumULAJYeQriWT8tg79y";
+  "https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtPNwLc0haBifGpR5UHA49jYDwQzbvS3mgVqLM";
 const REDACTED_SECRET_VALUE = "_REDACTED_";
 const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;

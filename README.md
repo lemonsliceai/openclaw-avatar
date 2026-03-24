@@ -192,7 +192,7 @@ What it does do:
 <a id="minimum-openclaw-config"></a>
 ## Minimum Openclaw config
 
-This example is assembled from a working local `openclaw.json` and trimmed down to the minimum sections Avatar depends on. Replace each placeholder with your own value.
+This example is assembled from a working local `openclaw.json` and trimmed down to the minimum sections Avatar depends on. Replace each placeholder with your own providers and values. 
 
 ```json
 {
@@ -207,7 +207,7 @@ This example is assembled from a working local `openclaw.json` and trimmed down 
   "agents": {
     "defaults": {
       "model": {
-        "primary": "openai/gpt-5.1-codex"
+        "primary": "openai/gpt-5-nano"
       }
     },
     "list": [
