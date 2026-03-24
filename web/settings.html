@@ -94,38 +94,11 @@
         gap: 8px;
       }
 
-      .secret-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto auto;
-        gap: 8px;
-        align-items: center;
-      }
-
-      .secret-copy,
-      .secret-toggle {
-        min-width: 42px;
-        padding-inline: 10px;
-      }
-
-      .secret-copy svg,
-      .secret-toggle svg {
-        width: 16px;
-        height: 16px;
-      }
-
-      .secret-copy.is-copied {
-        color: var(--ok);
-      }
-
       .config-nav__item {
         text-decoration: none;
       }
 
       .is-filter-hidden {
-        display: none !important;
-      }
-
-      .is-mode-hidden {
         display: none !important;
       }
 
@@ -137,10 +110,6 @@
 
       .avatar-status {
         margin: 0 0 16px;
-      }
-
-      #gateway-token-section {
-        margin-bottom: 12px;
       }
 
       @media (max-width: 900px) {
@@ -177,7 +146,7 @@
                 <span class="config-nav__label">All Settings</span>
               </button>
               <button class="config-nav__item" type="button" data-section-filter="gateway-token">
-                <span class="config-nav__label">Gateway Token</span>
+                <span class="config-nav__label">Gateway Auth</span>
               </button>
               <button class="config-nav__item" type="button" data-section-filter="lemonslice">
                 <span class="config-nav__label">LemonSlice</span>
@@ -213,56 +182,23 @@
               <div class="config-section-hero">
                 <div class="config-section-hero__text">
                   <div class="config-section-hero__title">Config</div>
-                  <div class="config-section-hero__desc">Manage gateway auth token and required provider keys.</div>
+                  <div class="config-section-hero__desc">Manage required provider keys for Avatar.</div>
                 </div>
               </div>
 
               <p id="status" class="callout info avatar-status">Loading setup status...</p>
 
-              <section class="config-section-card stack" id="gateway-token-section" data-config-section="gateway-token">
+              <section class="config-section-card stack" id="gateway-auth-section" data-config-section="gateway-token">
                 <header class="config-section-card__header avatar-head">
-                  <h2 class="card-title">Gateway Token</h2>
-                  <p class="card-sub">This page will auto-load the configured gateway token when available, or you can enter one manually.</p>
+                  <h2 class="card-title">Gateway Auth</h2>
+                  <p class="card-sub">Gateway auth is stored per browser and managed from the main Avatar page.</p>
                 </header>
                 <div class="config-section-card__content">
                   <p id="gateway-token-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
-                  <form id="token-form" class="avatar-form">
-                    <label class="field full">
-                      <span>Gateway token</span>
-                      <div class="secret-row">
-                        <input type="password" id="gateway-token" autocomplete="off" />
-                        <button
-                          class="btn btn--sm secret-toggle"
-                          type="button"
-                          id="toggle-token-visibility"
-                          aria-label="Show gateway token"
-                          aria-pressed="false"
-                          title="Show gateway token"
-                        >
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"></path>
-                            <circle cx="12" cy="12" r="3"></circle>
-                          </svg>
-                        </button>
-                        <button
-                          class="btn btn--sm secret-copy"
-                          type="button"
-                          id="copy-token"
-                          aria-label="Copy gateway token"
-                          title="Copy gateway token"
-                        >
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
-                            <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
-                          </svg>
-                        </button>
-                      </div>
-                    </label>
-                    <div class="row">
-                      <button class="btn primary" type="submit">Use Token</button>
-                      <button class="btn danger" type="button" id="clear-token">Clear Token</button>
-                    </div>
-                  </form>
+                  <p class="setup-raw-help">
+                    If auth has expired or is invalid, update the gateway token or password on the
+                    <a href="/plugins/openclaw-avatar/">main Avatar page</a>, then return here and retry.
+                  </p>
                 </div>
               </section>
 

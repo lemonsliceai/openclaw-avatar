@@ -11,6 +11,7 @@ const runtimeFiles = [
   "avatar/avatar-agent-runner-wrapper.mjs",
   "avatar/avatar-agent-runner.js",
   "avatar/avatar-aspect-ratio.js",
+  "avatar/gateway-auth.js",
 ];
 
 function runTsc() {

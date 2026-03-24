@@ -29,6 +29,33 @@
   background: rgba(239, 68, 68, 0.15);
 }
 
+.is-mode-hidden {
+  display: none !important;
+}
+
+.secret-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.secret-copy,
+.secret-toggle {
+  min-width: 42px;
+  padding-inline: 10px;
+}
+
+.secret-copy svg,
+.secret-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.secret-copy.is-copied {
+  color: var(--ok);
+}
+
 /* ===========================================
    Cards - Refined with depth
    =========================================== */

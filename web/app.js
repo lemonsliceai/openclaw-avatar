@@ -2,6 +2,11 @@ import {
   AVATAR_ASPECT_RATIO_DEFAULT as SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
   AVATAR_ASPECT_RATIOS as SESSION_AVATAR_ASPECT_RATIO_VALUES,
 } from "./avatar-aspect-ratio.js";
+import {
+  getGatewayAuthStateFromSettings,
+  reconcileGatewayAuthStateWithServerMode,
+  normalizeGatewayAuthMode,
+} from "./gateway-auth.js";
 
 const statusEl = document.getElementById("status");
 const outputEl = document.getElementById("output");
@@ -270,6 +275,9 @@ let gatewayConnectRequestId = null;
 let gatewayRequestCounter = 0;
 let gatewayReconnectTimer = null;
 let gatewayReconnectBackoffActive = false;
+let gatewayAuthModeBootstrapReady = false;
+let gatewayAuthModeBootstrapError = null;
+let gatewayAuthModeBootstrapPromise = null;
 const gatewayPendingRequests = new Map();
 const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
 const sensitiveFieldCopyButtons = Array.from(document.querySelectorAll("[data-copy-secret]"));
@@ -314,6 +322,7 @@ const STRUCTURED_SETUP_ERROR_SECTION_MAP = new Map([
 ]);
 const STRUCTURED_SETUP_ERROR_FIELD_MAP = new Map([
   ["gatewayToken", "gateway-token"],
+  ["gatewayPassword", "gateway-token"],
   ["lemonSliceApiKey", "lemonslice"],
   ["livekitUrl", "livekit"],
   ["livekitApiKey", "livekit"],
@@ -1135,6 +1144,8 @@ function classifySetupErrorSection(message) {
   }
   if (
     normalized.includes("gateway token") ||
+    normalized.includes("gateway password") ||
+    normalized.includes("invalid password") ||
     normalized.includes("unauthorized") ||
     normalized.includes("needs auth")
   ) {
@@ -1174,8 +1185,8 @@ function sanitizeSetupErrorMessage(message, sectionKey) {
   const structuredCode = readStructuredSetupErrorValue(message, "code").toUpperCase();
   if (sectionKey === "gateway-token") {
     return normalized.includes("unauthorized") || structuredCode === "GATEWAY_UNAUTHORIZED"
-      ? "Gateway token is invalid or expired. Enter a valid token and try again."
-      : "Gateway token could not be verified. Check the token and try again.";
+      ? "Gateway authentication is invalid or expired. Enter a valid token or password and try again."
+      : "Gateway authentication could not be verified. Check the token or password and try again.";
   }
   if (sectionKey === "lemonslice") {
     return "LemonSlice settings could not be verified. Check the API key and try again.";
@@ -1193,8 +1204,9 @@ function revealSetupErrorSection(sectionKey) {
   if (activeConfigMode !== "form") {
     setConfigMode("form");
   }
-  if (activeConfigSectionFilter !== "all" && activeConfigSectionFilter !== sectionKey) {
-    applyConfigSectionFilter(sectionKey);
+  const nextFilter = normalizeConfigSectionFilter(sectionKey);
+  if (activeConfigSectionFilter !== nextFilter) {
+    applyConfigSectionFilter(nextFilter);
   }
 }
 
@@ -1611,23 +1623,95 @@ function getAvatarToolbarStatusState() {
   return { text: "Disconnected", tone: "danger" };
 }
 
-function getGatewayToken() {
+function readStoredOpenClawSettings() {
   try {
     const rawSettings = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
     if (rawSettings) {
       const parsed = JSON.parse(rawSettings);
-      if (parsed && typeof parsed === "object" && typeof parsed.token === "string") {
-        return parsed.token;
+      if (parsed && typeof parsed === "object") {
+        return parsed;
       }
     }
   } catch {
-    // Fall through to legacy key lookup.
+    // Fall through to empty settings.
   }
-  return localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY) || "";
+  return {};
+}
+
+function logGatewayStorageFailure(context, error) {
+  console.warn("[avatar-ui]", context, error);
+}
+
+function writeStoredOpenClawSettings(settings) {
+  try {
+    localStorage.setItem(OPENCLAW_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (error) {
+    logGatewayStorageFailure("openclaw-settings-write-failed", error);
+  }
+}
+
+function readLegacyGatewayToken() {
+  try {
+    return localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY) || "";
+  } catch (error) {
+    logGatewayStorageFailure("gateway-legacy-token-read-failed", error);
+    return "";
+  }
+}
+
+function removeLegacyGatewayToken() {
+  try {
+    localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+  } catch (error) {
+    logGatewayStorageFailure("gateway-legacy-token-remove-failed", error);
+  }
+}
+
+function getGatewayAuthState() {
+  const settings = readStoredOpenClawSettings();
+  const legacyToken = readLegacyGatewayToken();
+  return getGatewayAuthStateFromSettings(settings, legacyToken);
+}
+
+function gatewayAuthRequiresSharedSecret(mode = getGatewayAuthState().mode) {
+  return mode === "token" || mode === "password";
+}
+
+function getGatewayAuthMode() {
+  return getGatewayAuthState().mode;
+}
+
+function getGatewayAuthDisplayName(mode = getGatewayAuthMode()) {
+  if (mode === "password") {
+    return "gateway password";
+  }
+  if (mode === "token") {
+    return "gateway token";
+  }
+  return "gateway auth";
+}
+
+function getGatewayConnectInstruction() {
+  if (tokenForm) {
+    return "Enter gateway auth for this browser, then click Connect.";
+  }
+  return "Enter gateway auth on the main page, then click Connect.";
+}
+
+function getGatewayChatInstruction() {
+  if (tokenForm) {
+    return "Enter gateway auth to use text chat.";
+  }
+  return "Connect on the main page to use text chat.";
+}
+
+function getGatewayToken() {
+  return getGatewayAuthState().secret;
 }
 
 function hasGatewayToken() {
-  return getGatewayToken().trim().length > 0;
+  const { mode, secret } = getGatewayAuthState();
+  return !gatewayAuthRequiresSharedSecret(mode) || secret.length > 0;
 }
 
 function getStoredBooleanPreference(key, fallback = false) {
@@ -1816,6 +1900,10 @@ function updateSessionStartButtonState() {
   if (!startSessionButton) {
     return;
   }
+  if (!gatewayAuthModeBootstrapReady) {
+    startSessionButton.disabled = true;
+    return;
+  }
   try {
     assertValidSessionImageUrl(sessionImageUrlInput?.value);
     startSessionButton.disabled = false;
@@ -1858,50 +1946,73 @@ function buildSessionCreatePayload(sessionKey, options = {}) {
   };
 }
 
-function persistGatewayToken(token) {
-  const nextToken = typeof token === "string" ? token.trim() : "";
-  let settings = {};
-  try {
-    const raw = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        settings = parsed;
-      }
-    }
-  } catch {
-    settings = {};
-  }
-  localStorage.setItem(
-    OPENCLAW_SETTINGS_STORAGE_KEY,
-    JSON.stringify({
-      ...settings,
-      token: nextToken,
-    }),
+function createGatewayAuthModeBootstrapError(error) {
+  const nextError = new Error(
+    "Could not verify the server gateway auth mode. Retry after the server responds.",
   );
+  if (error !== undefined) {
+    nextError.cause = error;
+  }
+  return nextError;
+}
+
+function presentGatewayAuthModeBootstrapFailure(error) {
+  const visibleError = createGatewayAuthModeBootstrapError(error);
+  setSetupSectionError("gateway-token", visibleError.message);
+  setConfigStatusMessage(visibleError.message, "danger");
+  setGatewayHealthStatus("danger", "Mode Unknown");
+  setKeysHealthStatus("warn", "Blocked");
+  setChatStatus("Gateway auth mode detection failed.");
+  updateSessionStartButtonState();
+  updateRoomButtons();
+  updateChatControls();
+  updateRoomStatusState();
+  setOutput({
+    action: "gateway-auth-mode-bootstrap-failed",
+    error: error instanceof Error ? error.message : String(error),
+  });
+  return visibleError;
+}
+
+async function ensureGatewayAuthModeBootstrapped() {
+  if (gatewayAuthModeBootstrapReady) {
+    return;
+  }
+  await bootstrapGatewayAuthModeFromServer();
+}
+
+function resolveGatewayAuthModeForPersistence(rawMode) {
+  if (rawMode !== undefined && rawMode !== null) {
+    return normalizeGatewayAuthMode(rawMode);
+  }
+  if (!gatewayAuthModeBootstrapReady) {
+    throw createGatewayAuthModeBootstrapError(gatewayAuthModeBootstrapError);
+  }
+  return getGatewayAuthMode();
+}
+
+function persistGatewayToken(token, options = {}) {
+  const mode = resolveGatewayAuthModeForPersistence(options.mode);
+  const nextToken = typeof token === "string" ? (mode === "password" ? token : token.trim()) : "";
+  const settings = readStoredOpenClawSettings();
+  writeStoredOpenClawSettings({
+    ...settings,
+    gatewayAuthMode: mode,
+    gatewayAuthSecret: nextToken,
+    password: mode === "password" ? nextToken : "",
+    token: mode === "token" ? nextToken : "",
+  });
 }
 
 function clearGatewayToken() {
-  let settings = {};
-  try {
-    const raw = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        settings = parsed;
-      }
-    }
-  } catch {
-    settings = {};
-  }
-  localStorage.setItem(
-    OPENCLAW_SETTINGS_STORAGE_KEY,
-    JSON.stringify({
-      ...settings,
-      token: "",
-    }),
-  );
-  localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+  const settings = readStoredOpenClawSettings();
+  writeStoredOpenClawSettings({
+    ...settings,
+    gatewayAuthSecret: "",
+    password: "",
+    token: "",
+  });
+  removeLegacyGatewayToken();
 }
 
 function hydrateOpenClawCompatibility(payload) {
@@ -1936,41 +2047,51 @@ async function refreshOpenClawCompatibility() {
   }
 }
 
-async function bootstrapGatewayTokenFromServer() {
-  try {
+async function bootstrapGatewayAuthModeFromServer() {
+  if (gatewayAuthModeBootstrapPromise) {
+    return gatewayAuthModeBootstrapPromise;
+  }
+  gatewayAuthModeBootstrapPromise = (async () => {
     const payload = await requestBrowserBootstrapPayload();
-    const token =
-      typeof payload?.gateway?.auth?.token === "string" ? payload.gateway.auth.token.trim() : "";
-    if (!token) {
-      return false;
+    const mode = normalizeGatewayAuthMode(payload?.gateway?.auth?.mode);
+    const currentAuth = getGatewayAuthState();
+    if (mode !== currentAuth.mode) {
+      const nextAuth = reconcileGatewayAuthStateWithServerMode(currentAuth, mode);
+      persistGatewayToken(nextAuth.secret, { mode: nextAuth.mode });
     }
-    if (token !== getGatewayToken().trim()) {
-      persistGatewayToken(token);
-    }
-    return true;
-  } catch {
-    return false;
+    gatewayAuthModeBootstrapReady = true;
+    gatewayAuthModeBootstrapError = null;
+    return mode;
+  })();
+  try {
+    return await gatewayAuthModeBootstrapPromise;
+  } catch (error) {
+    gatewayAuthModeBootstrapReady = false;
+    gatewayAuthModeBootstrapError = error;
+    throw error;
+  } finally {
+    gatewayAuthModeBootstrapPromise = null;
   }
 }
 
 function migrateLegacyGatewayTokenIfNeeded() {
-  const legacy = localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY);
+  const legacy = readLegacyGatewayToken();
   if (!legacy || !legacy.trim()) {
     return;
   }
-  if (!getGatewayToken().trim()) {
-    persistGatewayToken(legacy);
+  if (!getGatewayToken()) {
+    persistGatewayToken(legacy, { mode: getGatewayAuthMode() });
   }
-  localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+  removeLegacyGatewayToken();
 }
 
 function getAuthHeaders() {
-  const token = getGatewayToken().trim();
-  if (!token) {
+  const { mode, secret } = getGatewayAuthState();
+  if (!gatewayAuthRequiresSharedSecret(mode) || !secret) {
     return {};
   }
   return {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${secret}`,
   };
 }
 
@@ -4043,7 +4164,11 @@ function updateTokenFieldMasking() {
   }
   if (toggleTokenVisibilityButton) {
     toggleTokenVisibilityButton.style.display = hasStoredToken || normalizeOptionalInputValue(tokenInput.value).length ? "" : "none";
-    updateSensitiveVisibilityButton(toggleTokenVisibilityButton, tokenVisible, "gateway token");
+    updateSensitiveVisibilityButton(
+      toggleTokenVisibilityButton,
+      tokenVisible,
+      getGatewayAuthDisplayName(),
+    );
   }
   if (configCancelButton) {
     configCancelButton.disabled = !hasPendingConfigEdits();
@@ -5943,8 +6068,23 @@ function clearChatLog() {
   renderChatLog({ scrollToBottom: false });
 }
 
-function applyConfigSectionFilter(nextFilter) {
+function hasConfigSectionFilterTarget(sectionKey) {
+  if (!sectionKey || sectionKey === "all") {
+    return true;
+  }
+  return configSectionCards.some((section) => {
+    const currentKey = (section.getAttribute("data-config-section") || "").trim();
+    return currentKey === sectionKey;
+  });
+}
+
+function normalizeConfigSectionFilter(nextFilter) {
   const normalizedFilter = typeof nextFilter === "string" && nextFilter.trim() ? nextFilter.trim() : "all";
+  return hasConfigSectionFilterTarget(normalizedFilter) ? normalizedFilter : "all";
+}
+
+function applyConfigSectionFilter(nextFilter) {
+  const normalizedFilter = normalizeConfigSectionFilter(nextFilter);
   activeConfigSectionFilter = normalizedFilter;
 
   for (const button of configSectionFilterButtons) {
@@ -7032,14 +7172,15 @@ function updateChatControls() {
     return;
   }
   const hasSession = Boolean(activeSession);
-  chatInput.disabled = !hasSession;
+  const chatEnabled = hasSession && gatewayAuthModeBootstrapReady;
+  chatInput.disabled = !chatEnabled;
   if (chatAttachButton) {
-    chatAttachButton.disabled = !hasSession;
+    chatAttachButton.disabled = !chatEnabled;
   }
   if (chatFileInput) {
-    chatFileInput.disabled = !hasSession;
+    chatFileInput.disabled = !chatEnabled;
   }
-  chatSendButton.disabled = !hasSession || chatAwaitingReply;
+  chatSendButton.disabled = !chatEnabled || chatAwaitingReply;
   if (getChatComposerDraft("main").attachments.length > 0) {
     ensureChatComposerAttachmentsContainer();
   } else {
@@ -7086,7 +7227,7 @@ function isGatewaySocketAuthError(error) {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);
-  return /unauthorized|invalid token|auth|401|403|forbidden/i.test(message);
+  return /unauthorized|invalid token|invalid password|auth|401|403|forbidden/i.test(message);
 }
 
 function reportGatewaySocketAuthFailure(error) {
@@ -7270,16 +7411,23 @@ function handleGatewaySocketMessage(raw) {
   }
 
   if (frame.type === "event" && frame.event === "connect.challenge") {
-    const token = getGatewayToken().trim();
+    const token = getGatewayToken();
+    const gatewayAuthMode = getGatewayAuthMode();
     const connectRequestId = nextGatewayRequestId();
     gatewayConnectRequestId = connectRequestId;
+    const auth =
+      gatewayAuthRequiresSharedSecret(gatewayAuthMode) && token
+        ? gatewayAuthMode === "password"
+          ? { password: token }
+          : { token }
+        : null;
     const params = {
       minProtocol: GATEWAY_PROTOCOL_VERSION,
       maxProtocol: GATEWAY_PROTOCOL_VERSION,
       client: GATEWAY_WS_CLIENT,
       role: "operator",
       scopes: GATEWAY_WS_SCOPES,
-      ...(token ? { auth: { token } } : {}),
+      ...(auth ? { auth } : {}),
     };
     gatewaySocket?.send(
       JSON.stringify({
@@ -7382,7 +7530,7 @@ async function ensureGatewaySocketConnected() {
       const authFailure =
         gatewayHandshakeError ||
         evt?.code === 1008 ||
-        /unauthorized|invalid token|auth|401|403|forbidden/i.test(closeReason);
+        /unauthorized|invalid token|invalid password|auth|401|403|forbidden/i.test(closeReason);
       if (!settled) {
         clearTimeout(connectTimer);
         const closeError =
@@ -8082,11 +8230,11 @@ function updateRoomButtons() {
   const hasRoom = Boolean(activeRoom);
   const canReconnect = hasReconnectableSession();
   if (connectRoomButton) {
-    connectRoomButton.disabled = !hasSession || hasRoom;
+    connectRoomButton.disabled = !hasSession || hasRoom || !gatewayAuthModeBootstrapReady;
   }
   if (reconnectRoomButton) {
     reconnectRoomButton.hidden = !canReconnect;
-    reconnectRoomButton.disabled = !canReconnect;
+    reconnectRoomButton.disabled = !canReconnect || !gatewayAuthModeBootstrapReady;
     reconnectRoomButton.style.display = canReconnect ? "" : "none";
     reconnectRoomButton.setAttribute("aria-hidden", canReconnect ? "false" : "true");
   }
@@ -8589,6 +8737,11 @@ async function stopAvatarSidecarForSession() {
 }
 
 async function requestJson(path, options = {}) {
+  try {
+    await ensureGatewayAuthModeBootstrapped();
+  } catch (error) {
+    throw presentGatewayAuthModeBootstrapFailure(error);
+  }
   const hasBody = options.body !== undefined && options.body !== null;
   const response = await fetch(path, {
     headers: {
@@ -8601,7 +8754,7 @@ async function requestJson(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     if (response.status === 401) {
-      const error = new Error("Unauthorized: enter a valid gateway token.");
+      const error = new Error("Unauthorized: enter a valid gateway token or password.");
       error.code = "GATEWAY_UNAUTHORIZED";
       error.status = response.status;
       throw error;
@@ -8678,12 +8831,17 @@ async function saveSetupPayload(body) {
 }
 
 async function refreshSetupStatus() {
+  try {
+    await ensureGatewayAuthModeBootstrapped();
+  } catch (error) {
+    throw presentGatewayAuthModeBootstrapFailure(error);
+  }
   if (!hasGatewayToken()) {
     clearAllSetupSectionErrors();
     resetSetupSecretState();
-    setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
-    setGatewayHealthStatus("warn", "Token Missing");
-    setKeysHealthStatus("warn", "Needs Token");
+    setConfigStatusMessage(getGatewayConnectInstruction(), "info");
+    setGatewayHealthStatus("warn", "Auth Needed");
+    setKeysHealthStatus("warn", "Needs Auth");
     return;
   }
   setConfigStatusMessage("Loading setup status...", "info");
@@ -9287,15 +9445,23 @@ if (configCancelButton) {
 }
 
 if (tokenForm) {
-  tokenForm.addEventListener("submit", (event) => {
+  tokenForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const token = String(tokenInput?.value || "").trim();
-    if (token) {
-      persistGatewayToken(token);
-    } else if (!hasGatewayToken()) {
-      clearGatewayToken();
+    clearAllSetupSectionErrors();
+    try {
+      await ensureGatewayAuthModeBootstrapped();
+      const mode = getGatewayAuthMode();
+      const token = typeof tokenInput?.value === "string" ? tokenInput.value : "";
+      const nextToken = mode === "password" ? token : token.trim();
+      if (nextToken) {
+        persistGatewayToken(nextToken, { mode });
+      } else if (!hasGatewayToken()) {
+        clearGatewayToken();
+      }
+      window.location.reload();
+    } catch (error) {
+      presentGatewayAuthModeBootstrapFailure(error);
     }
-    window.location.reload();
   });
 }
 
@@ -9331,7 +9497,7 @@ if (clearTokenButton) {
   clearTokenButton.addEventListener("click", async () => {
     clearAllSetupSectionErrors();
     await stopActiveSession();
-    closeGatewaySocket("Gateway token cleared.");
+    closeGatewaySocket("Gateway auth cleared.");
     clearGatewayToken();
     resetSetupSecretState({ clearTokenField: true });
     tokenVisible = false;
@@ -9339,15 +9505,17 @@ if (clearTokenButton) {
     updateRoomButtons();
     updateChatControls();
     clearChatLog();
-    setChatStatus("Enter a gateway token to use text chat.");
-    setGatewayHealthStatus("warn", "Token Missing");
-    setKeysHealthStatus("warn", "Needs Token");
-    setConfigStatusMessage("Gateway token cleared. Enter a token to continue.", "info");
+    setChatStatus(getGatewayChatInstruction());
+    setGatewayHealthStatus("warn", "Auth Needed");
+    setKeysHealthStatus("warn", "Needs Auth");
+    setConfigStatusMessage(
+      "Gateway auth cleared for this browser. Enter a token or password to continue.",
+      "info",
+    );
     setOutput({ action: "gateway-token-cleared" });
   });
 }
 
-migrateLegacyGatewayTokenIfNeeded();
 loadMediaPreferences();
 initNavCollapseToggle();
 initChatPane();
@@ -9363,11 +9531,18 @@ clearChatLog();
 updateAvatarUiState();
 
 async function initializeGatewaySetupState() {
-  await bootstrapGatewayTokenFromServer();
+  try {
+    await ensureGatewayAuthModeBootstrapped();
+  } catch (error) {
+    presentGatewayAuthModeBootstrapFailure(error);
+    return;
+  }
+  migrateLegacyGatewayTokenIfNeeded();
   if (tokenInput) {
     tokenInput.value = getGatewayToken();
   }
   updateTokenFieldMasking();
+  updateSessionStartButtonState();
   if (hasGatewayToken()) {
     setGatewayHealthStatus("warn", "Checking");
     setKeysHealthStatus("warn", "Checking");
@@ -9375,14 +9550,15 @@ async function initializeGatewaySetupState() {
     setChatStatus("Start a session to use text chat.");
   } else {
     clearAllSetupSectionErrors();
-    setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
-    setGatewayHealthStatus("warn", "Token Missing");
-    setKeysHealthStatus("warn", "Needs Token");
-    setChatStatus("Enter a gateway token to use text chat.");
+    setConfigStatusMessage(getGatewayConnectInstruction(), "info");
+    setGatewayHealthStatus("warn", "Auth Needed");
+    setKeysHealthStatus("warn", "Needs Auth");
+    setChatStatus(getGatewayChatInstruction());
   }
   updateRoomStatusState();
 }
 
-initializeGatewaySetupState().catch(() => {
+initializeGatewaySetupState().catch((error) => {
+  setOutput({ action: "gateway-setup-init-failed", error: String(error) });
   updateRoomStatusState();
 });
