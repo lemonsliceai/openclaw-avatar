@@ -3713,6 +3713,14 @@ function registerAvatarHttpRoutes(
         );
         return true;
       }
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/gateway-auth.js`) {
+        const script = await readFile(new URL("./gateway-auth.js", import.meta.url), "utf8");
+        sendHttpResponse(
+          res,
+          withNoStoreHeaders(asTextResponse(script, "application/javascript; charset=utf-8")),
+        );
+        return true;
+      }
       sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
       return true;
     } catch (error) {
@@ -3804,6 +3812,8 @@ function registerAvatarHttpRoutes(
     `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/app.js`,
     `${AVATAR_PLUGIN_ROUTE_BASE}/avatar-aspect-ratio.js`,
     `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/avatar-aspect-ratio.js`,
+    `${AVATAR_PLUGIN_ROUTE_BASE}/gateway-auth.js`,
+    `${LEGACY_AVATAR_PLUGIN_ROUTE_BASE}/gateway-auth.js`,
   ]) {
     api.registerHttpRoute({
       path: routePath,

@@ -172,6 +172,9 @@
               <button class="config-nav__item active" type="button" data-section-filter="all">
                 <span class="config-nav__label">All Settings</span>
               </button>
+              <button class="config-nav__item" type="button" data-section-filter="gateway-token">
+                <span class="config-nav__label">Gateway Auth</span>
+              </button>
               <button class="config-nav__item" type="button" data-section-filter="lemonslice">
                 <span class="config-nav__label">LemonSlice</span>
               </button>
@@ -211,6 +214,20 @@
               </div>
 
               <p id="status" class="callout info avatar-status">Loading setup status...</p>
+
+              <section class="config-section-card stack" id="gateway-auth-section" data-config-section="gateway-token">
+                <header class="config-section-card__header avatar-head">
+                  <h2 class="card-title">Gateway Auth</h2>
+                  <p class="card-sub">Gateway auth is stored per browser and managed from the main Avatar page.</p>
+                </header>
+                <div class="config-section-card__content">
+                  <p id="gateway-token-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
+                  <p class="setup-raw-help">
+                    If auth has expired or is invalid, update the gateway token or password on the
+                    <a href="/plugins/openclaw-avatar/">main Avatar page</a>, then return here and retry.
+                  </p>
+                </div>
+              </section>
 
               <form id="setup-form" class="avatar-form">
                 <section class="config-section-card stack" id="lemonslice-section" data-config-section="lemonslice">

@@ -2574,6 +2574,21 @@ describe("avatar plugin", () => {
     expect(aspectRatioModule.res.body).toContain("AVATAR_ASPECT_RATIOS");
     expect(aspectRatioModule.res.body).toContain("AVATAR_ASPECT_RATIO_DEFAULT");
 
+    const gatewayAuthModule = await invokeHttpRoute(
+      httpRoutes,
+      "/plugins/avatar/gateway-auth.js",
+      {
+        url: "/plugins/avatar/gateway-auth.js",
+      },
+    );
+    expect(gatewayAuthModule.handled).toBe(true);
+    expect(gatewayAuthModule.res.statusCode).toBe(200);
+    expect(gatewayAuthModule.res.header("content-type")).toBe(
+      "application/javascript; charset=utf-8",
+    );
+    expect(gatewayAuthModule.res.body).toContain("normalizeGatewayAuthMode");
+    expect(gatewayAuthModule.res.body).toContain("getGatewayAuthStateFromSettings");
+
     const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
       url: "/plugins/avatar/api/setup",
     });

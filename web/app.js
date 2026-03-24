@@ -2,6 +2,11 @@ import {
   AVATAR_ASPECT_RATIO_DEFAULT as SESSION_AVATAR_ASPECT_RATIO_DEFAULT,
   AVATAR_ASPECT_RATIOS as SESSION_AVATAR_ASPECT_RATIO_VALUES,
 } from "./avatar-aspect-ratio.js";
+import {
+  getGatewayAuthStateFromSettings,
+  reconcileGatewayAuthStateWithServerMode,
+  normalizeGatewayAuthMode,
+} from "./gateway-auth.js";
 
 const statusEl = document.getElementById("status");
 const outputEl = document.getElementById("output");
@@ -1196,8 +1201,9 @@ function revealSetupErrorSection(sectionKey) {
   if (activeConfigMode !== "form") {
     setConfigMode("form");
   }
-  if (activeConfigSectionFilter !== "all" && activeConfigSectionFilter !== sectionKey) {
-    applyConfigSectionFilter(sectionKey);
+  const nextFilter = normalizeConfigSectionFilter(sectionKey);
+  if (activeConfigSectionFilter !== nextFilter) {
+    applyConfigSectionFilter(nextFilter);
   }
 }
 
@@ -1614,18 +1620,6 @@ function getAvatarToolbarStatusState() {
   return { text: "Disconnected", tone: "danger" };
 }
 
-function normalizeGatewayAuthMode(rawValue) {
-  const normalized = typeof rawValue === "string" ? rawValue.trim().toLowerCase() : "";
-  if (
-    normalized === "password" ||
-    normalized === "trusted-proxy" ||
-    normalized === "none"
-  ) {
-    return normalized;
-  }
-  return "token";
-}
-
 function readStoredOpenClawSettings() {
   try {
     const rawSettings = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
@@ -1647,20 +1641,8 @@ function writeStoredOpenClawSettings(settings) {
 
 function getGatewayAuthState() {
   const settings = readStoredOpenClawSettings();
-  const mode = normalizeGatewayAuthMode(settings.gatewayAuthMode);
   const legacyToken = localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY) || "";
-  const secretCandidate =
-    typeof settings.gatewayAuthSecret === "string"
-      ? settings.gatewayAuthSecret
-      : mode === "password" && typeof settings.password === "string"
-        ? settings.password
-      : typeof settings.token === "string"
-        ? settings.token
-        : legacyToken;
-  return {
-    mode,
-    secret: typeof secretCandidate === "string" ? secretCandidate.trim() : "",
-  };
+  return getGatewayAuthStateFromSettings(settings, legacyToken);
 }
 
 function gatewayAuthRequiresSharedSecret(mode = getGatewayAuthState().mode) {
@@ -1988,11 +1970,8 @@ async function bootstrapGatewayAuthModeFromServer() {
     const mode = normalizeGatewayAuthMode(payload?.gateway?.auth?.mode);
     const currentAuth = getGatewayAuthState();
     if (mode !== currentAuth.mode) {
-      persistGatewayToken("", { mode });
-      return true;
-    }
-    if (!gatewayAuthRequiresSharedSecret(mode) && currentAuth.secret) {
-      persistGatewayToken("", { mode });
+      const nextAuth = reconcileGatewayAuthStateWithServerMode(currentAuth, mode);
+      persistGatewayToken(nextAuth.secret, { mode: nextAuth.mode });
     }
     return true;
   } catch {
@@ -5994,8 +5973,23 @@ function clearChatLog() {
   renderChatLog({ scrollToBottom: false });
 }
 
-function applyConfigSectionFilter(nextFilter) {
+function hasConfigSectionFilterTarget(sectionKey) {
+  if (!sectionKey || sectionKey === "all") {
+    return true;
+  }
+  return configSectionCards.some((section) => {
+    const currentKey = (section.getAttribute("data-config-section") || "").trim();
+    return currentKey === sectionKey;
+  });
+}
+
+function normalizeConfigSectionFilter(nextFilter) {
   const normalizedFilter = typeof nextFilter === "string" && nextFilter.trim() ? nextFilter.trim() : "all";
+  return hasConfigSectionFilterTarget(normalizedFilter) ? normalizedFilter : "all";
+}
+
+function applyConfigSectionFilter(nextFilter) {
+  const normalizedFilter = normalizeConfigSectionFilter(nextFilter);
   activeConfigSectionFilter = normalizedFilter;
 
   for (const button of configSectionFilterButtons) {
