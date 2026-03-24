@@ -487,7 +487,7 @@ describe("avatar plugin", () => {
     expect(cliCommands).toHaveLength(1);
   });
 
-  it("registers gateway token as the first avatar setup CLI option", () => {
+  it("registers only Avatar provider credential options for the setup CLI", () => {
     const { cliCommands } = setup();
     const cliRegistration = cliCommands[0];
     const registerCli = cliRegistration?.definition as
@@ -502,7 +502,7 @@ describe("avatar plugin", () => {
         return commandApi;
       },
       description(description: string) {
-        expect(description).toContain("gateway auth");
+        expect(description).toContain("Avatar provider credentials");
         return commandApi;
       },
       option(flag: string) {
@@ -524,7 +524,12 @@ describe("avatar plugin", () => {
       },
     });
 
-    expect(optionFlags[0]).toBe("--gateway-token <token>");
+    expect(optionFlags).toEqual([
+      "--lemonslice-api-key <key>",
+      "--livekit-url <url>",
+      "--livekit-api-key <key>",
+      "--livekit-api-secret <secret>",
+    ]);
     expect(aliases).toEqual(["avatar-setup"]);
     expect(cliRegistration?.metadata).toEqual({
       commands: ["openclaw-avatar-setup", "avatar-setup"],
@@ -2173,17 +2178,17 @@ describe("avatar plugin", () => {
     );
   });
 
-  it("saves gateway token into the root gateway auth config", async () => {
+  it("preserves the existing gateway auth config when setup save updates provider settings", async () => {
     const { methods, runtime } = setup({
       ...baseConfig,
       gateway: {
         port: 18789,
-        auth: { mode: "token", token: "old-gateway-token" },
+        auth: { mode: "password", password: "existing-gateway-password" },
       },
     });
 
     const respond = await invoke(methods, "avatar.setup.save", {
-      gatewayToken: "new-gateway-token",
+      livekitUrl: "wss://new.livekit.cloud",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -2192,17 +2197,17 @@ describe("avatar plugin", () => {
       | {
           gateway?: {
             port?: number;
-            auth?: { mode?: string; token?: string };
+            auth?: { mode?: string; token?: string; password?: string };
           };
         }
       | undefined;
     expect(savedConfig?.gateway).toEqual({
       port: 18789,
-      auth: { mode: "token", token: "new-gateway-token" },
+      auth: { mode: "password", password: "existing-gateway-password" },
     });
   });
 
-  it("preserves the existing gateway token when setup save receives a blank token", async () => {
+  it("does not let avatar.setup.save overwrite the root gateway auth config", async () => {
     const { methods, runtime } = setup({
       ...baseConfig,
       gateway: {
@@ -2212,7 +2217,8 @@ describe("avatar plugin", () => {
     });
 
     const respond = await invoke(methods, "avatar.setup.save", {
-      gatewayToken: "",
+      gatewayToken: "ignored",
+      gatewayPassword: "also-ignored",
     });
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
@@ -2221,7 +2227,7 @@ describe("avatar plugin", () => {
       | {
           gateway?: {
             port?: number;
-            auth?: { mode?: string; token?: string };
+            auth?: { mode?: string; token?: string; password?: string };
           };
         }
       | undefined;
@@ -2568,6 +2574,21 @@ describe("avatar plugin", () => {
     expect(aspectRatioModule.res.body).toContain("AVATAR_ASPECT_RATIOS");
     expect(aspectRatioModule.res.body).toContain("AVATAR_ASPECT_RATIO_DEFAULT");
 
+    const gatewayAuthModule = await invokeHttpRoute(
+      httpRoutes,
+      "/plugins/avatar/gateway-auth.js",
+      {
+        url: "/plugins/avatar/gateway-auth.js",
+      },
+    );
+    expect(gatewayAuthModule.handled).toBe(true);
+    expect(gatewayAuthModule.res.statusCode).toBe(200);
+    expect(gatewayAuthModule.res.header("content-type")).toBe(
+      "application/javascript; charset=utf-8",
+    );
+    expect(gatewayAuthModule.res.body).toContain("normalizeGatewayAuthMode");
+    expect(gatewayAuthModule.res.body).toContain("getGatewayAuthStateFromSettings");
+
     const setupApi = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
       url: "/plugins/avatar/api/setup",
     });
@@ -2766,7 +2787,36 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
       gateway: {
         auth: {
           mode: "token",
-          token: "gateway-token",
+        },
+      },
+    });
+  });
+
+  it("bootstraps the configured gateway password for the browser settings page", async () => {
+    const { httpRoutes, runtime } = setup({
+      ...baseConfig,
+      gateway: {
+        port: 18789,
+        auth: { mode: "password", password: "gateway-password" },
+      },
+    });
+    (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.23";
+
+    const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/avatar/bootstrap", {
+      url: "/plugins/avatar/bootstrap",
+    });
+    expect(bootstrap.handled).toBe(true);
+    expect(bootstrap.res.statusCode).toBe(200);
+    expect(JSON.parse(bootstrap.res.body)).toEqual({
+      success: true,
+      openclaw: {
+        version: "2026.3.23",
+        minimumCompatibleVersion: "2026.3.23-1",
+        compatible: true,
+      },
+      gateway: {
+        auth: {
+          mode: "password",
         },
       },
     });

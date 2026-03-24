@@ -1100,6 +1100,51 @@
             </div>
           </div>
 
+          <section class="card stack avatar-section" id="gateway-auth-card">
+            <header class="avatar-head">
+              <h2 class="card-title">Gateway Auth</h2>
+              <p class="card-sub">Enter the gateway token or password for this browser, then connect before starting a session.</p>
+            </header>
+            <p id="gateway-token-error" class="callout danger is-mode-hidden" role="alert" aria-atomic="true"></p>
+            <form id="token-form" class="avatar-form" data-config-section="gateway-token">
+              <label class="field full">
+                <span>Gateway token or password</span>
+                <div class="secret-row">
+                  <input type="password" id="gateway-token" autocomplete="off" />
+                  <button
+                    class="btn btn--sm secret-toggle"
+                    type="button"
+                    id="toggle-token-visibility"
+                    aria-label="Show gateway auth secret"
+                    aria-pressed="false"
+                    title="Show gateway auth secret"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"></path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                  </button>
+                  <button
+                    class="btn btn--sm secret-copy"
+                    type="button"
+                    id="copy-token"
+                    aria-label="Copy gateway auth secret"
+                    title="Copy gateway auth secret"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V9Z"></path>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </button>
+                </div>
+              </label>
+              <div class="row">
+                <button class="btn primary" type="submit">Connect</button>
+                <button class="btn danger" type="button" id="clear-token">Clear Credential</button>
+              </div>
+            </form>
+          </section>
+
           <section class="card stack avatar-section" id="session-card">
             <header class="avatar-head">
               <h2 class="card-title">Session</h2>

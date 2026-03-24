@@ -123,10 +123,12 @@ openclaw gateway run --force
 http://127.0.0.1:18789/plugins/openclaw-avatar/
 ```
 
-6. Paste a public avatar image URL. 
+6. Enter your gateway auth credential on the main page and click Connect.
+
+7. Paste a public avatar image URL (optional, default provided).
 
 ```
-INSERT EXAMPLE #TODO
+https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtPNwLc0haBifGpR5UHA49jYDwQzbvS3mgVqLM
 ```
 
 Image tips: [https://lemonslice.com/docs/avatar-design](https://lemonslice.com/docs/avatar-design) 
@@ -146,7 +148,7 @@ In `openclaw.json` under `plugins.entries`
             "verbose": false,
             "lemonSlice": {
               "apiKey": "<lemonslice-api-key>",
-              "imageUrl": "https://example.com/avatar-image.jpg #TODO" # or your own public image URL
+              "imageUrl": "https://e9riw81orx.ufs.sh/f/z2nBEp3YISrtPNwLc0haBifGpR5UHA49jYDwQzbvS3mgVqLM"
             },
             "livekit": {
               "url": "wss://your-project.livekit.cloud",
@@ -217,6 +219,19 @@ This example is assembled from a working local `openclaw.json` and trimmed down 
       }
     }
   },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "token": "YOUR_GATEWAY_TOKEN"
+    },
+    "remote": {
+      "url": "ws://127.0.0.1:18789",
+      "token": "YOUR_GATEWAY_TOKEN"
+    }
+  },
   "agents": {
     "defaults": {
       "model": {
@@ -235,7 +250,7 @@ This example is assembled from a working local `openclaw.json` and trimmed down 
       "provider": "elevenlabs",
       "elevenlabs": {
         "apiKey": "<elevenlabs-api-key>",
-        "voiceId": "<elevenlabs-voice-id> #TODO", # or your own voice ID
+        "voiceId": "pg7Nd5b8Y3tnfSndq5lh",
         "modelId": "eleven_flash_v2_5",
         "applyTextNormalization": "auto"
       }
