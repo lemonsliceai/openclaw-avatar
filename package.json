@@ -1,6 +1,6 @@
 {
   "name": "@lemonsliceai/openclaw-avatar",
-  "version": "0.1.37",
+  "version": "0.1.38",
   "description": "OpenClaw Avatar plugin",
   "license": "MIT",
   "type": "module",
