@@ -93,7 +93,7 @@ openclaw plugins enable openclaw-avatar
 }
 ```
 
-3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Avatar:
+3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. No gateway auth token is required in the plugin UI. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Avatar:
 
 ```bash
 openclaw openclaw-avatar-setup

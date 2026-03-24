@@ -12,6 +12,10 @@ const {
   mockStat,
   actualStatHolder,
   mockFetch,
+  mockWebSocketCtor,
+  mockWebSocketSend,
+  mockWebSocketClose,
+  mockWebSocketInstances,
   mockResetProcessGroupChildren,
   mockStopChildProcess,
   mockStopMatchingProcesses,
@@ -29,6 +33,10 @@ const {
   mockStat: vi.fn(),
   actualStatHolder: { stat: null as null | ((path: string) => Promise<unknown>) },
   mockFetch: vi.fn(),
+  mockWebSocketCtor: vi.fn(),
+  mockWebSocketSend: vi.fn(),
+  mockWebSocketClose: vi.fn(),
+  mockWebSocketInstances: [] as unknown[],
   mockResetProcessGroupChildren: vi.fn().mockResolvedValue(undefined),
   mockStopChildProcess: vi.fn().mockResolvedValue(undefined),
   mockStopMatchingProcesses: vi.fn().mockResolvedValue([]),
@@ -92,6 +100,48 @@ vi.mock("livekit-server-sdk", () => ({
     deleteDispatch = mockAgentDispatchDeleteDispatch;
   },
 }));
+
+vi.mock("ws", async () => {
+  const { EventEmitter } = await import("node:events");
+
+  class MockWebSocket extends EventEmitter {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSING = 2;
+    static readonly CLOSED = 3;
+
+    readyState = MockWebSocket.CONNECTING;
+
+    constructor(url: string, options?: unknown) {
+      super();
+      mockWebSocketCtor(url, options);
+      mockWebSocketInstances.push(this);
+      queueMicrotask(() => {
+        if (this.readyState !== MockWebSocket.CONNECTING) {
+          return;
+        }
+        this.readyState = MockWebSocket.OPEN;
+        this.emit("open");
+      });
+    }
+
+    send(data: string | Buffer) {
+      mockWebSocketSend(data);
+    }
+
+    close(code?: number, reason?: string | Buffer) {
+      this.readyState = MockWebSocket.CLOSED;
+      mockWebSocketClose(code, reason);
+      this.emit(
+        "close",
+        code ?? 1000,
+        Buffer.isBuffer(reason) ? reason : Buffer.from(reason ?? "", "utf8"),
+      );
+    }
+  }
+
+  return { WebSocket: MockWebSocket };
+});
 
 type RespondCall = [boolean, unknown?, { code: string; message: string }?];
 type RegisteredHttpRoute = {
@@ -267,14 +317,25 @@ function loggedMessages(mockFn: ReturnType<typeof vi.fn>): string[] {
   return mockFn.mock.calls.map(([message]) => String(message));
 }
 
-class MockHttpResponse {
+class MockHttpResponse extends EventEmitter {
   statusCode = 200;
   headers = new Map<string, string>();
   body = "";
 
+  constructor() {
+    super();
+  }
+
   setHeader(name: string, value: string) {
     this.headers.set(name.toLowerCase(), value);
   }
+
+  write(body = "") {
+    this.body += body;
+    return true;
+  }
+
+  flushHeaders() {}
 
   end(body = "") {
     this.body += body;
@@ -360,6 +421,10 @@ describe("avatar plugin", () => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", mockFetch);
     mockFetch.mockReset();
+    mockWebSocketCtor.mockReset();
+    mockWebSocketSend.mockReset();
+    mockWebSocketClose.mockReset();
+    mockWebSocketInstances.length = 0;
     mockFetch.mockImplementation(async () => {
       throw new Error("Unhandled fetch request in test");
     });
@@ -414,12 +479,12 @@ describe("avatar plugin", () => {
       expect.arrayContaining([
         expect.objectContaining({
           path: `${PLUGIN_ROUTE_BASE}/api`,
-          auth: "gateway",
+          auth: "plugin",
           match: "prefix",
         }),
         expect.objectContaining({
           path: `${LEGACY_PLUGIN_ROUTE_BASE}/api`,
-          auth: "gateway",
+          auth: "plugin",
           match: "prefix",
         }),
         expect.objectContaining({
@@ -487,7 +552,7 @@ describe("avatar plugin", () => {
     expect(cliCommands).toHaveLength(1);
   });
 
-  it("registers gateway token as the first avatar setup CLI option", () => {
+  it("registers provider-only avatar setup CLI options", () => {
     const { cliCommands } = setup();
     const cliRegistration = cliCommands[0];
     const registerCli = cliRegistration?.definition as
@@ -502,7 +567,7 @@ describe("avatar plugin", () => {
         return commandApi;
       },
       description(description: string) {
-        expect(description).toContain("gateway auth");
+        expect(description).toContain("provider credentials");
         return commandApi;
       },
       option(flag: string) {
@@ -524,7 +589,12 @@ describe("avatar plugin", () => {
       },
     });
 
-    expect(optionFlags[0]).toBe("--gateway-token <token>");
+    expect(optionFlags).toEqual([
+      "--lemonslice-api-key <key>",
+      "--livekit-url <url>",
+      "--livekit-api-key <key>",
+      "--livekit-api-secret <secret>",
+    ]);
     expect(aliases).toEqual(["avatar-setup"]);
     expect(cliRegistration?.metadata).toEqual({
       commands: ["openclaw-avatar-setup", "avatar-setup"],
@@ -1159,12 +1229,14 @@ describe("avatar plugin", () => {
     );
   });
 
-  it("refuses to create a session when the sidecar does not start", async () => {
+  it("refuses to create a session when required provider credentials are missing", async () => {
     const { methods } = setup({
       ...baseConfig,
-      gateway: {
-        auth: {
-          mode: "none",
+      avatar: {
+        ...baseConfig.avatar,
+        livekit: {
+          ...baseConfig.avatar.livekit,
+          apiKey: undefined,
         },
       },
     });
@@ -1173,7 +1245,7 @@ describe("avatar plugin", () => {
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
     expect(call?.[0]).toBe(false);
-    expect(call?.[2]?.message).toContain("sidecar did not start");
+    expect(call?.[2]?.message).toContain("missing required config");
     expect(mockRoomServiceCreateRoom).not.toHaveBeenCalled();
     expect(mockAgentDispatchCreateDispatch).not.toHaveBeenCalled();
     expect(mockSpawn).not.toHaveBeenCalled();
@@ -1642,7 +1714,7 @@ describe("avatar plugin", () => {
     expect(mockStopChildProcess).toHaveBeenCalled();
   });
 
-  it("skips redispatch when the replacement sidecar does not start", async () => {
+  it("fails restart when the replacement sidecar config is missing credentials", async () => {
     const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
 
     await createTestSession(methods);
@@ -1651,7 +1723,15 @@ describe("avatar plugin", () => {
       ...baseConfig,
       gateway: {
         auth: {
-          mode: "none",
+          mode: "token",
+          token: "gateway-token",
+        },
+      },
+      avatar: {
+        ...baseConfig.avatar,
+        livekit: {
+          ...baseConfig.avatar.livekit,
+          apiSecret: undefined,
         },
       },
     } as never);
@@ -1659,10 +1739,8 @@ describe("avatar plugin", () => {
     const respond = await invoke(methods, "avatar.sidecar.restart", {});
 
     const call = respond.mock.calls[0] as RespondCall | undefined;
-    expect(call?.[0]).toBe(true);
-    expect(call?.[1]).toEqual({
-      restarted: false,
-    });
+    expect(call?.[0]).toBe(false);
+    expect(call?.[2]?.message).toContain("missing required config");
     expect(mockAgentDispatchCreateDispatch).toHaveBeenCalledTimes(1);
     expect(mockAgentDispatchDeleteDispatch).not.toHaveBeenCalled();
     expect(mockSpawn).toHaveBeenCalledTimes(1);
@@ -1768,6 +1846,55 @@ describe("avatar plugin", () => {
     expect(JSON.parse(clearedStatusResponse.res.body)).toEqual({
       success: true,
       status: null,
+    });
+  });
+
+  it("connects the chat stream bridge with the canonical gateway client id", async () => {
+    const { httpRoutes } = setup({
+      ...baseConfig,
+      gateway: {
+        port: 18789,
+        auth: { mode: "token", token: "gateway-token" },
+      },
+    });
+
+    const streamResponse = await invokeHttpRoute(httpRoutes, "/plugins/avatar/api", {
+      url: "/plugins/avatar/api/chat/stream?sessionKey=agent%3Amain%3Amain",
+    });
+
+    expect(streamResponse.handled).toBe(true);
+    expect(streamResponse.res.statusCode).toBe(200);
+    await flushMicrotasks();
+
+    const socket = mockWebSocketInstances[0] as EventEmitter | undefined;
+    expect(socket).toBeDefined();
+
+    socket?.emit(
+      "message",
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: "nonce-123", ts: Date.now() },
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(mockWebSocketCtor).toHaveBeenCalledWith("ws://127.0.0.1:18789", {});
+    expect(mockWebSocketSend).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(mockWebSocketSend.mock.calls[0]?.[0]))).toMatchObject({
+      type: "req",
+      method: "connect",
+      params: {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: expect.objectContaining({
+          id: "gateway-client",
+          mode: "backend",
+        }),
+        role: "operator",
+        scopes: ["operator.admin"],
+        auth: { token: "gateway-token" },
+      },
     });
   });
 
@@ -2173,7 +2300,7 @@ describe("avatar plugin", () => {
     );
   });
 
-  it("saves gateway token into the root gateway auth config", async () => {
+  it("does not let setup save mutate root gateway auth config", async () => {
     const { methods, runtime } = setup({
       ...baseConfig,
       gateway: {
@@ -2198,11 +2325,11 @@ describe("avatar plugin", () => {
       | undefined;
     expect(savedConfig?.gateway).toEqual({
       port: 18789,
-      auth: { mode: "token", token: "new-gateway-token" },
+      auth: { mode: "token", token: "old-gateway-token" },
     });
   });
 
-  it("preserves the existing gateway token when setup save receives a blank token", async () => {
+  it("ignores blank gateway token inputs during setup save", async () => {
     const { methods, runtime } = setup({
       ...baseConfig,
       gateway: {
@@ -2737,14 +2864,8 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
     }
   });
 
-  it("bootstraps the configured gateway token for the browser settings page", async () => {
-    const { httpRoutes, runtime } = setup({
-      ...baseConfig,
-      gateway: {
-        port: 18789,
-        auth: { mode: "token", token: "gateway-token" },
-      },
-    });
+  it("returns browser bootstrap metadata without exposing gateway auth details", async () => {
+    const { httpRoutes, runtime } = setup(baseConfig);
     (runtime as typeof runtime & { openclawVersion: string }).openclawVersion = "2026.3.23";
 
     const bootstrap = await invokeHttpRoute(httpRoutes, "/plugins/avatar/bootstrap", {
@@ -2762,12 +2883,6 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
         version: "2026.3.23",
         minimumCompatibleVersion: "2026.3.23-1",
         compatible: true,
-      },
-      gateway: {
-        auth: {
-          mode: "token",
-          token: "gateway-token",
-        },
       },
     });
   });

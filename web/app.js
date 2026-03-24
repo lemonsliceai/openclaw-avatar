@@ -9,7 +9,6 @@ const setupForm = document.getElementById("setup-form");
 const setupRawForm = document.getElementById("setup-raw-form");
 const setupRawInput = document.getElementById("setup-raw-input");
 const setupRawErrorEl = document.getElementById("setup-raw-error");
-const gatewayTokenErrorEl = document.getElementById("gateway-token-error");
 const lemonSliceErrorEl = document.getElementById("lemonslice-error");
 const liveKitErrorEl = document.getElementById("livekit-error");
 const sessionForm = document.getElementById("session-form");
@@ -21,11 +20,6 @@ const reloadButton = document.getElementById("reload-status");
 const configCancelButton = document.getElementById("config-cancel");
 const setupSaveButton = document.querySelector('button[form="setup-form"][type="submit"]');
 const stopSessionButton = document.getElementById("stop-session");
-const tokenForm = document.getElementById("token-form");
-const tokenInput = document.getElementById("gateway-token");
-const copyTokenButton = document.getElementById("copy-token");
-const toggleTokenVisibilityButton = document.getElementById("toggle-token-visibility");
-const clearTokenButton = document.getElementById("clear-token");
 const navCollapseButton = document.getElementById("nav-collapse-toggle");
 const chatPaneToggleButton = document.getElementById("chat-pane-toggle");
 const chatPaneCloseButton = document.getElementById("chat-pane-close");
@@ -72,8 +66,6 @@ const chatAttachButton = document.getElementById("chat-attach");
 const chatSendButton = document.getElementById("chat-send");
 const chatTokenEstimateEl = document.getElementById("chat-token-estimate");
 
-const OPENCLAW_SETTINGS_STORAGE_KEY = "openclaw.control.settings.v1";
-const LEGACY_TOKEN_STORAGE_KEY = "avatar.gatewayToken";
 const THEME_STORAGE_KEY = "avatar.themePreference";
 const NAV_COLLAPSE_STORAGE_KEY = "avatar.navCollapsed";
 const CHAT_PANE_STORAGE_KEY = "avatar.chatPaneOpen";
@@ -92,14 +84,6 @@ const OPENCLAW_REDACTED_SECRET_VALUE = "__OPENCLAW_REDACTED__";
 const LIVEKIT = globalThis.LivekitClient || globalThis.livekitClient || null;
 const BROWSER_SPEECH_RECOGNITION =
   globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition || null;
-const GATEWAY_PROTOCOL_VERSION = 3;
-const GATEWAY_WS_CLIENT = {
-  id: "test",
-  version: "avatar-plugin-ui",
-  platform: "web",
-  mode: "test",
-};
-const GATEWAY_WS_SCOPES = ["operator.read", "operator.write"];
 const CHAT_PANE_MIN_WIDTH = 300;
 const CHAT_PANE_MAX_WIDTH = 640;
 const AVATAR_PANE_WIDTH_STORAGE_KEY = "avatar.avatarPaneWidth";
@@ -265,12 +249,11 @@ const avatarMessageOverlayState = {
 let gatewaySocket = null;
 let gatewaySocketReady = false;
 let gatewayHandshakePromise = null;
-let gatewayHandshakeError = null;
-let gatewayConnectRequestId = null;
-let gatewayRequestCounter = 0;
+let gatewayHandshakeResolve = null;
+let gatewayHandshakeReject = null;
 let gatewayReconnectTimer = null;
 let gatewayReconnectBackoffActive = false;
-const gatewayPendingRequests = new Map();
+let gatewaySocketSessionKey = "";
 const sensitiveFieldInputs = Array.from(document.querySelectorAll("[data-sensitive-field]"));
 const sensitiveFieldCopyButtons = Array.from(document.querySelectorAll("[data-copy-secret]"));
 const sensitiveFieldVisibilityButtons = Array.from(document.querySelectorAll("[data-toggle-secret-visibility]"));
@@ -284,7 +267,6 @@ const mobileChatPaneMedia =
 const systemThemeMedia =
   typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
 let activeThemePreference = "system";
-let tokenVisible = false;
 let latestSetupStatus = null;
 let openClawCompatibility = {
   version: null,
@@ -302,18 +284,14 @@ let setupFormBaseline = {
 let setupRawBaseline = "";
 
 const setupSectionErrorEls = new Map([
-  ["gateway-token", gatewayTokenErrorEl],
   ["lemonslice", lemonSliceErrorEl],
   ["livekit", liveKitErrorEl],
 ]);
 const STRUCTURED_SETUP_ERROR_SECTION_MAP = new Map([
-  ["GATEWAY_UNAUTHORIZED", "gateway-token"],
-  ["GATEWAY_TOKEN", "gateway-token"],
   ["LEMONSLICE", "lemonslice"],
   ["LIVEKIT", "livekit"],
 ]);
 const STRUCTURED_SETUP_ERROR_FIELD_MAP = new Map([
-  ["gatewayToken", "gateway-token"],
   ["lemonSliceApiKey", "lemonslice"],
   ["livekitUrl", "livekit"],
   ["livekitApiKey", "livekit"],
@@ -1134,13 +1112,6 @@ function classifySetupErrorSection(message) {
     return null;
   }
   if (
-    normalized.includes("gateway token") ||
-    normalized.includes("unauthorized") ||
-    normalized.includes("needs auth")
-  ) {
-    return "gateway-token";
-  }
-  if (
     normalized.includes("lemonslice") ||
     normalized.includes("lemon slice") ||
     normalized.includes("lemonsliceapikey")
@@ -1171,12 +1142,6 @@ function extractRawSetupErrorMessage(message) {
 function sanitizeSetupErrorMessage(message, sectionKey) {
   const rawMessage = extractRawSetupErrorMessage(message);
   const normalized = rawMessage.toLowerCase();
-  const structuredCode = readStructuredSetupErrorValue(message, "code").toUpperCase();
-  if (sectionKey === "gateway-token") {
-    return normalized.includes("unauthorized") || structuredCode === "GATEWAY_UNAUTHORIZED"
-      ? "Gateway token is invalid or expired. Enter a valid token and try again."
-      : "Gateway token could not be verified. Check the token and try again.";
-  }
   if (sectionKey === "lemonslice") {
     return "LemonSlice settings could not be verified. Check the API key and try again.";
   }
@@ -1277,28 +1242,6 @@ function isSetupTransportErrorCode(value) {
   );
 }
 
-function isSetupAuthError(error) {
-  if (!error) {
-    return false;
-  }
-  if (error?.isAuth === true) {
-    return true;
-  }
-  const status = readSetupErrorStatusCode(error);
-  const type = readSetupErrorType(error);
-  const code = typeof error?.code === "string" ? error.code.trim().toUpperCase() : "";
-  if (
-    status === 401 ||
-    status === 403 ||
-    type === "auth" ||
-    type === "forbidden" ||
-    code === "GATEWAY_UNAUTHORIZED"
-  ) {
-    return true;
-  }
-  return false;
-}
-
 function isSetupTransportError(error) {
   if (!error || isSetupRawPayloadError(error)) {
     return false;
@@ -1335,11 +1278,6 @@ function isSetupTransportError(error) {
 }
 
 function updateSetupHealthStatusForError(error, options = {}) {
-  if (isSetupAuthError(error)) {
-    setGatewayHealthStatus("warn", "Unauthorized");
-    setKeysHealthStatus("warn", "Needs Auth");
-    return true;
-  }
   if (isSetupTransportError(error)) {
     setGatewayHealthStatus("danger", options.gatewayText || "Error");
     setKeysHealthStatus("danger", options.keysText || "Error");
@@ -1611,25 +1549,6 @@ function getAvatarToolbarStatusState() {
   return { text: "Disconnected", tone: "danger" };
 }
 
-function getGatewayToken() {
-  try {
-    const rawSettings = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
-    if (rawSettings) {
-      const parsed = JSON.parse(rawSettings);
-      if (parsed && typeof parsed === "object" && typeof parsed.token === "string") {
-        return parsed.token;
-      }
-    }
-  } catch {
-    // Fall through to legacy key lookup.
-  }
-  return localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY) || "";
-}
-
-function hasGatewayToken() {
-  return getGatewayToken().trim().length > 0;
-}
-
 function getStoredBooleanPreference(key, fallback = false) {
   try {
     const stored = localStorage.getItem(key);
@@ -1858,52 +1777,6 @@ function buildSessionCreatePayload(sessionKey, options = {}) {
   };
 }
 
-function persistGatewayToken(token) {
-  const nextToken = typeof token === "string" ? token.trim() : "";
-  let settings = {};
-  try {
-    const raw = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        settings = parsed;
-      }
-    }
-  } catch {
-    settings = {};
-  }
-  localStorage.setItem(
-    OPENCLAW_SETTINGS_STORAGE_KEY,
-    JSON.stringify({
-      ...settings,
-      token: nextToken,
-    }),
-  );
-}
-
-function clearGatewayToken() {
-  let settings = {};
-  try {
-    const raw = localStorage.getItem(OPENCLAW_SETTINGS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        settings = parsed;
-      }
-    }
-  } catch {
-    settings = {};
-  }
-  localStorage.setItem(
-    OPENCLAW_SETTINGS_STORAGE_KEY,
-    JSON.stringify({
-      ...settings,
-      token: "",
-    }),
-  );
-  localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
-}
-
 function hydrateOpenClawCompatibility(payload) {
   openClawCompatibility = {
     version: typeof payload?.openclaw?.version === "string" ? payload.openclaw.version : null,
@@ -1934,44 +1807,6 @@ async function refreshOpenClawCompatibility() {
   } catch {
     return false;
   }
-}
-
-async function bootstrapGatewayTokenFromServer() {
-  try {
-    const payload = await requestBrowserBootstrapPayload();
-    const token =
-      typeof payload?.gateway?.auth?.token === "string" ? payload.gateway.auth.token.trim() : "";
-    if (!token) {
-      return false;
-    }
-    if (token !== getGatewayToken().trim()) {
-      persistGatewayToken(token);
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function migrateLegacyGatewayTokenIfNeeded() {
-  const legacy = localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY);
-  if (!legacy || !legacy.trim()) {
-    return;
-  }
-  if (!getGatewayToken().trim()) {
-    persistGatewayToken(legacy);
-  }
-  localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
-}
-
-function getAuthHeaders() {
-  const token = getGatewayToken().trim();
-  if (!token) {
-    return {};
-  }
-  return {
-    Authorization: `Bearer ${token}`,
-  };
 }
 
 function setChatStatus(text) {
@@ -3800,9 +3635,6 @@ function resetSetupSecretState(options = {}) {
   storedSetupSecretValues.clear();
   secretVisibilityState.clear();
   clearSetupSecretInputs();
-  if (options.clearTokenField && tokenInput && typeof tokenInput.value === "string") {
-    tokenInput.value = "";
-  }
   syncSetupEditorsFromCurrentForm();
 }
 
@@ -3980,15 +3812,8 @@ function isSetupRawDirty() {
   return setupRawInput.value !== setupRawBaseline;
 }
 
-function isTokenDirty() {
-  if (!tokenInput) {
-    return false;
-  }
-  return normalizeOptionalInputValue(tokenInput.value) !== normalizeOptionalInputValue(getGatewayToken());
-}
-
 function hasPendingConfigEdits() {
-  return isTokenDirty() || (activeConfigMode === "raw" ? isSetupRawDirty() : isSetupFormDirty());
+  return activeConfigMode === "raw" ? isSetupRawDirty() : isSetupFormDirty();
 }
 
 function setConfigMode(nextMode, options = {}) {
@@ -4025,26 +3850,6 @@ function updateSetupSaveButtonState() {
     return;
   }
   setupSaveButton.disabled = activeConfigMode === "raw" ? !isSetupRawDirty() : !isSetupFormDirty();
-  if (configCancelButton) {
-    configCancelButton.disabled = !hasPendingConfigEdits();
-  }
-}
-
-function updateTokenFieldMasking() {
-  if (!tokenInput) {
-    return;
-  }
-  const hasStoredToken = normalizeOptionalInputValue(getGatewayToken()).length > 0;
-  tokenInput.placeholder = "";
-  tokenInput.disabled = false;
-  setSensitiveInputVisible(tokenInput, tokenVisible);
-  if (copyTokenButton) {
-    copyTokenButton.style.display = hasStoredToken || normalizeOptionalInputValue(tokenInput.value).length ? "" : "none";
-  }
-  if (toggleTokenVisibilityButton) {
-    toggleTokenVisibilityButton.style.display = hasStoredToken || normalizeOptionalInputValue(tokenInput.value).length ? "" : "none";
-    updateSensitiveVisibilityButton(toggleTokenVisibilityButton, tokenVisible, "gateway token");
-  }
   if (configCancelButton) {
     configCancelButton.disabled = !hasPendingConfigEdits();
   }
@@ -7049,130 +6854,6 @@ function updateChatControls() {
   syncAvatarDocumentPictureInPictureChatComposer();
 }
 
-function nextGatewayRequestId() {
-  gatewayRequestCounter += 1;
-  return `avatar-ui-${Date.now()}-${gatewayRequestCounter}`;
-}
-
-function clearGatewayPendingRequests(error) {
-  for (const [id, pending] of gatewayPendingRequests.entries()) {
-    clearTimeout(pending.timer);
-    pending.reject(error);
-    gatewayPendingRequests.delete(id);
-  }
-}
-
-function clearGatewayReconnectTimer() {
-  gatewayReconnectBackoffActive = false;
-  if (gatewayReconnectTimer === null) {
-    return;
-  }
-  clearTimeout(gatewayReconnectTimer);
-  gatewayReconnectTimer = null;
-}
-
-function createGatewayAuthError(message) {
-  const error = new Error(message);
-  error.code = "GATEWAY_AUTH_FAILED";
-  return error;
-}
-
-function isGatewaySocketAuthError(error) {
-  if (!error) {
-    return false;
-  }
-  const code = typeof error?.code === "string" ? error.code : "";
-  if (code === "GATEWAY_AUTH_FAILED") {
-    return true;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return /unauthorized|invalid token|auth|401|403|forbidden/i.test(message);
-}
-
-function reportGatewaySocketAuthFailure(error) {
-  setOutput({
-    action: "auth-failed",
-    error: error instanceof Error ? error.message : String(error),
-  });
-}
-
-function scheduleGatewaySocketReconnect(delayMs = 1_000) {
-  if (
-    gatewayReconnectTimer !== null ||
-    gatewayHandshakePromise ||
-    !activeSession ||
-    !hasGatewayToken() ||
-    (gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN && gatewaySocketReady)
-  ) {
-    return;
-  }
-  gatewayReconnectBackoffActive = true;
-  gatewayReconnectTimer = setTimeout(() => {
-    gatewayReconnectTimer = null;
-    if (!activeSession || !hasGatewayToken()) {
-      gatewayReconnectBackoffActive = false;
-      return;
-    }
-    void ensureGatewaySocketConnected().catch((error) => {
-      if (isGatewaySocketAuthError(error)) {
-        gatewayReconnectBackoffActive = false;
-        reportGatewaySocketAuthFailure(error);
-        return;
-      }
-      setOutput({
-        action: "chat-websocket-reconnect-failed",
-        error: error instanceof Error ? error.message : String(error),
-      });
-      scheduleGatewaySocketReconnect(Math.min(delayMs * 2, 10_000));
-    }).then(() => {
-      if (gatewaySocketReady) {
-        gatewayReconnectBackoffActive = false;
-      }
-    });
-  }, delayMs);
-}
-
-function closeGatewaySocket(reason) {
-  clearGatewayReconnectTimer();
-  gatewaySocketReady = false;
-  gatewayConnectRequestId = null;
-  chatAwaitingReply = false;
-  clearStreamingAssistantMessages();
-  clearAvatarInterruptPending({
-    forceUnmute: true,
-  });
-  if (gatewaySocket) {
-    try {
-      gatewaySocket.close();
-    } catch {}
-  }
-  gatewaySocket = null;
-  gatewayHandshakePromise = null;
-  clearGatewayPendingRequests(new Error(reason));
-  updateChatControls();
-  renderChatLog({ scrollToBottom: false });
-}
-
-async function primeGatewaySocketForChat() {
-  try {
-    await ensureGatewaySocketConnected();
-    clearGatewayReconnectTimer();
-    return true;
-  } catch (error) {
-    if (isGatewaySocketAuthError(error)) {
-      reportGatewaySocketAuthFailure(error);
-      setChatStatus(error instanceof Error ? error.message : "Gateway authentication failed.");
-      return false;
-    }
-    setOutput({
-      action: "chat-websocket-unavailable",
-      error: error instanceof Error ? error.message : String(error),
-    });
-    scheduleGatewaySocketReconnect();
-    return false;
-  }
-}
-
 function handleGatewayChatEvent(payload) {
   const expectedSessionKey = resolveChatSessionKey();
   const payloadSessionKey = typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
@@ -7258,7 +6939,7 @@ function handleGatewayChatEvent(payload) {
   }
 }
 
-function handleGatewaySocketMessage(raw) {
+function parseGatewaySocketMessage(raw, eventType = "message") {
   let frame = null;
   try {
     frame = JSON.parse(String(raw));
@@ -7269,75 +6950,73 @@ function handleGatewaySocketMessage(raw) {
     return;
   }
 
-  if (frame.type === "event" && frame.event === "connect.challenge") {
-    const token = getGatewayToken().trim();
-    const connectRequestId = nextGatewayRequestId();
-    gatewayConnectRequestId = connectRequestId;
-    const params = {
-      minProtocol: GATEWAY_PROTOCOL_VERSION,
-      maxProtocol: GATEWAY_PROTOCOL_VERSION,
-      client: GATEWAY_WS_CLIENT,
-      role: "operator",
-      scopes: GATEWAY_WS_SCOPES,
-      ...(token ? { auth: { token } } : {}),
-    };
-    gatewaySocket?.send(
-      JSON.stringify({
-        type: "req",
-        id: connectRequestId,
-        method: "connect",
-        params,
-      }),
-    );
-    return;
-  }
-
-  if (frame.type === "res") {
-    if (frame.id === gatewayConnectRequestId) {
-      gatewayConnectRequestId = null;
-      if (!frame.ok) {
-        const message = frame?.error?.message || "Gateway websocket authorization failed.";
-        gatewayHandshakeError = createGatewayAuthError(message);
-        closeGatewaySocket(message);
-        setChatStatus(message);
-        return;
-      }
-      gatewaySocketReady = true;
-      setChatStatus("Chat connected.");
-      return;
-    }
-
-    const pending = gatewayPendingRequests.get(frame.id);
-    if (!pending) {
-      return;
-    }
-    clearTimeout(pending.timer);
-    gatewayPendingRequests.delete(frame.id);
-    if (frame.ok) {
-      pending.resolve(frame.payload ?? {});
-      return;
-    }
-    const message = frame?.error?.message || `${pending.method} failed`;
-    pending.reject(new Error(message));
-    return;
-  }
-
   if (frame.type === "event" && frame.event === "chat") {
     handleGatewayChatEvent(frame.payload || {});
+    return;
+  }
+
+  if (eventType === "chat") {
+    handleGatewayChatEvent(
+      frame.payload && typeof frame.payload === "object" ? frame.payload : frame,
+    );
+  }
+}
+
+function closeGatewaySocket(reason = "") {
+  gatewayReconnectBackoffActive = false;
+  if (gatewayReconnectTimer !== null) {
+    clearTimeout(gatewayReconnectTimer);
+    gatewayReconnectTimer = null;
+  }
+  gatewaySocketReady = false;
+  if (gatewayHandshakeReject) {
+    gatewayHandshakeReject(new Error(reason || "Chat stream closed."));
+  }
+  gatewayHandshakePromise = null;
+  gatewayHandshakeResolve = null;
+  gatewayHandshakeReject = null;
+  gatewaySocketSessionKey = "";
+  if (gatewaySocket) {
+    try {
+      gatewaySocket.close();
+    } catch {}
+  }
+  gatewaySocket = null;
+  chatAwaitingReply = false;
+  updateChatControls();
+  if (reason) {
+    setChatStatus(reason);
   }
 }
 
 async function ensureGatewaySocketConnected() {
-  if (gatewaySocketReady && gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN) {
+  if (!activeSession || !resolveChatSessionKey()) {
+    throw new Error("Start a session first.");
+  }
+  const sessionKey = resolveChatSessionKey();
+  if (
+    gatewaySocketReady &&
+    gatewaySocket &&
+    gatewaySocket.readyState === EventSource.OPEN &&
+    gatewaySocketSessionKey === sessionKey
+  ) {
     return;
   }
   if (gatewayHandshakePromise) {
     return gatewayHandshakePromise;
   }
+  if (!sessionKey) {
+    throw new Error("Start a session first.");
+  }
+
+  if (gatewaySocket && gatewaySocketSessionKey && gatewaySocketSessionKey !== sessionKey) {
+    closeGatewaySocket();
+  }
 
   gatewayHandshakePromise = new Promise((resolve, reject) => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socketUrl = `${protocol}//${window.location.host}`;
+    gatewayHandshakeResolve = resolve;
+    gatewayHandshakeReject = reject;
+    const streamUrl = `${AVATAR_PLUGIN_BASE_PATH}/api/chat/stream?sessionKey=${encodeURIComponent(sessionKey)}`;
     let settled = false;
     const onSettledError = (error) => {
       if (settled) {
@@ -7345,6 +7024,8 @@ async function ensureGatewaySocketConnected() {
       }
       settled = true;
       gatewayHandshakePromise = null;
+      gatewayHandshakeResolve = null;
+      gatewayHandshakeReject = null;
       reject(error);
     };
     const onSettledSuccess = () => {
@@ -7353,98 +7034,73 @@ async function ensureGatewaySocketConnected() {
       }
       settled = true;
       gatewayHandshakePromise = null;
+      gatewayHandshakeResolve = null;
+      gatewayHandshakeReject = null;
       resolve();
     };
 
-    setChatStatus("Connecting chat websocket...");
-    const ws = new WebSocket(socketUrl);
-    gatewaySocket = ws;
+    setChatStatus("Connecting chat stream...");
+    const stream = new EventSource(streamUrl);
+    gatewaySocket = stream;
     gatewaySocketReady = false;
-    gatewayHandshakeError = null;
-    gatewayConnectRequestId = null;
+    gatewaySocketSessionKey = sessionKey;
 
     const connectTimer = setTimeout(() => {
-      onSettledError(new Error("Timed out connecting to gateway websocket."));
-      closeGatewaySocket("Timed out connecting to gateway websocket.");
+      onSettledError(new Error("Timed out connecting to chat stream."));
+      closeGatewaySocket("Timed out connecting to chat stream.");
     }, 10_000);
 
-    ws.addEventListener("message", (event) => {
-      handleGatewaySocketMessage(event.data);
-      if (!settled && gatewaySocketReady) {
-        clearTimeout(connectTimer);
-        onSettledSuccess();
+    stream.addEventListener("open", () => {
+      if (gatewaySocket !== stream) {
+        return;
       }
+      gatewaySocketReady = true;
+      clearTimeout(connectTimer);
+      onSettledSuccess();
+      setChatStatus("Chat connected.");
     });
 
-    ws.addEventListener("close", (evt) => {
-      const handshakeStillPending = !settled || gatewayConnectRequestId !== null;
-      const closeReason = typeof evt?.reason === "string" ? evt.reason.toLowerCase() : "";
-      const authFailure =
-        gatewayHandshakeError ||
-        evt?.code === 1008 ||
-        /unauthorized|invalid token|auth|401|403|forbidden/i.test(closeReason);
+    stream.addEventListener("message", (event) => {
+      if (gatewaySocket !== stream) {
+        return;
+      }
+      parseGatewaySocketMessage(event.data, event.type);
+    });
+
+    stream.addEventListener("chat", (event) => {
+      if (gatewaySocket !== stream) {
+        return;
+      }
+      parseGatewaySocketMessage(event.data, event.type);
+    });
+
+    stream.addEventListener("error", () => {
+      if (gatewaySocket !== stream) {
+        return;
+      }
       if (!settled) {
-        clearTimeout(connectTimer);
-        const closeError =
-          gatewayHandshakeError ||
-          (authFailure
-            ? createGatewayAuthError(
-                typeof evt?.reason === "string" && evt.reason.trim()
-                  ? evt.reason.trim()
-                  : "Gateway websocket authorization failed.",
-              )
-            : new Error("Gateway websocket closed before connect completed."));
-        onSettledError(closeError);
+        return;
       }
-      if (gatewaySocket === ws) {
-        gatewaySocket = null;
-      }
-      gatewayHandshakeError = null;
       gatewaySocketReady = false;
-      gatewayConnectRequestId = null;
-      chatAwaitingReply = false;
-      updateChatControls();
-      clearStreamingAssistantMessages();
-      clearGatewayPendingRequests(new Error("Gateway websocket closed."));
-      renderChatLog({ scrollToBottom: false });
-      setChatStatus("Chat disconnected.");
-      if (!handshakeStillPending && !authFailure && !gatewayReconnectBackoffActive) {
-        scheduleGatewaySocketReconnect();
-      }
-    });
-
-    ws.addEventListener("error", () => {
-      if (!settled) {
-        clearTimeout(connectTimer);
-        onSettledError(new Error("Gateway websocket connection failed."));
-      }
+      setChatStatus("Chat stream reconnecting...");
     });
   });
 
   return gatewayHandshakePromise;
 }
 
-async function gatewayRpc(method, params) {
-  await ensureGatewaySocketConnected();
-  if (!gatewaySocket || gatewaySocket.readyState !== WebSocket.OPEN || !gatewaySocketReady) {
-    throw new Error("Gateway websocket is not connected.");
+async function primeGatewaySocketForChat() {
+  try {
+    await ensureGatewaySocketConnected();
+    return true;
+  } catch (error) {
+    setOutput({
+      action: "chat-stream-unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    setChatStatus(error instanceof Error ? error.message : "Chat stream unavailable.");
+    return false;
   }
-  const id = nextGatewayRequestId();
-  return await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      gatewayPendingRequests.delete(id);
-      reject(new Error(`${method} timed out.`));
-    }, 20_000);
-    gatewayPendingRequests.set(id, { resolve, reject, timer, method });
-    gatewaySocket.send(
-      JSON.stringify({
-        type: "req",
-        id,
-        method,
-        params,
-      }),
-    );
-  });
 }
 
 async function loadChatHistory() {
@@ -8531,6 +8187,7 @@ async function stopActiveSession() {
     avatarAutoHelloPendingSessionKeys.delete(activeChatSessionKey);
   }
   disconnectRoom();
+  closeGatewaySocket();
   activeSession = null;
   activeSessionImageUrl = "";
   activeSessionAspectRatio = SESSION_AVATAR_ASPECT_RATIO_DEFAULT;
@@ -8593,19 +8250,12 @@ async function requestJson(path, options = {}) {
   const response = await fetch(path, {
     headers: {
       ...(hasBody ? { "content-type": "application/json" } : {}),
-      ...getAuthHeaders(),
       ...(options.headers || {}),
     },
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
-    if (response.status === 401) {
-      const error = new Error("Unauthorized: enter a valid gateway token.");
-      error.code = "GATEWAY_UNAUTHORIZED";
-      error.status = response.status;
-      throw error;
-    }
     const message = payload?.error?.message || `Request failed (${response.status})`;
     const error = new Error(message);
     error.code = payload?.error?.code;
@@ -8678,14 +8328,6 @@ async function saveSetupPayload(body) {
 }
 
 async function refreshSetupStatus() {
-  if (!hasGatewayToken()) {
-    clearAllSetupSectionErrors();
-    resetSetupSecretState();
-    setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
-    setGatewayHealthStatus("warn", "Token Missing");
-    setKeysHealthStatus("warn", "Needs Token");
-    return;
-  }
   setConfigStatusMessage("Loading setup status...", "info");
   setGatewayHealthStatus("warn", "Checking");
   setKeysHealthStatus("warn", "Checking");
@@ -9266,10 +8908,6 @@ window.addEventListener("focus", () => {
 if (configCancelButton) {
   configCancelButton.addEventListener("click", () => {
     clearAllSetupSectionErrors();
-    tokenVisible = false;
-    if (tokenInput) {
-      tokenInput.value = getGatewayToken();
-    }
     if (activeConfigMode === "raw") {
       if (setupRawInput) {
         setupRawInput.value = setupRawBaseline;
@@ -9281,79 +8919,14 @@ if (configCancelButton) {
       restoreSetupFormBaseline();
       syncRawFromForm();
     }
-    updateTokenFieldMasking();
     updateSetupSaveButtonState();
   });
 }
-
-if (tokenForm) {
-  tokenForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const token = String(tokenInput?.value || "").trim();
-    if (token) {
-      persistGatewayToken(token);
-    } else if (!hasGatewayToken()) {
-      clearGatewayToken();
-    }
-    window.location.reload();
-  });
-}
-
-if (tokenInput) {
-  tokenInput.addEventListener("input", () => {
-    setSetupSectionError("gateway-token", "");
-    updateTokenFieldMasking();
-  });
-}
-
-if (copyTokenButton) {
-  copyTokenButton.addEventListener("click", async () => {
-    try {
-      await copyTextToClipboard(String(tokenInput?.value || getGatewayToken() || ""));
-      flashCopyButton(copyTokenButton);
-    } catch (error) {
-      setOutput({ action: "gateway-token-copy-failed", error: String(error) });
-    }
-  });
-}
-
-if (toggleTokenVisibilityButton) {
-  toggleTokenVisibilityButton.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-  });
-  toggleTokenVisibilityButton.addEventListener("click", () => {
-    tokenVisible = !tokenVisible;
-    updateTokenFieldMasking();
-  });
-}
-
-if (clearTokenButton) {
-  clearTokenButton.addEventListener("click", async () => {
-    clearAllSetupSectionErrors();
-    await stopActiveSession();
-    closeGatewaySocket("Gateway token cleared.");
-    clearGatewayToken();
-    resetSetupSecretState({ clearTokenField: true });
-    tokenVisible = false;
-    updateTokenFieldMasking();
-    updateRoomButtons();
-    updateChatControls();
-    clearChatLog();
-    setChatStatus("Enter a gateway token to use text chat.");
-    setGatewayHealthStatus("warn", "Token Missing");
-    setKeysHealthStatus("warn", "Needs Token");
-    setConfigStatusMessage("Gateway token cleared. Enter a token to continue.", "info");
-    setOutput({ action: "gateway-token-cleared" });
-  });
-}
-
-migrateLegacyGatewayTokenIfNeeded();
 loadMediaPreferences();
 initNavCollapseToggle();
 initChatPane();
 initAvatarPaneResize();
 applyAvatarSpeakerMuteState();
-updateTokenFieldMasking();
 initThemeToggle();
 initConfigSectionFiltering();
 updateRoomButtons();
@@ -9363,23 +8936,10 @@ clearChatLog();
 updateAvatarUiState();
 
 async function initializeGatewaySetupState() {
-  await bootstrapGatewayTokenFromServer();
-  if (tokenInput) {
-    tokenInput.value = getGatewayToken();
-  }
-  updateTokenFieldMasking();
-  if (hasGatewayToken()) {
-    setGatewayHealthStatus("warn", "Checking");
-    setKeysHealthStatus("warn", "Checking");
-    refreshSetupStatus().catch(() => {});
-    setChatStatus("Start a session to use text chat.");
-  } else {
-    clearAllSetupSectionErrors();
-    setConfigStatusMessage("Enter a gateway token above, then click Use Token.", "info");
-    setGatewayHealthStatus("warn", "Token Missing");
-    setKeysHealthStatus("warn", "Needs Token");
-    setChatStatus("Enter a gateway token to use text chat.");
-  }
+  setGatewayHealthStatus("warn", "Checking");
+  setKeysHealthStatus("warn", "Checking");
+  await refreshSetupStatus().catch(() => {});
+  setChatStatus("Start a session to use text chat.");
   updateRoomStatusState();
 }
 

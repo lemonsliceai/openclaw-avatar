@@ -2,11 +2,13 @@ import { EventEmitter } from "node:events";
 import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { ReadableStream } from "node:stream/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import avatarAgent, {
   GatewayWsClient,
   buildLemonSliceAspectRatioPayload,
   computeStreamingTextDelta,
+  requestGatewaySpeechSynthesis,
 } from "./avatar-agent-runner.js";
 import {
   AVATAR_ASPECT_RATIO_DEFAULT,
@@ -14,61 +16,24 @@ import {
   AVATAR_ASPECT_RATIOS,
 } from "./avatar-aspect-ratio.js";
 
-class MockWebSocket extends EventEmitter {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-  static instances: MockWebSocket[] = [];
+const textEncoder = new TextEncoder();
 
-  url: string;
-  readyState = MockWebSocket.CONNECTING;
-  sentMessages: string[] = [];
-
-  constructor(url: string) {
-    super();
-    this.url = url;
-    MockWebSocket.instances.push(this);
-  }
-
-  send(payload: string) {
-    this.sentMessages.push(payload);
-  }
-
-  open() {
-    this.readyState = MockWebSocket.OPEN;
-    this.emit("open");
-  }
-
-  close(code = 1000, reason = "") {
-    this.readyState = MockWebSocket.CLOSED;
-    this.emit("close", code, reason);
-  }
-
-  receive(frame: unknown) {
-    this.emit("message", typeof frame === "string" ? frame : JSON.stringify(frame));
-  }
-}
-
-function completeGatewayHandshake(socket: MockWebSocket, nonce = "nonce") {
-  socket.open();
-  socket.receive({
-    type: "event",
-    event: "connect.challenge",
-    payload: { nonce },
+function createMockSseResponse(chunks: string[], status = 200) {
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(textEncoder.encode(chunk));
+      }
+      controller.close();
+    },
   });
-  const connectRequest = JSON.parse(socket.sentMessages[0] ?? "{}") as {
-    id?: string;
-    method?: string;
-    params?: { auth?: { token?: string } };
+
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    body: stream,
+    text: async () => chunks.join(""),
   };
-  expect(connectRequest.method).toBe("connect");
-  socket.receive({
-    type: "res",
-    id: connectRequest.id,
-    ok: true,
-    payload: {},
-  });
 }
 
 async function waitForSignalEvent(
@@ -107,7 +72,6 @@ async function waitForSignalEvent(
 
 describe("GatewayWsClient", () => {
   beforeEach(() => {
-    MockWebSocket.instances = [];
     vi.useFakeTimers();
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -119,71 +83,154 @@ describe("GatewayWsClient", () => {
     vi.useRealTimers();
   });
 
-  it("reconnects after an established gateway websocket closes", async () => {
-    const client = new GatewayWsClient({
-      WebSocket: MockWebSocket,
-      url: "ws://127.0.0.1:1",
-      token: "gateway-token",
-      password: "",
-      onChatEvent: vi.fn(),
+  it("reconnects after an established plugin chat stream closes", async () => {
+    const chatEvent = {
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: "agent:main:main",
+        state: "final",
+        runId: "run-1",
+        message: {
+          role: "assistant",
+          text: "Hello from SSE",
+        },
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createMockSseResponse([`event: chat\ndata: ${JSON.stringify(chatEvent)}\n\n`]),
+      )
+      .mockResolvedValueOnce(createMockSseResponse([]));
+    const originalToken = process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN;
+    const originalPassword = process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD;
+    process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN = "gateway-token";
+    process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD = "gateway-password";
+
+    try {
+      const client = new GatewayWsClient({
+        fetchImpl: fetchMock,
+        url: "http://127.0.0.1:18789/plugins/openclaw-avatar/api/chat/stream?sessionKey=agent%3Amain%3Amain",
+        onChatEvent: vi.fn(),
+      });
+
+      const readyPromise = client.start();
+      await readyPromise;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/plugins/openclaw-avatar/api/chat/stream"),
+        expect.objectContaining({
+          headers: { accept: "text/event-stream" },
+        }),
+      );
+      expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty("authorization");
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      client.stop();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(client.onChatEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "event",
+          event: "chat",
+          payload: expect.objectContaining({
+            sessionKey: "agent:main:main",
+            state: "final",
+          }),
+        }),
+      );
+    } finally {
+      if (originalToken === undefined) {
+        delete process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN;
+      } else {
+        process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN = originalToken;
+      }
+      if (originalPassword === undefined) {
+        delete process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD;
+      } else {
+        process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD = originalPassword;
+      }
+    }
+  });
+
+  it("posts synthesis requests without authorization headers", async () => {
+    const fetchMock = vi.fn(async (_url, options = {}) => {
+      expect(_url).toBe("http://127.0.0.1:18789/plugins/openclaw-avatar/api/synthesize");
+      expect(options).toMatchObject({
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+      });
+      expect((options as { headers?: Record<string, string> }).headers).not.toHaveProperty(
+        "authorization",
+      );
+      expect((options as { body?: string }).body).toBe(JSON.stringify({ text: "Hello" }));
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            audioBase64: "AQ==",
+            sampleRate: 16000,
+            provider: "mock",
+          }),
+      } as Response;
     });
 
-    const readyPromise = client.start();
-    expect(MockWebSocket.instances).toHaveLength(1);
+    const originalFetch = globalThis.fetch;
+    const originalGatewayUrl = process.env.OPENCLAW_AVATAR_GATEWAY_URL;
+    const originalToken = process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN;
+    const originalPassword = process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD;
 
-    const firstSocket = MockWebSocket.instances[0];
-    completeGatewayHandshake(firstSocket, "first-nonce");
+    process.env.OPENCLAW_AVATAR_GATEWAY_URL = "ws://127.0.0.1:18789";
+    process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN = "gateway-token";
+    process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD = "gateway-password";
+    globalThis.fetch = fetchMock as typeof fetch;
 
-    await readyPromise;
-
-    firstSocket.close(1006, "dropped");
-
-    await vi.advanceTimersByTimeAsync(500);
-    expect(MockWebSocket.instances).toHaveLength(2);
-
-    const secondSocket = MockWebSocket.instances[1];
-    completeGatewayHandshake(secondSocket, "second-nonce");
-
-    client.stop();
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    expect(MockWebSocket.instances).toHaveLength(2);
+    try {
+      await expect(requestGatewaySpeechSynthesis("Hello", undefined)).resolves.toMatchObject({
+        sampleRate: 16000,
+        provider: "mock",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalGatewayUrl === undefined) {
+        delete process.env.OPENCLAW_AVATAR_GATEWAY_URL;
+      } else {
+        process.env.OPENCLAW_AVATAR_GATEWAY_URL = originalGatewayUrl;
+      }
+      if (originalToken === undefined) {
+        delete process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN;
+      } else {
+        process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN = originalToken;
+      }
+      if (originalPassword === undefined) {
+        delete process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD;
+      } else {
+        process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD = originalPassword;
+      }
+    }
   });
 
   it("fails the initial connect attempt without entering a reconnect loop", async () => {
+    const fetchMock = vi.fn(async () => createMockSseResponse([], 503));
     const client = new GatewayWsClient({
-      WebSocket: MockWebSocket,
-      url: "ws://127.0.0.1:1",
-      token: "gateway-token",
-      password: "",
+      fetchImpl: fetchMock,
+      url: "http://127.0.0.1:18789/plugins/openclaw-avatar/api/chat/stream?sessionKey=agent%3Amain%3Amain",
       onChatEvent: vi.fn(),
     });
 
     const readyPromise = client.start();
-    expect(MockWebSocket.instances).toHaveLength(1);
-
-    const socket = MockWebSocket.instances[0];
-    socket.open();
-    socket.receive({
-      type: "event",
-      event: "connect.challenge",
-      payload: { nonce: "bad-nonce" },
-    });
-    const connectRequest = JSON.parse(socket.sentMessages[0] ?? "{}") as { id?: string };
-    socket.receive({
-      type: "res",
-      id: connectRequest.id,
-      ok: false,
-      error: { message: "unauthorized" },
-    });
-
-    await expect(readyPromise).rejects.toThrow("unauthorized");
-    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
-    expect(client.ws).toBeNull();
-    expect(socket.listenerCount("close")).toBe(0);
+    await expect(readyPromise).rejects.toThrow("plugin request failed with status 503");
 
     await vi.runOnlyPendingTimersAsync();
-    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -12,10 +12,10 @@ import type {
   GatewayRequestHandlerOptions,
   OpenClawConfig,
   OpenClawPluginApi,
-  OpenClawPluginServiceContext,
   RespondFn,
 } from "openclaw/plugin-sdk/core";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { WebSocket } from "ws";
 import {
   resetProcessGroupChildren,
   stopChildProcess,
@@ -44,6 +44,8 @@ const LEGACY_AVATAR_PLUGIN_ROUTE_BASE = `/plugins/${LEGACY_AVATAR_PLUGIN_ID}`;
 const AVATAR_SETUP_COMMAND = "openclaw-avatar-setup";
 const LEGACY_AVATAR_SETUP_COMMAND = "avatar-setup";
 const OPENCLAW_MIN_COMPATIBLE_VERSION = "2026.3.23-1";
+const GATEWAY_PROTOCOL_VERSION = 3;
+const GATEWAY_CLIENT_ID = "gateway-client";
 const AVATAR_SIDECAR_INSTANCE_ARG_PREFIX = "--openclaw-avatar-instance=";
 const AVATAR_SIDECAR_RESET_SETTLE_MS = 1_000;
 const AVATAR_SIDECAR_READY_TIMEOUT_MS = 12_000;
@@ -188,10 +190,26 @@ type SidecarLogger = {
   error: (message: string) => void;
 };
 
-type GatewayRuntime = NonNullable<OpenClawPluginServiceContext["gateway"]>;
-type SidecarGatewayRuntime =
-  | GatewayRuntime
-  | { port: number; auth: { mode: "none" } };
+type ResolvedGatewayAuth =
+  | { mode: "token"; token?: string }
+  | { mode: "password"; password?: string }
+  | {
+      mode: "trusted-proxy";
+      userHeader?: string;
+      requiredHeaders?: string[];
+      allowUsers?: string[];
+    }
+  | { mode: "none" };
+
+type GatewayRuntime = {
+  port: number;
+  auth: Exclude<ResolvedGatewayAuth, { mode: "none" }>;
+};
+
+type SidecarGatewayRuntime = {
+  port: number;
+  auth: ResolvedGatewayAuth;
+};
 
 type LiveKitAgentDispatch = {
   agentName: string;
@@ -209,7 +227,6 @@ type GatewayErrorShape = {
 };
 
 type AvatarSetupInput = {
-  gatewayToken?: string;
   lemonSliceApiKey?: string;
   livekitUrl?: string;
   livekitApiKey?: string;
@@ -1089,7 +1106,30 @@ function resolveGatewayRuntimeFromConfig(config: OpenClawConfig): SidecarGateway
     return { port, auth: { mode: "password", password } };
   }
   if (mode === "trusted-proxy") {
-    return { port, auth: { mode: "trusted-proxy" } };
+    const trustedProxy = asObjectRecord(auth.trustedProxy);
+    const userHeader =
+      typeof trustedProxy.userHeader === "string" && trustedProxy.userHeader.trim()
+        ? trustedProxy.userHeader.trim()
+        : undefined;
+    const requiredHeaders = Array.isArray(trustedProxy.requiredHeaders)
+      ? trustedProxy.requiredHeaders
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .map((value) => value.trim())
+      : undefined;
+    const allowUsers = Array.isArray(trustedProxy.allowUsers)
+      ? trustedProxy.allowUsers
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .map((value) => value.trim())
+      : undefined;
+    return {
+      port,
+      auth: {
+        mode: "trusted-proxy",
+        userHeader,
+        ...(requiredHeaders && requiredHeaders.length > 0 ? { requiredHeaders } : {}),
+        ...(allowUsers && allowUsers.length > 0 ? { allowUsers } : {}),
+      },
+    };
   }
   if (mode === "none") {
     return { port, auth: { mode: "none" } };
@@ -1897,7 +1937,6 @@ function parseAvatarSetupInput(
   };
 
   const parsed: AvatarSetupInput = {
-    gatewayToken: readInput("gatewayToken"),
     lemonSliceApiKey: readInput("lemonSliceApiKey"),
     livekitUrl: readInput("livekitUrl"),
     livekitApiKey: readInput("livekitApiKey"),
@@ -1918,9 +1957,6 @@ function applyAvatarSetupToConfig(
   setupInput: AvatarSetupInput,
 ): OpenClawConfig {
   const effective = resolveEffectiveAvatarConfig(config);
-  const gatewayRecord = asObjectRecord(config.gateway);
-  const gatewayAuthRecord = asObjectRecord(gatewayRecord.auth);
-  const gatewayToken = normalizeOptionalSetupSecretString(setupInput.gatewayToken);
   const lemonSliceApiKey =
     normalizeOptionalSetupSecretString(setupInput.lemonSliceApiKey) ??
     effective.avatar?.lemonSlice?.apiKey;
@@ -1952,18 +1988,6 @@ function applyAvatarSetupToConfig(
 
   return {
     ...config,
-    ...(gatewayToken
-      ? {
-          gateway: {
-            ...gatewayRecord,
-            auth: {
-              ...gatewayAuthRecord,
-              mode: "token",
-              token: gatewayToken,
-            },
-          },
-        }
-      : {}),
     plugins: {
       ...plugins,
       entries: {
@@ -2202,10 +2226,6 @@ async function runAvatarSetupCli(api: OpenClawPluginApi, options: unknown): Prom
   const effectiveCurrentConfig = resolveEffectiveAvatarConfig(currentConfig);
 
   let setupInput: AvatarSetupInput = {
-    gatewayToken:
-      readCliOption(options, "gatewayToken") ??
-      process.env.AVATAR_GATEWAY_TOKEN ??
-      process.env.OPENCLAW_GATEWAY_TOKEN,
     lemonSliceApiKey:
       readCliOption(options, "lemonsliceApiKey") ??
       readCliOption(options, "lemonSliceApiKey") ??
@@ -2225,7 +2245,6 @@ async function runAvatarSetupCli(api: OpenClawPluginApi, options: unknown): Prom
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
       setupInput = {
-        gatewayToken: await promptTerminalField({ rl, label: "Gateway token" }),
         lemonSliceApiKey: await promptTerminalField({ rl, label: "LemonSlice API key" }),
         livekitUrl: await promptTerminalField({
           rl,
@@ -2267,8 +2286,7 @@ function registerAvatarSetupCli(api: OpenClawPluginApi): void {
       program
         .command(AVATAR_SETUP_COMMAND)
         .alias(LEGACY_AVATAR_SETUP_COMMAND)
-        .description("Configure OpenClaw gateway auth and Avatar provider credentials")
-        .option("--gateway-token <token>", "OpenClaw gateway token")
+        .description("Configure Avatar provider credentials")
         .option("--lemonslice-api-key <key>", "LemonSlice API key")
         .option("--livekit-url <url>", "LiveKit URL")
         .option("--livekit-api-key <key>", "LiveKit API key")
@@ -3203,42 +3221,314 @@ function registerAvatarHttpRoutes(
     return readFile(resolvedPath, "utf8");
   };
 
-  const buildBrowserBootstrapPayload = async (config: OpenClawConfig) => {
-    const gateway = resolveGatewayRuntimeFromConfig(config);
+  const buildBrowserBootstrapPayload = async () => {
     const openclawVersion = await resolveHostOpenClawVersion();
     const openclaw = {
       version: openclawVersion,
       minimumCompatibleVersion: OPENCLAW_MIN_COMPATIBLE_VERSION,
       compatible: openclawVersion === null ? null : isOpenClawVersionCompatible(openclawVersion),
     };
-    if (!gateway) {
-      return {
-        success: true,
-        openclaw,
-        gateway: {
-          auth: { mode: "none" as const },
-        },
-      };
-    }
-    if (gateway.auth.mode === "token") {
-      return {
-        success: true,
-        openclaw,
-        gateway: {
-          auth: {
-            mode: "token" as const,
-            token: gateway.auth.token ?? "",
-          },
-        },
-      };
-    }
     return {
       success: true,
       openclaw,
-      gateway: {
-        auth: { mode: gateway.auth.mode },
-      },
     };
+  };
+
+  const chatStreamSubscribersBySession = new Map<string, Set<ServerResponse>>();
+  let chatStreamKeepAliveTimer: NodeJS.Timeout | null = null;
+  let chatBridgeSocket: WebSocket | null = null;
+  let chatBridgeConnecting = false;
+  let chatBridgeConnectRequestId: string | null = null;
+  let chatBridgeReconnectTimer: NodeJS.Timeout | null = null;
+
+  const hasChatStreamSubscribers = (): boolean => {
+    for (const subscribers of chatStreamSubscribersBySession.values()) {
+      if (subscribers.size > 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const disposeChatBridgeSocket = (code = 1000, reason = ""): void => {
+    const socket = chatBridgeSocket;
+    chatBridgeSocket = null;
+    chatBridgeConnecting = false;
+    chatBridgeConnectRequestId = null;
+    if (!socket) {
+      return;
+    }
+    socket.removeAllListeners();
+    if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+      return;
+    }
+    try {
+      socket.close(code, reason);
+    } catch {
+      // Ignore shutdown failures while replacing bridge sockets.
+    }
+  };
+
+  const stopChatStreamKeepAlive = (): void => {
+    if (!chatStreamKeepAliveTimer) {
+      return;
+    }
+    clearInterval(chatStreamKeepAliveTimer);
+    chatStreamKeepAliveTimer = null;
+  };
+
+  const cleanupChatStreamSubscribers = (): void => {
+    for (const [sessionKey, subscribers] of chatStreamSubscribersBySession.entries()) {
+      for (const subscriber of [...subscribers]) {
+        if ((subscriber as ServerResponse & { writableEnded?: boolean }).writableEnded) {
+          subscribers.delete(subscriber);
+        }
+      }
+      if (subscribers.size === 0) {
+        chatStreamSubscribersBySession.delete(sessionKey);
+      }
+    }
+    if (!hasChatStreamSubscribers()) {
+      stopChatStreamKeepAlive();
+      if (chatBridgeReconnectTimer) {
+        clearTimeout(chatBridgeReconnectTimer);
+        chatBridgeReconnectTimer = null;
+      }
+      disposeChatBridgeSocket();
+    }
+  };
+
+  const writeSseFrame = (res: ServerResponse, frame: string): boolean => {
+    if ((res as ServerResponse & { writableEnded?: boolean }).writableEnded) {
+      return false;
+    }
+    try {
+      res.write(frame);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const writeSseEvent = (res: ServerResponse, event: string, payload: unknown): boolean =>
+    writeSseFrame(res, `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+
+  const broadcastChatStreamEvent = (sessionKey: string, event: string, payload: unknown): void => {
+    const subscribers = chatStreamSubscribersBySession.get(sessionKey);
+    if (!subscribers || subscribers.size === 0) {
+      return;
+    }
+    for (const subscriber of [...subscribers]) {
+      if (!writeSseEvent(subscriber, event, payload)) {
+        subscribers.delete(subscriber);
+      }
+    }
+    if (subscribers.size === 0) {
+      chatStreamSubscribersBySession.delete(sessionKey);
+      cleanupChatStreamSubscribers();
+    }
+  };
+
+  const ensureChatStreamKeepAlive = (): void => {
+    if (chatStreamKeepAliveTimer) {
+      return;
+    }
+    chatStreamKeepAliveTimer = setInterval(() => {
+      for (const subscribers of chatStreamSubscribersBySession.values()) {
+        for (const subscriber of [...subscribers]) {
+          if (!writeSseFrame(subscriber, ": ping\n\n")) {
+            subscribers.delete(subscriber);
+          }
+        }
+      }
+      cleanupChatStreamSubscribers();
+    }, 15_000);
+    chatStreamKeepAliveTimer.unref?.();
+  };
+
+  const buildChatBridgeHeaders = (gateway: SidecarGatewayRuntime): Record<string, string> | undefined => {
+    if (gateway.auth.mode !== "trusted-proxy") {
+      return undefined;
+    }
+    const userHeader = gateway.auth.userHeader || "x-forwarded-user";
+    const fallbackUser = gateway.auth.allowUsers?.[0] || "openclaw-avatar-plugin";
+    const headers: Record<string, string> = {
+      [userHeader]: fallbackUser,
+    };
+    for (const requiredHeader of gateway.auth.requiredHeaders ?? []) {
+      const normalized = requiredHeader.trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+      if (normalized === "x-forwarded-proto") {
+        headers[requiredHeader] = "http";
+        continue;
+      }
+      if (normalized === "x-forwarded-host") {
+        headers[requiredHeader] = `127.0.0.1:${gateway.port}`;
+        continue;
+      }
+      if (!(requiredHeader in headers)) {
+        headers[requiredHeader] = fallbackUser;
+      }
+    }
+    return headers;
+  };
+
+  const scheduleChatBridgeReconnect = (reason: string): void => {
+    if (!hasChatStreamSubscribers() || chatBridgeReconnectTimer) {
+      return;
+    }
+    chatBridgeReconnectTimer = setTimeout(() => {
+      chatBridgeReconnectTimer = null;
+      void ensureChatBridgeConnected();
+    }, 1_000);
+    chatBridgeReconnectTimer.unref?.();
+    logger.warn?.(`[avatar] chat stream bridge reconnect scheduled after ${reason}`);
+  };
+
+  const sendChatBridgeConnect = (socket: WebSocket, gateway: SidecarGatewayRuntime): void => {
+    const id = randomUUID();
+    chatBridgeConnectRequestId = id;
+    const params = {
+      minProtocol: GATEWAY_PROTOCOL_VERSION,
+      maxProtocol: GATEWAY_PROTOCOL_VERSION,
+      client: {
+        id: GATEWAY_CLIENT_ID,
+        displayName: "OpenClaw Avatar Plugin",
+        version: "avatar-plugin",
+        platform: process.platform,
+        mode: "backend",
+      },
+      role: "operator",
+      scopes: ["operator.admin"],
+      auth:
+        gateway.auth.mode === "token" && gateway.auth.token
+          ? { token: gateway.auth.token }
+          : gateway.auth.mode === "password" && gateway.auth.password
+            ? { password: gateway.auth.password }
+            : undefined,
+    };
+    socket.send(
+      JSON.stringify({
+        type: "req",
+        id,
+        method: "connect",
+        params,
+      }),
+    );
+  };
+
+  const handleChatBridgeMessage = (
+    socket: WebSocket,
+    gateway: SidecarGatewayRuntime,
+    raw: unknown,
+  ): void => {
+    const message =
+      typeof raw === "string"
+        ? raw
+        : Buffer.isBuffer(raw)
+          ? raw.toString("utf8")
+          : Array.isArray(raw)
+            ? Buffer.concat(raw).toString("utf8")
+            : String(raw ?? "");
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      const candidate = JSON.parse(message) as unknown;
+      parsed = isObjectRecord(candidate) ? candidate : null;
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) {
+      return;
+    }
+
+    if (parsed.type === "event" && parsed.event === "connect.challenge") {
+      sendChatBridgeConnect(socket, gateway);
+      return;
+    }
+
+    if (parsed.type === "res" && parsed.id === chatBridgeConnectRequestId) {
+      chatBridgeConnectRequestId = null;
+      if (parsed.ok !== true) {
+        const errorRecord = asObjectRecord(parsed.error);
+        const message =
+          typeof errorRecord.message === "string" && errorRecord.message.trim()
+            ? errorRecord.message.trim()
+            : "Avatar chat stream bridge authorization failed";
+        logger.warn?.(`[avatar] ${message}`);
+        disposeChatBridgeSocket(1008, message);
+        scheduleChatBridgeReconnect(message);
+        return;
+      }
+      return;
+    }
+
+    if (parsed.type === "event" && parsed.event === "chat") {
+      const payload = asObjectRecord(parsed.payload);
+      const sessionKey =
+        typeof payload.sessionKey === "string" && payload.sessionKey.trim()
+          ? payload.sessionKey.trim()
+          : "";
+      if (!sessionKey) {
+        return;
+      }
+      broadcastChatStreamEvent(sessionKey, "chat", payload);
+    }
+  };
+
+  const ensureChatBridgeConnected = async (): Promise<void> => {
+    if (!hasChatStreamSubscribers()) {
+      return;
+    }
+    if (
+      chatBridgeSocket &&
+      (chatBridgeSocket.readyState === WebSocket.OPEN ||
+        chatBridgeSocket.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+    if (chatBridgeConnecting) {
+      return;
+    }
+    const gateway = resolveGatewayRuntimeFromConfig(api.runtime.config.loadConfig());
+    if (!gateway) {
+      return;
+    }
+
+    chatBridgeConnecting = true;
+    const socketUrl = `ws://127.0.0.1:${gateway.port}`;
+    const bridgeHeaders = buildChatBridgeHeaders(gateway);
+    const socket = new WebSocket(socketUrl, {
+      ...(bridgeHeaders ? { headers: bridgeHeaders } : {}),
+    });
+    chatBridgeSocket = socket;
+    chatBridgeConnectRequestId = null;
+
+    socket.on("message", (raw: string | Buffer | Buffer[]) => {
+      handleChatBridgeMessage(socket, gateway, raw);
+    });
+    socket.on("error", (error: Error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn?.(`[avatar] chat stream bridge websocket error: ${message}`);
+    });
+    socket.on("close", (code: number, reason: Buffer) => {
+      const closeReason = typeof reason === "string" ? reason : Buffer.from(reason).toString("utf8");
+      chatBridgeConnecting = false;
+      chatBridgeConnectRequestId = null;
+      if (chatBridgeSocket === socket) {
+        chatBridgeSocket = null;
+      }
+      if (!hasChatStreamSubscribers()) {
+        return;
+      }
+      scheduleChatBridgeReconnect(
+        `chat stream bridge closed code=${code}${closeReason ? ` reason=${closeReason}` : ""}`,
+      );
+    });
+    socket.on("open", () => {
+      chatBridgeConnecting = false;
+    });
   };
 
   const apiHandler = async (req: IncomingMessage, res: ServerResponse) => {
@@ -3476,6 +3766,39 @@ function registerAvatarHttpRoutes(
           return true;
         }
 
+        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/chat/stream` && method === "GET") {
+          const requestUrl = parseRequestUrl(req.url);
+          const sessionKey = normalizeOptionalString(requestUrl?.searchParams.get("sessionKey"));
+          if (!sessionKey) {
+            throw new Error("sessionKey is required");
+          }
+          setNoStoreHeaders(res);
+          res.statusCode = 200;
+          res.setHeader("content-type", "text/event-stream; charset=utf-8");
+          res.setHeader("connection", "keep-alive");
+          res.setHeader("x-accel-buffering", "no");
+          const subscribers = chatStreamSubscribersBySession.get(sessionKey) ?? new Set<ServerResponse>();
+          subscribers.add(res);
+          chatStreamSubscribersBySession.set(sessionKey, subscribers);
+          ensureChatStreamKeepAlive();
+          if (typeof res.flushHeaders === "function") {
+            res.flushHeaders();
+          }
+          writeSseFrame(res, "retry: 1000\n\n");
+          writeSseEvent(res, "ready", { sessionKey });
+          void ensureChatBridgeConnected();
+          const cleanup = () => {
+            subscribers.delete(res);
+            if (subscribers.size === 0) {
+              chatStreamSubscribersBySession.delete(sessionKey);
+            }
+            cleanupChatStreamSubscribers();
+          };
+          req.on("close", cleanup);
+          res.on("close", cleanup);
+          return true;
+        }
+
         if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/chat/history` && method === "POST") {
           const params = await readChatHistoryParams(req);
           logAvatarEvent(logger, "info", "http.chat.history.requested", {
@@ -3647,7 +3970,7 @@ function registerAvatarHttpRoutes(
   ]) {
     api.registerHttpRoute({
       path: routePath,
-      auth: "gateway",
+      auth: "plugin",
       match: "prefix",
       handler: apiHandler,
     });
@@ -3780,8 +4103,7 @@ function registerAvatarHttpRoutes(
       }
       setNoStoreHeaders(res);
       try {
-        const config = api.runtime.config.loadConfig();
-        sendHttpResponse(res, asJsonResponse(await buildBrowserBootstrapPayload(config)));
+        sendHttpResponse(res, asJsonResponse(await buildBrowserBootstrapPayload()));
         return true;
       } catch (error) {
         const message =
@@ -4560,13 +4882,6 @@ function buildWorkerEnv(params: {
     OPENCLAW_AVATAR_INSTANCE_ARG: instanceArg,
     [AVATAR_SIDECAR_AGENT_NAME_ENV]: params.agentName,
   };
-
-  if (params.gateway.auth.mode === "token" && params.gateway.auth.token) {
-    env.OPENCLAW_AVATAR_GATEWAY_TOKEN = params.gateway.auth.token;
-  }
-  if (params.gateway.auth.mode === "password" && params.gateway.auth.password) {
-    env.OPENCLAW_AVATAR_GATEWAY_PASSWORD = params.gateway.auth.password;
-  }
   return env;
 }
 
@@ -4577,13 +4892,6 @@ async function startAvatarAgentSidecar(params: {
   agentName: string;
   onWorkerLine?: (message: string) => void;
 }): Promise<AvatarAgentSidecar | null> {
-  if (params.gateway.auth.mode === "trusted-proxy" || params.gateway.auth.mode === "none") {
-    params.log.warn(
-      `Avatar agent sidecar disabled: gateway auth mode=${params.gateway.auth.mode} is not supported for the local worker bridge`,
-    );
-    return null;
-  }
-
   const credentials = resolveAvatarAgentCredentials(params.config);
   if (!credentials) {
     params.log.info(

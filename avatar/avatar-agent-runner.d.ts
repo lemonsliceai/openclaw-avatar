@@ -4,18 +4,19 @@ export declare const avatarAgent: {
   entry: (ctx: unknown) => Promise<void>;
 };
 
+type GatewayFetch = (input: string | URL, init?: RequestInit) => Promise<unknown>;
+
 export class GatewayWsClient {
-  ws: unknown;
+  fetchImpl?: GatewayFetch;
+  url: string;
+  onChatEvent?: (event: unknown) => void;
   constructor(params: {
-    WebSocket: new (url: string) => unknown;
+    fetchImpl?: GatewayFetch;
     url: string;
-    token?: string;
-    password?: string;
     onChatEvent?: (event: unknown) => void;
   });
   start(): Promise<unknown>;
   stop(): void;
-  request(method: string, params: unknown): Promise<unknown>;
 }
 
 export function computeStreamingTextDelta(
@@ -26,5 +27,17 @@ export function computeStreamingTextDelta(
 export function buildLemonSliceAspectRatioPayload(aspectRatio?: string): {
   aspect_ratio: AvatarAspectRatio;
 };
+
+export function requestGatewaySpeechSynthesis(
+  text: string,
+  signal?: AbortSignal,
+): Promise<
+  | {
+      audioBuffer: Buffer;
+      sampleRate: number;
+      provider: string;
+    }
+  | null
+>;
 
 export default avatarAgent;

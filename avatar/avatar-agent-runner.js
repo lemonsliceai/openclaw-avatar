@@ -82,21 +82,14 @@ async function loadDeps() {
       ),
     ),
   );
-  const [agentsModule, lemonsliceModule, wsModule] = await Promise.all([
+  const [agentsModule, lemonsliceModule] = await Promise.all([
     importFromCandidates(resolutionPaths, "@livekit/agents"),
     importFromCandidates(resolutionPaths, "@livekit/agents-plugin-lemonslice"),
-    importFromCandidates(resolutionPaths, "ws"),
   ]);
-
-  const WebSocket = wsModule?.WebSocket ?? wsModule?.default ?? wsModule;
-  if (!WebSocket) {
-    throw new Error("Failed to load ws dependency for Avatar agent");
-  }
 
   return {
     agents: agentsModule,
     lemonslice: lemonsliceModule,
-    WebSocket,
   };
 }
 
@@ -279,17 +272,111 @@ async function writeTestSignal(type, payload = {}) {
   );
 }
 
+function resolvePluginHttpBaseUrl() {
+  const value =
+    process.env.OPENCLAW_AVATAR_PLUGIN_URL?.trim() ||
+    process.env.OPENCLAW_AVATAR_GATEWAY_URL?.trim();
+  if (!value) {
+    throw new Error("Missing OPENCLAW_AVATAR_GATEWAY_URL");
+  }
+  const url = new URL(value);
+  if (url.protocol === "ws:") {
+    url.protocol = "http:";
+  } else if (url.protocol === "wss:") {
+    url.protocol = "https:";
+  }
+  return url;
+}
+
+function buildPluginHttpUrl(pathname, searchParams = null) {
+  const pluginUrl = resolvePluginHttpBaseUrl();
+  pluginUrl.pathname = pathname;
+  const normalizedSearchParams = new URLSearchParams(searchParams ?? {});
+  pluginUrl.search = normalizedSearchParams.toString();
+  pluginUrl.hash = "";
+  return pluginUrl.toString();
+}
+
+function parsePluginHttpErrorMessage(status, rawBody) {
+  const trimmed = typeof rawBody === "string" ? rawBody.trim() : "";
+  if (!trimmed) {
+    return `plugin request failed with status ${status}`;
+  }
+  try {
+    const payload = JSON.parse(trimmed);
+    if (typeof payload?.error?.message === "string" && payload.error.message.trim()) {
+      return payload.error.message.trim();
+    }
+    if (typeof payload?.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+  } catch {}
+  return `plugin request failed with status ${status}: ${trimmed}`;
+}
+
+function tryParseJson(raw) {
+  if (typeof raw !== "string" || !raw.trim()) {
+    return raw;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function normalizeChatStreamEvent(eventName, data) {
+  const parsed = tryParseJson(data);
+  if (parsed && typeof parsed === "object") {
+    if (
+      parsed.type === "event" &&
+      parsed.event === "chat" &&
+      parsed.payload &&
+      typeof parsed.payload === "object"
+    ) {
+      return parsed;
+    }
+    if (parsed.event === "chat" && parsed.payload && typeof parsed.payload === "object") {
+      return {
+        type: "event",
+        event: "chat",
+        payload: parsed.payload,
+      };
+    }
+    if (typeof parsed.sessionKey === "string" && typeof parsed.state === "string") {
+      return {
+        type: "event",
+        event: "chat",
+        payload: parsed,
+      };
+    }
+    if (eventName === "chat") {
+      return {
+        type: "event",
+        event: "chat",
+        payload: parsed,
+      };
+    }
+  }
+  if (eventName === "chat" && typeof parsed === "string" && parsed.trim()) {
+    return {
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: "",
+        state: "final",
+        message: { text: parsed.trim() },
+      },
+    };
+  }
+  return null;
+}
+
 class GatewayWsClient {
   constructor(params) {
-    this.WebSocket = params.WebSocket;
+    this.fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
     this.url = params.url;
-    this.token = params.token;
-    this.password = params.password;
     this.onChatEvent = params.onChatEvent;
-    this.pending = new Map();
-    this.connectRequestId = null;
-    this.ws = null;
-    this.connected = false;
     this.closed = false;
     this.readyPromise = null;
     this.resolveReady = null;
@@ -297,47 +384,31 @@ class GatewayWsClient {
     this.hasConnectedOnce = false;
     this.reconnectAttempt = 0;
     this.reconnectTimer = null;
+    this.currentAbortController = null;
   }
 
   async start() {
     if (this.readyPromise) {
       return this.readyPromise;
     }
+    if (typeof this.fetchImpl !== "function") {
+      throw new Error("Fetch is unavailable for plugin chat stream");
+    }
     this.readyPromise = new Promise((resolve, reject) => {
       this.resolveReady = resolve;
       this.rejectReady = reject;
     });
-    this.openSocket();
+    void this.openStream();
     return this.readyPromise;
   }
 
   stop() {
     this.closed = true;
     this.clearReconnectTimer();
-    if (
-      this.ws &&
-      (this.ws.readyState === this.WebSocket.OPEN || this.ws.readyState === this.WebSocket.CONNECTING)
-    ) {
-      this.ws.close(1000, "Avatar session closed");
+    this.abortCurrentStream("Avatar session closed");
+    if (this.rejectReady) {
+      this.rejectReadyOnce(new Error("plugin chat stream stopped"));
     }
-  }
-
-  async request(method, params) {
-    if (!this.ws || this.ws.readyState !== this.WebSocket.OPEN) {
-      throw new Error("gateway not connected");
-    }
-    const id = randomUUID();
-    const frame = {
-      type: "req",
-      id,
-      method,
-      params,
-    };
-    const responsePromise = new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-    });
-    this.ws.send(JSON.stringify(frame));
-    return responsePromise;
   }
 
   resolveReadyOnce(payload) {
@@ -362,6 +433,19 @@ class GatewayWsClient {
     this.reconnectTimer = null;
   }
 
+  abortCurrentStream(reason) {
+    const controller = this.currentAbortController;
+    this.currentAbortController = null;
+    if (!controller) {
+      return;
+    }
+    try {
+      controller.abort(reason);
+    } catch {
+      controller.abort();
+    }
+  }
+
   scheduleReconnect(reason) {
     if (this.closed || !this.hasConnectedOnce || this.reconnectTimer !== null) {
       return;
@@ -370,235 +454,151 @@ class GatewayWsClient {
     this.reconnectAttempt = attempt;
     const delayMs = Math.min(5_000, 500 * 2 ** Math.min(attempt - 1, 3));
     console.warn(
-      `[avatar-agent] gateway websocket reconnect scheduled in ${delayMs}ms attempt=${attempt} after ${reason}`,
+      `[avatar-agent] plugin chat stream reconnect scheduled in ${delayMs}ms attempt=${attempt} after ${reason}`,
     );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.openSocket();
+      void this.openStream();
     }, delayMs);
     this.reconnectTimer.unref?.();
   }
 
-  forceReconnect(reason) {
+  async openStream() {
     if (this.closed) {
       return;
     }
-    const ws = this.ws;
-    if (!ws || ws.readyState === this.WebSocket.CLOSING || ws.readyState === this.WebSocket.CLOSED) {
-      this.scheduleReconnect(reason);
-      return;
-    }
+    const controller = new AbortController();
+    this.currentAbortController = controller;
+    const connectingMessage = this.hasConnectedOnce ? "reconnecting" : "opening";
+    console.log(`[avatar-agent] plugin chat stream ${connectingMessage}`);
     try {
-      ws.close(1012, "gateway reconnect");
-    } catch {
-      this.scheduleReconnect(reason);
-    }
-  }
-
-  disposeSocket(socket, code = 1000, reason = "") {
-    if (!socket) {
-      return;
-    }
-    if (this.ws === socket) {
-      this.ws = null;
-    }
-    this.connectRequestId = null;
-    this.connected = false;
-    socket.removeAllListeners?.();
-    if (
-      socket.readyState === this.WebSocket.CLOSING ||
-      socket.readyState === this.WebSocket.CLOSED
-    ) {
-      return;
-    }
-    try {
-      socket.close(code, reason);
-    } catch {}
-  }
-
-  openSocket() {
-    if (this.closed) {
-      return;
-    }
-    const ws = new this.WebSocket(this.url);
-    this.ws = ws;
-    this.connectRequestId = null;
-
-    ws.on("open", () => {
-      if (this.ws !== ws) {
+      const response = await this.fetchImpl(this.url, {
+        headers: {
+          accept: "text/event-stream",
+        },
+        signal: controller.signal,
+      });
+      if (this.closed || controller.signal.aborted) {
         return;
       }
-      console.log(
-        `[avatar-agent] gateway websocket ${this.hasConnectedOnce ? "reopened" : "opened"}`,
-      );
-    });
-
-    ws.on("message", (raw) => {
-      if (this.ws !== ws) {
-        return;
+      if (!response.ok) {
+        const rawBody = await response.text().catch(() => "");
+        throw new Error(parsePluginHttpErrorMessage(response.status, rawBody));
       }
-      this.handleMessage(raw.toString());
-    });
-
-    ws.on("error", (error) => {
-      if (this.ws !== ws) {
+      if (!response.body || typeof response.body.getReader !== "function") {
+        throw new Error("plugin chat stream response did not include a readable body");
+      }
+      const reconnected = this.hasConnectedOnce;
+      this.hasConnectedOnce = true;
+      this.reconnectAttempt = 0;
+      this.clearReconnectTimer();
+      if (reconnected) {
+        console.log("[avatar-agent] plugin chat stream reconnected");
+      } else {
+        console.log("[avatar-agent] plugin chat stream opened");
+      }
+      this.resolveReadyOnce({ success: true });
+      await this.readStream(response.body, controller.signal);
+      if (!this.closed && !controller.signal.aborted) {
+        this.scheduleReconnect("stream ended");
+      }
+    } catch (error) {
+      if (this.closed || controller.signal.aborted || isAbortError(error)) {
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[avatar-agent] gateway websocket error: ${message}`);
+      console.error(`[avatar-agent] plugin chat stream error: ${message}`);
       if (!this.hasConnectedOnce) {
         this.rejectReadyOnce(error instanceof Error ? error : new Error(message));
         return;
       }
-      this.forceReconnect(message);
-    });
-
-    ws.on("close", (code, reason) => {
-      if (this.ws !== ws && this.ws !== null) {
-        return;
-      }
-      if (this.ws === ws) {
-        this.ws = null;
-      }
-      const message = `gateway websocket closed code=${code}${reason ? ` reason=${String(reason)}` : ""}`;
-      console.warn(`[avatar-agent] ${message}`);
-      this.connected = false;
-      const error = new Error(message);
-      for (const pending of this.pending.values()) {
-        pending.reject(error);
-      }
-      this.pending.clear();
-      if (!this.hasConnectedOnce) {
-        this.rejectReadyOnce(error);
-        return;
-      }
       this.scheduleReconnect(message);
-    });
+    } finally {
+      if (this.currentAbortController === controller) {
+        this.currentAbortController = null;
+      }
+    }
   }
 
-  handleMessage(raw) {
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return;
-    }
+  async readStream(body, signal) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventName = "";
+    let eventId = "";
+    let dataLines = [];
 
-    if (parsed?.type === "event") {
-      if (parsed.event === "connect.challenge") {
-        this.sendConnect(parsed.payload?.nonce);
+    const dispatch = () => {
+      const payloadText = dataLines.join("\n");
+      if (!eventName && !eventId && !payloadText) {
         return;
       }
-      if (parsed.event === "chat") {
-        this.onChatEvent?.(parsed);
-      }
-      return;
-    }
-
-    if (parsed?.type !== "res" || typeof parsed.id !== "string") {
-      return;
-    }
-
-    const pending = this.pending.get(parsed.id);
-    if (!pending) {
-      return;
-    }
-    this.pending.delete(parsed.id);
-
-    if (parsed.ok) {
-      if (parsed.id === this.connectRequestId) {
-        this.connected = true;
-        const reconnected = this.hasConnectedOnce;
-        this.hasConnectedOnce = true;
-        this.reconnectAttempt = 0;
-        this.clearReconnectTimer();
-        if (reconnected) {
-          console.log("[avatar-agent] gateway websocket reconnected");
+      const normalizedEvent = normalizeChatStreamEvent(eventName || "message", payloadText);
+      if (normalizedEvent) {
+        try {
+          this.onChatEvent?.(normalizedEvent);
+        } catch (error) {
+          console.error(
+            `[avatar-agent] plugin chat stream event handler failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+          );
         }
-        this.resolveReadyOnce(parsed.payload);
       }
-      pending.resolve(parsed.payload);
-      return;
-    }
+      eventName = "";
+      eventId = "";
+      dataLines = [];
+    };
 
-    const error = new Error(parsed?.error?.message ?? "unknown gateway error");
-    if (parsed.id === this.connectRequestId) {
-      if (!this.hasConnectedOnce) {
-        this.disposeSocket(this.ws, 1008, "gateway connect rejected");
-        this.rejectReadyOnce(error);
-      } else {
-        this.forceReconnect(error.message);
-      }
-    }
-    pending.reject(error);
-  }
-
-  sendConnect(nonce) {
-    const trimmedNonce = typeof nonce === "string" ? nonce.trim() : "";
-    if (!trimmedNonce) {
-      this.rejectReady?.(new Error("gateway connect challenge missing nonce"));
-      this.ws?.close(1008, "connect challenge missing nonce");
-      return;
-    }
-    const id = randomUUID();
-    this.connectRequestId = id;
-    this.pending.set(id, {
-      resolve: () => {},
-      reject: (error) => {
-        if (!this.hasConnectedOnce) {
-          this.rejectReadyOnce(error);
-          return;
+    try {
+      while (true) {
+        if (signal.aborted) {
+          break;
         }
-        this.forceReconnect(error instanceof Error ? error.message : String(error));
-      },
-    });
-    this.ws?.send(
-      JSON.stringify({
-        type: "req",
-        id,
-        method: "connect",
-        params: {
-          minProtocol: GATEWAY_PROTOCOL_VERSION,
-          maxProtocol: GATEWAY_PROTOCOL_VERSION,
-          client: {
-            id: GATEWAY_CLIENT_ID,
-            displayName: "OpenClaw Avatar Agent",
-            version: "avatar-plugin",
-            platform: process.platform,
-            mode: "backend",
-          },
-          role: "operator",
-          scopes: ["operator.admin"],
-          auth:
-            this.token || this.password
-              ? {
-                  ...(this.token ? { token: this.token } : {}),
-                  ...(this.password ? { password: this.password } : {}),
-                }
-              : undefined,
-        },
-      }),
-    );
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        while (true) {
+          const newlineIndex = buffer.indexOf("\n");
+          if (newlineIndex === -1) {
+            break;
+          }
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          if (!line) {
+            dispatch();
+            continue;
+          }
+          if (line.startsWith(":")) {
+            continue;
+          }
+          const colonIndex = line.indexOf(":");
+          const field = colonIndex === -1 ? line : line.slice(0, colonIndex);
+          let valuePart = colonIndex === -1 ? "" : line.slice(colonIndex + 1);
+          if (valuePart.startsWith(" ")) {
+            valuePart = valuePart.slice(1);
+          }
+          if (field === "event") {
+            eventName = valuePart;
+            continue;
+          }
+          if (field === "data") {
+            dataLines.push(valuePart);
+            continue;
+          }
+          if (field === "id") {
+            eventId = valuePart;
+          }
+        }
+      }
+      dispatch();
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {}
+    }
   }
-}
-
-async function connectGatewayBridge(params) {
-  emitParentDebug("gateway-bridge.connect.begin", {
-    sessionKey: params.sessionKey,
-  });
-  const client = new GatewayWsClient({
-    WebSocket: params.WebSocket,
-    url: requireEnv("OPENCLAW_AVATAR_GATEWAY_URL"),
-    token: process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN?.trim() || "",
-    password: process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD?.trim() || "",
-    onChatEvent: params.onChatEvent,
-  });
-  await client.start();
-  console.log(`[avatar-agent] gateway bridge ready for session ${params.sessionKey}`);
-  emitParentDebug("gateway-bridge.connect.ready", {
-    sessionKey: params.sessionKey,
-  });
-  return client;
 }
 
 function decodeGatewaySpeechAudioBuffer(value) {
@@ -628,39 +628,6 @@ function normalizeGatewaySpeechPayload(payload) {
   };
 }
 
-function buildGatewayHttpUrl(pathname) {
-  const gatewayUrl = new URL(requireEnv("OPENCLAW_AVATAR_GATEWAY_URL"));
-  gatewayUrl.protocol = gatewayUrl.protocol === "wss:" ? "https:" : "http:";
-  gatewayUrl.pathname = pathname;
-  gatewayUrl.search = "";
-  gatewayUrl.hash = "";
-  return gatewayUrl.toString();
-}
-
-function buildGatewayHttpAuthHeaders() {
-  const token = process.env.OPENCLAW_AVATAR_GATEWAY_TOKEN?.trim();
-  const password = process.env.OPENCLAW_AVATAR_GATEWAY_PASSWORD?.trim();
-  const sharedSecret = token || password;
-  return sharedSecret ? { authorization: `Bearer ${sharedSecret}` } : {};
-}
-
-function parseGatewayHttpErrorMessage(status, rawBody) {
-  const trimmed = typeof rawBody === "string" ? rawBody.trim() : "";
-  if (!trimmed) {
-    return `gateway speech request failed with status ${status}`;
-  }
-  try {
-    const payload = JSON.parse(trimmed);
-    if (typeof payload?.error?.message === "string" && payload.error.message.trim()) {
-      return payload.error.message.trim();
-    }
-    if (typeof payload?.message === "string" && payload.message.trim()) {
-      return payload.message.trim();
-    }
-  } catch {}
-  return `gateway speech request failed with status ${status}: ${trimmed}`;
-}
-
 function isAbortError(error) {
   return (
     (typeof DOMException === "function" && error instanceof DOMException && error.name === "AbortError") ||
@@ -670,18 +637,17 @@ function isAbortError(error) {
 
 async function requestGatewaySpeechSynthesis(text, signal) {
   try {
-    const response = await fetch(buildGatewayHttpUrl("/plugins/openclaw-avatar/api/synthesize"), {
+    const response = await fetch(buildPluginHttpUrl("/plugins/openclaw-avatar/api/synthesize"), {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...buildGatewayHttpAuthHeaders(),
       },
       body: JSON.stringify({ text }),
       signal,
     });
     const rawBody = await response.text();
     if (!response.ok) {
-      throw new Error(parseGatewayHttpErrorMessage(response.status, rawBody));
+      throw new Error(parsePluginHttpErrorMessage(response.status, rawBody));
     }
     let payload = null;
     if (rawBody.trim()) {
@@ -693,7 +659,7 @@ async function requestGatewaySpeechSynthesis(text, signal) {
     }
     const body = payload && payload.success === true ? payload : null;
     if (!body) {
-      throw new Error("gateway speech response returned no payload");
+      throw new Error("plugin speech response returned no payload");
     }
     return normalizeGatewaySpeechPayload(body);
   } catch (error) {
@@ -1319,10 +1285,14 @@ async function runAvatarAgentEntry(ctx) {
     }
   });
 
-  console.log("[avatar-agent] connecting gateway bridge");
-  gatewayClient = await connectGatewayBridge({
-    WebSocket: deps.WebSocket,
+  console.log("[avatar-agent] connecting plugin chat stream");
+  emitParentDebug("chat-stream.connect.begin", {
     sessionKey: metadata.sessionKey,
+  });
+  gatewayClient = new GatewayWsClient({
+    url: buildPluginHttpUrl("/plugins/openclaw-avatar/api/chat/stream", {
+      sessionKey: metadata.sessionKey,
+    }),
     onChatEvent: (event) => {
       const runId = typeof event?.payload?.runId === "string" ? event.payload.runId.trim() : "";
       const normalizedRunKey = normalizeGatewayRunKey(runId);
@@ -1334,9 +1304,13 @@ async function runAvatarAgentEntry(ctx) {
           if (runProcessingQueues.get(normalizedRunKey) === next) {
             runProcessingQueues.delete(normalizedRunKey);
           }
-        });
+      });
       runProcessingQueues.set(normalizedRunKey, next);
     },
+  });
+  await gatewayClient.start();
+  emitParentDebug("chat-stream.connect.ready", {
+    sessionKey: metadata.sessionKey,
   });
   try {
     console.log("[avatar-agent] connecting agent session to room");
@@ -1413,5 +1387,5 @@ async function runAvatarAgentEntry(ctx) {
 }
 
 export const avatarAgent = { entry: runAvatarAgentEntry };
-export { GatewayWsClient };
+export { GatewayWsClient, requestGatewaySpeechSynthesis };
 export default avatarAgent;
