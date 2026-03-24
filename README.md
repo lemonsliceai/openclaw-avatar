@@ -1,21 +1,28 @@
 # Openclaw - Avatar Plugin
 
-Give your OpenClaw agent a face! The Avatar Plugin allows you to have a real-time, interactive video call with your agent. 
-The avatar listens to you, sends your speech to your OpenClaw agent, and speaks the response back with lip-synced video. It’s like FaceTime.  
+Give your OpenClaw agent a face! The Avatar Plugin allows you to have a real-time, interactive video call with your OpenClaw agent. The avatar listens to you, sends your speech to your agent, and speaks the response back with lip-synced video... like FaceTime! 
 
-Design your OpenClaw’s face to match its personality. Unlimited avatar options. Powered by LemonSlice, real-time AI avatar technology. 
+Design your OpenClaw’s face to match its personality. Unlimited avatar options. Powered by [LemonSlice](https://lemonslice.com/), real-time AI avatar technology. 
 
 ## How it Works
-You speak (or type) → Microphone / Speech Input → OpenClaw processes → OpenClaw TTS response -> LemonSlice
-This plugin works with the OpenClaw gateway. It allows you to have a floating FaceTime-style avatar on your screen while you work. 
+
+```
+You speak (or type) → Transcribe speech → OpenClaw processes → OpenClaw TTS response -> LemonSlice avatar
+```
+
+This plugin works with the OpenClaw gateway. It allows you to have a floating FaceTime-style avatar on your screen while you work.   
+
 ## Features
+
 - Real-time video avatar 
 - Expressive lip sync and whole-body gestures
 - Voice-to-voice conversations
-- Design your own avatar (just one photo!) 
-- Picture-in-picture experience (have the avatar hangout while you work) 
+- Design your own avatar with just one photo!
+- Picture-in-picture experience (have the avatar hangout while you work)
 
-**Outline**
+
+
+## Outline
 
 - [Prerequisites](#prerequisites)
 - [Quickstart](#quickstart)
@@ -26,42 +33,46 @@ This plugin works with the OpenClaw gateway. It allows you to have a floating Fa
 - [Minimum Openclaw config](#minimum-openclaw-config)
 - [License](#license)
 
-<a id="prerequisites"></a>
 ## Prerequisites
 
 ### OpenClaw
 
-Before installing and running this plugin, you must have an OpenClaw instance installed and configured with at least one LLM provider, and TTS and STT capabilities. A minimum OpenClaw config example [can be found below](#minimum-openclaw-config).
+Before installing and running this plugin, you must have an OpenClaw instance installed and configured with at least one LLM provider (e.g. gpt-5-nano), as well as TTS and STT capabilities. A minimum OpenClaw config example [can be found below](#minimum-openclaw-config).
 
 - OpenClaw [getting started](https://docs.openclaw.ai/start/getting-started)
 
-We recommend using a fast model for a better experience. e.g. gpt-5-nano
+#### About OpenClaw Config
 
-### About OpenClaw Config
+If you're new to OpenClaw, installation can be complicated. The easiest way to install plugins or capabilities is to modify your `openclaw.json` file directly. 
 
 - OpenClaw stores its config in a JSON file on your machine, for example `~/.openclaw/openclaw.json`.
-- Config settings are usually referenced with dot notation, for example `gateway.auth.token`.
-- A minimum OpenClaw config example [can be found below](#minimum-openclaw-config).
+- Config settings are often referenced with dot notation, for example `gateway.auth.token` means:
 
-<a id="tts-for-avatar"></a>
+```
+"gateway": {
+  "auth": {
+    "token": "<VALUE.OF.TOKEN>"
+  }
+}
+```
+
+- A minimum OpenClaw config example [can be found below](#minimum-openclaw-config). If something is not working you, double check your `openclaw.json` file against this one and make them match.
+
 ### TTS for avatar
 
-Avatar uses the core `messages.tts` configuration for avatar speech playback. Configure it in your main OpenClaw config. Provider setup, examples, and caveats live here: https://docs.openclaw.ai/tts
+Avatar uses the core `messages.tts` configuration for avatar speech playback. Set it up here: [https://docs.openclaw.ai/tts](https://docs.openclaw.ai/tts)
 
-<a id="stt-for-avatar"></a>
 ### STT for avatar
 
-Avatar uses the core `tools.media.audio` configuration for speech-to-text during avatar sessions. Configure it in your main OpenClaw config. Provider setup, examples, and transcription model options live here: https://docs.openclaw.ai/audio
+Avatar uses the core `tools.media.audio` configuration for speech-to-text during avatar sessions. Set it up here: [https://docs.openclaw.ai/audio](https://docs.openclaw.ai/audio)
 
 ### Providers
 
 You will also need API keys with the following service providers:
 
-- **LemonSlice** — real-time avatar. Get API key: https://lemonslice.com/agents/api  
+- **LemonSlice** — real-time avatar: [https://lemonslice.com/agents/api](https://lemonslice.com/agents/api)  
+- **LiveKit** — real-time video/audio infrastructure: [https://livekit.io](https://livekit.io)
 
-- **LiveKit** — real-time video/audio infrastructure. Sign up at https://livekit.io
-
-<a id="quickstart"></a>
 ## Quickstart
 
 1. Install and enable the plugin.
@@ -83,6 +94,7 @@ openclaw plugins enable openclaw-avatar
 2. Allow the Avatar plugin:
 
 `openclaw.json` - `plugins.allow`
+
 ```json
 {
   "plugins": {
@@ -93,7 +105,7 @@ openclaw plugins enable openclaw-avatar
 }
 ```
 
-3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text and text-to-speech configured for the agents you want to use with Avatar:
+3. Run the plugin setup command and enter your LemonSlice and LiveKit credentials. Make sure OpenClaw already has speech-to-text (STT) and text-to-speech (TTS) configured for the agents you want to use with Avatar:
 
 ```bash
 openclaw openclaw-avatar-setup
@@ -111,9 +123,14 @@ openclaw gateway run --force
 http://127.0.0.1:18789/plugins/openclaw-avatar/
 ```
 
-6. Paste a public avatar image URL.
+6. Paste a public avatar image URL. 
 
-<a id="config"></a>
+```
+INSERT EXAMPLE #TODO
+```
+
+Image tips: [https://lemonslice.com/docs/avatar-design](https://lemonslice.com/docs/avatar-design) 
+
 ## Config
 
 In `openclaw.json` under `plugins.entries`
@@ -129,7 +146,7 @@ In `openclaw.json` under `plugins.entries`
             "verbose": false,
             "lemonSlice": {
               "apiKey": "<lemonslice-api-key>",
-              "imageUrl": "https://example.com/avatar-image.jpg"
+              "imageUrl": "https://example.com/avatar-image.jpg #TODO" # or your own public image URL
             },
             "livekit": {
               "url": "wss://your-project.livekit.cloud",
@@ -146,15 +163,13 @@ In `openclaw.json` under `plugins.entries`
 
 `avatar.verbose` defaults to `false`. When it is `false`, the gateway log only receives Avatar sidecar-ready, session start/end lifecycle events, and the worker progress state changes shown above the avatar in the main view. Set it to `true` to restore the full Avatar event stream.
 
-<a id="usage-tips"></a>
 ## Usage tips
 
 - The plugin is best used in a Chromium-based browser.
 - If you choose to use the picture-in-picture view for the avatar, **do not close the avatar tab**.
-- Avatar image tips: https://lemonslice.com/docs/avatar-design 
+- Avatar image tips: [https://lemonslice.com/docs/avatar-design](https://lemonslice.com/docs/avatar-design) 
 - Avatar timeout (seconds)- defaults to `60`. This defines how long your avatar will remain in the chat without interaction.
 
-<a id="update"></a>
 ## Update
 
 The plugin can be updated to the latest version using:
@@ -163,7 +178,6 @@ The plugin can be updated to the latest version using:
 openclaw plugins update openclaw-avatar  
 ```
 
-<a id="about-the-install-warning"></a>
 ## About The Install Warning
 
 OpenClaw may show a warning like this during install:
@@ -189,7 +203,6 @@ What it does do:
 - Read the plugin's configured credentials, and optionally specific documented environment variables, to supply those services.
 - Send audio, transcript, and session traffic only to the configured providers needed for Avatar to function.
 
-<a id="minimum-openclaw-config"></a>
 ## Minimum Openclaw config
 
 This example is assembled from a working local `openclaw.json` and trimmed down to the minimum sections Avatar depends on. Replace each placeholder with your own providers and values. 
@@ -222,7 +235,7 @@ This example is assembled from a working local `openclaw.json` and trimmed down 
       "provider": "elevenlabs",
       "elevenlabs": {
         "apiKey": "<elevenlabs-api-key>",
-        "voiceId": "<elevenlabs-voice-id>",
+        "voiceId": "<elevenlabs-voice-id> #TODO", # or your own voice ID
         "modelId": "eleven_flash_v2_5",
         "applyTextNormalization": "auto"
       }
@@ -269,7 +282,6 @@ This example is assembled from a working local `openclaw.json` and trimmed down 
 }
 ```
 
-<a id="license"></a>
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
