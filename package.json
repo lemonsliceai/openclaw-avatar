@@ -47,7 +47,7 @@
     ]
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.22"
+    "openclaw": ">=2026.3.23-1"
   },
   "dependencies": {
     "@livekit/agents": "1.2.0",
