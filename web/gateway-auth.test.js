@@ -36,6 +36,32 @@ describe("inferGatewayAuthModeFromSettings", () => {
 });
 
 describe("getGatewayAuthStateFromSettings", () => {
+  it("prefers newer shared token values over a stale avatar auth secret", () => {
+    expect(
+      getGatewayAuthStateFromSettings({
+        gatewayAuthMode: "token",
+        gatewayAuthSecret: "stale-secret",
+        token: "fresh-token",
+      }),
+    ).toEqual({
+      mode: "token",
+      secret: "fresh-token",
+    });
+  });
+
+  it("prefers newer shared password values over a stale avatar auth secret", () => {
+    expect(
+      getGatewayAuthStateFromSettings({
+        gatewayAuthMode: "password",
+        gatewayAuthSecret: "stale-secret",
+        password: "fresh-password",
+      }),
+    ).toEqual({
+      mode: "password",
+      secret: "fresh-password",
+    });
+  });
+
   it("migrates legacy password credentials without clobbering them", () => {
     expect(
       getGatewayAuthStateFromSettings({

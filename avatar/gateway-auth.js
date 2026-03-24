@@ -40,15 +40,17 @@ export function getGatewayAuthStateFromSettings(settings = {}, legacyToken = "")
   const password = trimStoredSecret(normalizedSettings.password);
   const token = trimStoredSecret(normalizedSettings.token);
   const legacy = trimStoredSecret(legacyToken);
+  const preferredSharedSecret = mode === "password" ? password : token;
+  const secondarySharedSecret = mode === "password" ? token : password;
 
+  if (preferredSharedSecret) {
+    return { mode, secret: preferredSharedSecret };
+  }
   if (gatewayAuthSecret) {
     return { mode, secret: gatewayAuthSecret };
   }
-  if (mode === "password" && password) {
-    return { mode, secret: password };
-  }
-  if (token) {
-    return { mode, secret: token };
+  if (secondarySharedSecret) {
+    return { mode, secret: secondarySharedSecret };
   }
   return { mode, secret: legacy };
 }
