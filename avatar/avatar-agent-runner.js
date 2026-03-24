@@ -635,6 +635,10 @@ function isAbortError(error) {
   );
 }
 
+function isAgentSessionNotRunningError(error) {
+  return error instanceof Error && error.message === "AgentSession is not running";
+}
+
 async function requestGatewaySpeechSynthesis(text, signal) {
   try {
     const response = await fetch(buildPluginHttpUrl("/plugins/openclaw-avatar/api/synthesize"), {
@@ -847,6 +851,8 @@ async function runAvatarAgentEntry(ctx) {
   let speechProcessingQueue = Promise.resolve();
   let gatewayClient = null;
   let activeGatewaySpeech = null;
+  let agentSessionClosed = false;
+  let agentSessionCloseReason = "";
   const interruptReplyOnNewMessage = metadata.interruptReplyOnNewMessage === true;
 
   const buildGatewaySpeechDebugContext = (runId = "") => ({
@@ -867,10 +873,37 @@ async function runAvatarAgentEntry(ctx) {
     });
   };
 
+  const markAgentSessionClosed = (reason = "", error = null) => {
+    if (typeof reason === "string" && reason.trim()) {
+      agentSessionCloseReason = reason.trim();
+    }
+    if (agentSessionClosed) {
+      return;
+    }
+    agentSessionClosed = true;
+    if (activeGatewaySpeech) {
+      activeGatewaySpeech.closed = true;
+      activeGatewaySpeech = null;
+    }
+    gatewayClient?.stop();
+    emitParentDebug("agent-session.closed", {
+      sessionKey: metadata.sessionKey,
+      roomName: typeof ctx?.room?.name === "string" ? ctx.room.name : "",
+      reason: agentSessionCloseReason,
+      error: error instanceof Error ? error.message : error ? String(error) : "",
+    });
+  };
+
+  const isAgentSessionUsable = () => !agentSessionClosed && Boolean(session?.activity);
+
   const runGatewaySpeechCleanupStep = async (operation, runId, action) => {
     try {
       return await action();
     } catch (error) {
+      if (isAgentSessionNotRunningError(error)) {
+        markAgentSessionClosed(agentSessionCloseReason || "not_running", error);
+        return undefined;
+      }
       logGatewaySpeechCleanupError(operation, runId, error);
       return undefined;
     }
@@ -902,6 +935,9 @@ async function runAvatarAgentEntry(ctx) {
   };
 
   const startGatewaySpeech = async (runId) => {
+    if (!isAgentSessionUsable()) {
+      return null;
+    }
     const normalizedRunId = typeof runId === "string" ? runId.trim() : "";
     const runKey = normalizeGatewayRunKey(normalizedRunId);
     if (activeGatewaySpeech?.runKey === runKey) {
@@ -962,10 +998,19 @@ async function runAvatarAgentEntry(ctx) {
         void ttsStream.close();
       },
     });
-    const speechHandle = session.say(textStream, {
-      audio: audioStream,
-      allowInterruptions: interruptReplyOnNewMessage,
-    });
+    let speechHandle;
+    try {
+      speechHandle = session.say(textStream, {
+        audio: audioStream,
+        allowInterruptions: interruptReplyOnNewMessage,
+      });
+    } catch (error) {
+      if (isAgentSessionNotRunningError(error)) {
+        markAgentSessionClosed(agentSessionCloseReason || "not_running", error);
+        return null;
+      }
+      throw error;
+    }
     const reply = {
       runId: normalizedRunId,
       runKey,
@@ -1029,6 +1074,9 @@ async function runAvatarAgentEntry(ctx) {
       return;
     }
     let reply = await startGatewaySpeech(runId);
+    if (!reply) {
+      return;
+    }
     const deltaText = computeStreamingTextDelta(normalizedText, reply.streamedText);
     if (deltaText === null) {
       console.warn(
@@ -1036,6 +1084,9 @@ async function runAvatarAgentEntry(ctx) {
       );
       await stopGatewaySpeech(reply.runId);
       reply = await startGatewaySpeech(reply.runId);
+      if (!reply) {
+        return;
+      }
       reply.streamedText = "";
       reply.flushedTextLength = 0;
       if (normalizedText) {
@@ -1273,6 +1324,10 @@ async function runAvatarAgentEntry(ctx) {
         source: typeof parsed.source === "string" ? parsed.source : "",
       });
     } catch (error) {
+      if (isAgentSessionNotRunningError(error)) {
+        markAgentSessionClosed(agentSessionCloseReason || "not_running", error);
+        return;
+      }
       console.error(
         `[avatar-agent] failed to interrupt avatar speech: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
       );
@@ -1312,6 +1367,16 @@ async function runAvatarAgentEntry(ctx) {
   emitParentDebug("chat-stream.connect.ready", {
     sessionKey: metadata.sessionKey,
   });
+  session.on?.("close", (event) => {
+    const reason =
+      event && typeof event === "object" && typeof event.reason === "string" ? event.reason.trim() : "";
+    const error =
+      event && typeof event === "object" && "error" in event ? event.error : null;
+    markAgentSessionClosed(reason || "closed", error);
+    console.warn(
+      `[avatar-agent] agent session closed${reason ? ` reason=${reason}` : ""}${error instanceof Error ? ` error=${error.message}` : ""}`,
+    );
+  });
   try {
     console.log("[avatar-agent] connecting agent session to room");
     emitParentDebug("agent-session.start.begin", {
@@ -1324,6 +1389,7 @@ async function runAvatarAgentEntry(ctx) {
       inputOptions: {
         audioEnabled: true,
         textEnabled: true,
+        closeOnDisconnect: false,
       },
       outputOptions: { audioEnabled: true },
     });
@@ -1368,6 +1434,7 @@ async function runAvatarAgentEntry(ctx) {
     await new Promise((resolve) => {
       const room = ctx.room;
       const finish = () => {
+        markAgentSessionClosed(agentSessionCloseReason || "room_disconnected");
         console.log(
           `[avatar-agent] room disconnected sessionKey=${metadata.sessionKey} roomName=${typeof room?.name === "string" ? room.name : ""}`,
         );

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ReadableStream } from "node:stream/web";
@@ -68,6 +68,170 @@ async function waitForSignalEvent(
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`timed out waiting for signal event ${eventType}`);
+}
+
+async function waitForCondition(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("timed out waiting for condition");
+}
+
+async function writeMockLiveKitDeps(tmpDir: string): Promise<string> {
+  const agentsDir = path.join(tmpDir, "node_modules", "@livekit", "agents");
+  const lemonsliceDir = path.join(tmpDir, "node_modules", "@livekit", "agents-plugin-lemonslice");
+  const runnerPath = path.join(tmpDir, "mock-runner.js");
+
+  await mkdir(agentsDir, { recursive: true });
+  await mkdir(lemonsliceDir, { recursive: true });
+  await writeFile(
+    path.join(agentsDir, "package.json"),
+    JSON.stringify({
+      name: "@livekit/agents",
+      type: "module",
+      exports: "./index.js",
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(lemonsliceDir, "package.json"),
+    JSON.stringify({
+      name: "@livekit/agents-plugin-lemonslice",
+      type: "module",
+      exports: "./index.js",
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(agentsDir, "index.js"),
+    `import { EventEmitter } from "node:events";
+
+const state = (globalThis.__openclawAvatarRunnerTestState ??= {
+  sessionStartOptions: [],
+  avatarStartCalls: [],
+});
+
+class MockAudioOutput {}
+
+class BaseChunkedStream {
+  constructor(text, tts, connOptions, abortSignal) {
+    this.inputText = text;
+    this.tts = tts;
+    this.connOptions = connOptions;
+    this.abortSignal = abortSignal ?? new AbortController().signal;
+    this.queue = { put() {} };
+  }
+}
+
+class BaseTTS {
+  constructor(sampleRate, channels, options) {
+    this.initialSampleRate = sampleRate;
+    this.channels = channels;
+    this.options = options;
+  }
+}
+
+class StreamAdapter {
+  constructor() {}
+
+  stream() {
+    return {
+      async close() {},
+      async endInput() {},
+      async *[Symbol.asyncIterator]() {},
+    };
+  }
+}
+
+class AgentSession extends EventEmitter {
+  constructor(config) {
+    super();
+    this.config = config;
+    this.activity = null;
+    this.output = { audio: new MockAudioOutput() };
+  }
+
+  async start(options) {
+    state.sessionStartOptions.push(options);
+    this.activity = { running: true };
+  }
+
+  interrupt() {
+    return { await: Promise.resolve() };
+  }
+
+  say() {
+    return {
+      async waitForPlayout() {},
+      async interrupt() {},
+    };
+  }
+}
+
+class Agent {
+  constructor(options) {
+    this.options = options;
+  }
+}
+
+class AudioByteStream {
+  constructor() {}
+
+  write() {
+    return [];
+  }
+
+  flush() {
+    return [];
+  }
+}
+
+export const voice = { AgentSession, Agent };
+export const tts = {
+  ChunkedStream: BaseChunkedStream,
+  TTS: BaseTTS,
+  StreamAdapter,
+  SynthesizeStream: { END_OF_STREAM: Symbol.for("end-of-stream") },
+};
+export const tokenize = {
+  basic: {
+    SentenceTokenizer: class SentenceTokenizer {},
+  },
+};
+export { AudioByteStream };
+`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(lemonsliceDir, "index.js"),
+    `const state = (globalThis.__openclawAvatarRunnerTestState ??= {
+  sessionStartOptions: [],
+  avatarStartCalls: [],
+});
+
+export class AvatarSession {
+  constructor(options) {
+    this.options = options;
+    this.avatarParticipantIdentity = "mock-avatar";
+  }
+
+  async start(_session, room, options) {
+    state.avatarStartCalls.push({
+      roomName: room?.name ?? "",
+      options,
+    });
+  }
+}
+`,
+    "utf8",
+  );
+  await writeFile(runnerPath, "export {};\n", "utf8");
+
+  return runnerPath;
 }
 
 describe("GatewayWsClient", () => {
@@ -426,5 +590,124 @@ describe("avatarAgent test mode", () => {
     await appendFile(signalFile, '\n{"type":"awaiting-room-disconnect"}\n', "utf8");
 
     await expect(waitPromise).resolves.toBeUndefined();
+  });
+});
+
+describe("avatarAgent lifecycle", () => {
+  const originalGatewayUrl = process.env.OPENCLAW_AVATAR_GATEWAY_URL;
+  const originalPluginUrl = process.env.OPENCLAW_AVATAR_PLUGIN_URL;
+  const originalLemonSliceApiKey = process.env.OPENCLAW_AVATAR_LEMONSLICE_API_KEY;
+  const originalDepsBaseRunner = process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER;
+  const originalRunnerPath = process.env.OPENCLAW_AVATAR_RUNNER_PATH;
+  const originalFetch = globalThis.fetch;
+  let tmpDir = "";
+
+  afterEach(async () => {
+    if (originalGatewayUrl === undefined) {
+      delete process.env.OPENCLAW_AVATAR_GATEWAY_URL;
+    } else {
+      process.env.OPENCLAW_AVATAR_GATEWAY_URL = originalGatewayUrl;
+    }
+    if (originalPluginUrl === undefined) {
+      delete process.env.OPENCLAW_AVATAR_PLUGIN_URL;
+    } else {
+      process.env.OPENCLAW_AVATAR_PLUGIN_URL = originalPluginUrl;
+    }
+    if (originalLemonSliceApiKey === undefined) {
+      delete process.env.OPENCLAW_AVATAR_LEMONSLICE_API_KEY;
+    } else {
+      process.env.OPENCLAW_AVATAR_LEMONSLICE_API_KEY = originalLemonSliceApiKey;
+    }
+    if (originalDepsBaseRunner === undefined) {
+      delete process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER;
+    } else {
+      process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER = originalDepsBaseRunner;
+    }
+    if (originalRunnerPath === undefined) {
+      delete process.env.OPENCLAW_AVATAR_RUNNER_PATH;
+    } else {
+      process.env.OPENCLAW_AVATAR_RUNNER_PATH = originalRunnerPath;
+    }
+    globalThis.fetch = originalFetch;
+    delete (globalThis as { __openclawAvatarRunnerTestState?: unknown })
+      .__openclawAvatarRunnerTestState;
+    if (tmpDir) {
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+    tmpDir = "";
+  });
+
+  it("disables automatic session shutdown when participants disconnect", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "avatar-runner-deps-"));
+    const runnerPath = await writeMockLiveKitDeps(tmpDir);
+    const state = ((globalThis as { __openclawAvatarRunnerTestState?: any })
+      .__openclawAvatarRunnerTestState = {
+      sessionStartOptions: [],
+      avatarStartCalls: [],
+    });
+
+    process.env.OPENCLAW_AVATAR_GATEWAY_URL = "ws://127.0.0.1:18789";
+    process.env.OPENCLAW_AVATAR_LEMONSLICE_API_KEY = "test-api-key";
+    process.env.OPENCLAW_AVATAR_DEPS_BASE_RUNNER = runnerPath;
+    process.env.OPENCLAW_AVATAR_RUNNER_PATH = runnerPath;
+    globalThis.fetch = vi.fn(
+      async () => createMockSseResponse([": keepalive\n\n"]) as unknown as Response,
+    ) as unknown as typeof fetch;
+
+    const room = new EventEmitter() as EventEmitter & {
+      name: string;
+      remoteParticipants: Map<string, unknown>;
+      localParticipant: {
+        trackPublications: Map<string, unknown>;
+        publishData: ReturnType<typeof vi.fn>;
+      };
+    };
+    room.name = "openclaw-main-testroom";
+    room.remoteParticipants = new Map();
+    room.localParticipant = {
+      trackPublications: new Map(),
+      publishData: vi.fn(async () => {}),
+    };
+
+    const entryPromise = avatarAgent.entry({
+      job: {
+        metadata: JSON.stringify({
+          sessionKey: "agent:main:main",
+          imageUrl: "https://example.com/avatar.png",
+          interruptReplyOnNewMessage: true,
+        }),
+      },
+      room,
+    });
+
+    await waitForCondition(
+      () => state.sessionStartOptions.length === 1 && state.avatarStartCalls.length === 1,
+      2_000,
+    );
+
+    room.emit("participant_disconnected", { identity: "control-ui-test" });
+
+    expect(state.sessionStartOptions[0]).toMatchObject({
+      inputOptions: {
+        audioEnabled: true,
+        textEnabled: true,
+        closeOnDisconnect: false,
+      },
+      outputOptions: {
+        audioEnabled: true,
+      },
+    });
+    expect(state.avatarStartCalls[0]).toMatchObject({
+      roomName: "openclaw-main-testroom",
+      options: {
+        extraPayload: {
+          aspect_ratio: "3x2",
+        },
+      },
+    });
+
+    room.emit("disconnected");
+
+    await expect(entryPromise).resolves.toBeUndefined();
   });
 });
