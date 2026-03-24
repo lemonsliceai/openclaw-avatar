@@ -48,7 +48,7 @@ If you're new to OpenClaw, installation can be complicated. The easiest way to i
 - OpenClaw stores its config in a JSON file on your machine, for example `~/.openclaw/openclaw.json`.
 - Config settings are often referenced with dot notation, for example `gateway.auth.token` means:
 
-```
+```json
 "gateway": {
   "auth": {
     "token": "<VALUE.OF.TOKEN>"
@@ -56,7 +56,7 @@ If you're new to OpenClaw, installation can be complicated. The easiest way to i
 }
 ```
 
-- A minimum OpenClaw config example [can be found below](#minimum-openclaw-config). If something is not working you, double check your `openclaw.json` file against this one and make them match.
+- A minimum OpenClaw config example [can be found below](#minimum-openclaw-config). If something is not working for you, double check your `openclaw.json` file against this one and make them match.
 
 ### TTS for avatar
 
