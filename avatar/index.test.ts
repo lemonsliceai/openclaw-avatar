@@ -2618,6 +2618,80 @@ describe("avatar plugin", () => {
     }
   });
 
+  it("keeps ordered list items open across blank-line continuations in the README renderer", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "avatar-readme-loose-list-"));
+    const fakePluginRoot = path.join(tempRoot, "plugins", "avatar");
+
+    await mkdir(fakePluginRoot, { recursive: true });
+    await writeFile(
+      path.join(fakePluginRoot, "openclaw.plugin.json"),
+      JSON.stringify({ id: "openclaw-avatar", name: "Avatar" }, null, 2),
+    );
+    await writeFile(
+      path.join(fakePluginRoot, "README.md"),
+      `# Test README
+
+## Quickstart
+
+1. Install and enable the plugin.
+
+Install from ClawHub:
+
+\`\`\`bash
+openclaw plugins install clawhub:@lemonsliceai/openclaw-avatar
+\`\`\`
+
+Or install directly from npm:
+
+\`\`\`bash
+openclaw plugins install @lemonsliceai/openclaw-avatar@latest
+\`\`\`
+
+2. Allow the plugin:
+
+\`openclaw.json\` - \`plugins.allow\`
+\`\`\`json
+{
+  "plugins": {
+    "allow": ["openclaw-avatar"]
+  }
+}
+\`\`\`
+
+3. Configure the plugin.
+`,
+    );
+
+    try {
+      const { httpRoutes } = setup(baseConfig, {
+        resolvePath: (input: string) => path.join(fakePluginRoot, input),
+      });
+
+      const readmePage = await invokeHttpRoute(httpRoutes, "/plugins/avatar/readme", {
+        url: "/plugins/avatar/readme",
+      });
+
+      expect(readmePage.handled).toBe(true);
+      expect(readmePage.res.statusCode).toBe(200);
+      expect(readmePage.res.body.match(/<ol>/g)).toHaveLength(1);
+      expect(readmePage.res.body.match(/<li>/g)).toHaveLength(3);
+      expect(readmePage.res.body).toContain(
+        "<ol><li>Install and enable the plugin.<p>Install from ClawHub:</p>",
+      );
+      expect(readmePage.res.body).toContain(
+        "</code></pre><p>Or install directly from npm:</p><pre><code class=\"language-bash\">",
+      );
+      expect(readmePage.res.body).toContain(
+        "</code></pre></li><li>Allow the plugin:<p><code>openclaw.json</code> - <code>plugins.allow</code></p><pre><code class=\"language-json\">",
+      );
+      expect(readmePage.res.body).toContain(
+        "</code></pre></li><li>Configure the plugin.</li></ol>",
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("bootstraps the configured gateway token for the browser settings page", async () => {
     const { httpRoutes, runtime } = setup({
       ...baseConfig,

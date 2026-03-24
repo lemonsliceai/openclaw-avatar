@@ -2490,6 +2490,25 @@ function matchMarkdownListItem(line: string): MarkdownListItemMatch | null {
   };
 }
 
+function renderMarkdownCodeFence(lines: string[], startIndex: number) {
+  const openingLine = (lines[startIndex] ?? "").trim();
+  const language = openingLine.slice(3).trim();
+  let index = startIndex + 1;
+  const codeLines: string[] = [];
+  while (index < lines.length && !/^```/.test((lines[index] ?? "").trim())) {
+    codeLines.push(lines[index] ?? "");
+    index += 1;
+  }
+  if (index < lines.length) {
+    index += 1;
+  }
+  const languageClass = language ? ` class="language-${escapeHtmlAttribute(language)}"` : "";
+  return {
+    html: `<pre><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+    nextIndex: index,
+  };
+}
+
 function renderMarkdownList(lines: string[], startIndex: number, indentLength: number) {
   const items: string[] = [];
   let index = startIndex;
@@ -2515,12 +2534,15 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
 
     const itemParts = [renderMarkdownInline(itemMatch.content)];
     index += 1;
+    let sawBlankSeparator = false;
 
     while (index < lines.length) {
       const nextLine = lines[index] ?? "";
-      if (!nextLine.trim()) {
+      const trimmedNextLine = nextLine.trim();
+      if (!trimmedNextLine) {
         index += 1;
-        break;
+        sawBlankSeparator = true;
+        continue;
       }
 
       const nestedItemMatch = matchMarkdownListItem(nextLine);
@@ -2533,36 +2555,60 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
           const nestedList = renderMarkdownList(lines, index, nestedIndent);
           itemParts.push(nestedList.html);
           index = nestedList.nextIndex;
+          sawBlankSeparator = false;
           continue;
         }
         break;
       }
 
+      if (/^```/.test(trimmedNextLine)) {
+        const codeFence = renderMarkdownCodeFence(lines, index);
+        itemParts.push(codeFence.html);
+        index = codeFence.nextIndex;
+        sawBlankSeparator = false;
+        continue;
+      }
+
       const continuationIndent = nextLine.match(/^\s*/)?.[0].length ?? 0;
-      if (continuationIndent > indentLength) {
+      if (continuationIndent > indentLength || sawBlankSeparator) {
         const paragraphLines = [nextLine.trim()];
         index += 1;
         while (index < lines.length) {
           const candidate = lines[index] ?? "";
-          if (!candidate.trim()) {
-            index += 1;
+          const candidateTrimmed = candidate.trim();
+          if (!candidateTrimmed) {
             break;
           }
           const candidateListMatch = matchMarkdownListItem(candidate);
           if (candidateListMatch) {
             const candidateIndent = candidateListMatch.indentLength;
-            if (candidateIndent <= continuationIndent) {
+            if (candidateIndent <= indentLength || candidateIndent <= continuationIndent) {
+              break;
+            }
+          }
+          if (/^```/.test(candidateTrimmed)) {
+            break;
+          }
+          if (
+            /^#{1,6}\s+/.test(candidate) ||
+            candidateTrimmed.startsWith("<") ||
+            (candidate.includes("|") &&
+              index + 1 < lines.length &&
+              isMarkdownTableSeparator(lines[index + 1] ?? ""))
+          ) {
+            if (continuationIndent <= indentLength) {
               break;
             }
           }
           const candidateIndent = candidate.match(/^\s*/)?.[0].length ?? 0;
-          if (candidateIndent <= indentLength) {
+          if (candidateIndent <= indentLength && !sawBlankSeparator) {
             break;
           }
-          paragraphLines.push(candidate.trim());
+          paragraphLines.push(candidateTrimmed);
           index += 1;
         }
         itemParts.push(`<p>${renderMarkdownInline(paragraphLines.join(" "))}</p>`);
+        sawBlankSeparator = false;
         continue;
       }
 
@@ -2593,18 +2639,9 @@ function renderMarkdownToHtml(markdown: string): string {
     }
 
     if (/^```/.test(trimmed)) {
-      const language = trimmed.slice(3).trim();
-      index += 1;
-      const codeLines: string[] = [];
-      while (index < lines.length && !/^```/.test((lines[index] ?? "").trim())) {
-        codeLines.push(lines[index] ?? "");
-        index += 1;
-      }
-      if (index < lines.length) {
-        index += 1;
-      }
-      const languageClass = language ? ` class="language-${escapeHtmlAttribute(language)}"` : "";
-      html.push(`<pre><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      const codeFence = renderMarkdownCodeFence(lines, index);
+      html.push(codeFence.html);
+      index = codeFence.nextIndex;
       continue;
     }
 
