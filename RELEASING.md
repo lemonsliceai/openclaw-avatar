@@ -2,22 +2,6 @@
 
 This repository is set up so you can merge to `main`, then click `Run workflow` in GitHub Actions to create and publish a release to both npm and ClawHub.
 
-## One-time setup
-
-Add these `release` environment secrets in GitHub:
-
-- `CLAWHUB_TOKEN`: ClawHub token for an account that can publish this package
-- `RELEASE_PUSH_TOKEN` (optional): fine-grained GitHub token for a bot or app that is allowed to push the automated release commit back to `main`
-
-The release workflow lives at `.github/workflows/release.yml`.
-
-The workflow now uses npm trusted publishing, so you do not need an `NPM_TOKEN` for npm publish.
-
-If `main` is protected, GitHub has to allow this workflow to push the release commit and tag:
-
-- If your repository is in an organization, add the GitHub Actions app, or the bot/app behind `RELEASE_PUSH_TOKEN`, to the branch protection bypass or push-allow list for `main`.
-- If `Do not allow bypassing the above settings` is enabled, this workflow cannot write the release commit back to `main`.
-
 ## Release flow
 
 1. Merge the changes you want to release into `main`.
