@@ -36,6 +36,7 @@ jobs:
       AUTH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN || github.token }}
       CI: true
       GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN || github.token }}
+      HAS_RELEASE_PUSH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN != '' }}
       PRERELEASE_ID: ${{ inputs.prerelease_id }}
       RELEASE_TYPE: ${{ inputs.release_type }}
 
@@ -49,7 +50,7 @@ jobs:
         run: test "${GITHUB_REF_NAME}" = "main" || { echo "Run this workflow from the main branch."; exit 1; }
 
       - name: Warn when using default GitHub token
-        if: ${{ secrets.RELEASE_PUSH_TOKEN == '' }}
+        if: ${{ env.HAS_RELEASE_PUSH_TOKEN != 'true' }}
         run: echo "::warning::RELEASE_PUSH_TOKEN is not configured. The release PR may not trigger follow-on workflows when it is created with GITHUB_TOKEN."
 
       - name: Ensure no release PR is already open
