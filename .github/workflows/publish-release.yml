@@ -102,10 +102,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Require publish secrets
+      - name: Require publish configuration
         run: |
           test -n "$CLAWHUB_TOKEN" || { echo "Missing GitHub secret: CLAWHUB_TOKEN"; exit 1; }
-          test -n "$NPM_TOKEN" || { echo "Missing GitHub secret: NPM_TOKEN"; exit 1; }
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "Using NPM_TOKEN authentication for npm publish."
+          else
+            echo "NPM_TOKEN not set; npm publish will use GitHub Actions trusted publishing if configured."
+          fi
 
       - name: Configure push credentials
         run: git remote set-url origin "https://x-access-token:${AUTH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
@@ -155,9 +159,12 @@ jobs:
 
       - name: Publish to npm
         if: ${{ steps.npm.outputs.already_published != 'true' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
-        run: npm publish --access public
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            NODE_AUTH_TOKEN="$NPM_TOKEN" npm publish --access public
+          else
+            npm publish --access public
+          fi
 
       - name: Install ClawHub CLI
         run: npm install --global clawhub@latest
