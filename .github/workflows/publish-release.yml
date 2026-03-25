@@ -92,6 +92,7 @@ jobs:
       CI: true
       CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
       GH_TOKEN: ${{ github.token }}
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       RELEASE_TAG: ${{ needs.detect.outputs.tag }}
       RELEASE_VERSION: ${{ needs.detect.outputs.version }}
 
@@ -104,6 +105,7 @@ jobs:
       - name: Require publish secrets
         run: |
           test -n "$CLAWHUB_TOKEN" || { echo "Missing GitHub secret: CLAWHUB_TOKEN"; exit 1; }
+          test -n "$NPM_TOKEN" || { echo "Missing GitHub secret: NPM_TOKEN"; exit 1; }
 
       - name: Configure push credentials
         run: git remote set-url origin "https://x-access-token:${AUTH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
@@ -153,6 +155,8 @@ jobs:
 
       - name: Publish to npm
         if: ${{ steps.npm.outputs.already_published != 'true' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
         run: npm publish --access public
 
       - name: Install ClawHub CLI
