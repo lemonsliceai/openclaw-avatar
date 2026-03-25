@@ -1,88 +1,19 @@
 name: Publish Release
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
   contents: write
   id-token: write
-  pull-requests: read
 
 concurrency:
-  group: publish-release-${{ github.sha }}
+  group: publish-release-main
   cancel-in-progress: false
 
 jobs:
-  detect:
-    name: Detect merged release PR
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      pr_number: ${{ steps.detect.outputs.pr_number }}
-      pr_url: ${{ steps.detect.outputs.pr_url }}
-      should_publish: ${{ steps.detect.outputs.should_publish }}
-      tag: ${{ steps.detect.outputs.tag }}
-      version: ${{ steps.detect.outputs.version }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Require main branch
-        run: test "${GITHUB_REF_NAME}" = "main" || { echo "Run this workflow from the main branch."; exit 1; }
-
-      - name: Detect prepared release PR
-        id: detect
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const fs = require("node:fs");
-            const path = require("node:path");
-
-            const packageJsonPath = path.join(process.env.GITHUB_WORKSPACE, "package.json");
-            const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-            const version = packageJson.version;
-            const tag = `v${version}`;
-            const expectedTitle = `chore: release ${tag}`;
-
-            core.setOutput("version", version);
-            core.setOutput("tag", tag);
-
-            const { owner, repo } = context.repo;
-            const { data: pulls } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner,
-              repo,
-              commit_sha: context.sha,
-            });
-
-            const pr = pulls.find((candidate) => {
-              const body = candidate.body || "";
-              return candidate.base.ref === "main"
-                && Boolean(candidate.merged_at)
-                && candidate.head.ref.startsWith("release/")
-                && candidate.title === expectedTitle
-                && body.includes("Prepared-Release: true")
-                && body.includes(`Release-Version: ${version}`);
-            });
-
-            if (!pr) {
-              core.notice(`Commit ${context.sha} is not a merged prepared release for ${tag}; skipping publish.`);
-              core.setOutput("should_publish", "false");
-              return;
-            }
-
-            core.info(`Publishing ${tag} from PR #${pr.number} ${pr.html_url}`);
-            core.setOutput("pr_number", String(pr.number));
-            core.setOutput("pr_url", pr.html_url);
-            core.setOutput("should_publish", "true");
-
   publish:
     name: Tag and publish release
-    needs: detect
-    if: ${{ needs.detect.outputs.should_publish == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -93,14 +24,24 @@ jobs:
       CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
       GH_TOKEN: ${{ github.token }}
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-      RELEASE_TAG: ${{ needs.detect.outputs.tag }}
-      RELEASE_VERSION: ${{ needs.detect.outputs.version }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Require main branch
+        run: test "${GITHUB_REF_NAME}" = "main" || { echo "Run this workflow from the main branch."; exit 1; }
+
+      - name: Read release metadata
+        id: release
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Require publish configuration
         run: |
@@ -125,7 +66,7 @@ jobs:
         run: npm ci
 
       - name: Verify release version
-        run: npm run release:check -- "$RELEASE_TAG"
+        run: npm run release:check -- "${{ steps.release.outputs.tag }}"
 
       - name: Read package metadata
         id: package
@@ -133,25 +74,27 @@ jobs:
 
       - name: Create and push release tag
         run: |
+          RELEASE_TAG="${{ steps.release.outputs.tag }}"
+          TARGET_SHA="${{ steps.release.outputs.target_sha }}"
           git fetch --tags --force
           existing_commit="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')"
 
-          if [ -n "$existing_commit" ] && [ "$existing_commit" != "$GITHUB_SHA" ]; then
+          if [ -n "$existing_commit" ] && [ "$existing_commit" != "$TARGET_SHA" ]; then
             echo "Tag $RELEASE_TAG already exists on a different commit: $existing_commit"
             exit 1
           fi
 
           if [ -z "$existing_commit" ]; then
-            git tag "$RELEASE_TAG" "$GITHUB_SHA"
+            git tag "$RELEASE_TAG" "$TARGET_SHA"
             git push origin "refs/tags/$RELEASE_TAG"
           else
-            echo "Tag $RELEASE_TAG already points to $GITHUB_SHA."
+            echo "Tag $RELEASE_TAG already points to $TARGET_SHA."
           fi
 
       - name: Check whether npm version is already published
         id: npm
         run: |
-          if npm view "${{ steps.package.outputs.name }}@$RELEASE_VERSION" version >/dev/null 2>&1; then
+          if npm view "${{ steps.package.outputs.name }}@${{ steps.release.outputs.version }}" version >/dev/null 2>&1; then
             echo "already_published=true" >> "$GITHUB_OUTPUT"
           else
             echo "already_published=false" >> "$GITHUB_OUTPUT"
@@ -175,10 +118,11 @@ jobs:
           clawhub --no-input whoami
 
       - name: Publish to ClawHub
-        run: clawhub --workdir "$GITHUB_WORKSPACE" --no-input package publish . --family code-plugin --source-repo "${{ github.repository }}" --source-commit "$GITHUB_SHA"
+        run: clawhub --workdir "$GITHUB_WORKSPACE" --no-input package publish . --family code-plugin --source-repo "${{ github.repository }}" --source-commit "${{ steps.release.outputs.target_sha }}"
 
       - name: Create or update GitHub Release
         run: |
+          RELEASE_TAG="${{ steps.release.outputs.tag }}"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --latest
           else
