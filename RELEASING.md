@@ -39,3 +39,4 @@ If publishing partially fails after the release PR is merged, rerun `Publish Rel
 - The publish workflow uses the current `main` commit and does not verify that it came from the release PR flow.
 - Tags stay in the default npm format, for example `v0.1.40`.
 - Provenance is generated automatically for public packages from public repos when npm trusted publishing is used.
+- npm trusted publishing currently requires Node `22.14.0+` and npm CLI `11.5.1+`, so the workflow upgrades npm explicitly before publishing.
