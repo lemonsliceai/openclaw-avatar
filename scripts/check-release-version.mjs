@@ -39,6 +39,26 @@ async function main() {
     }
   }
 
+  const openClawPeerRange = packageJson.peerDependencies?.openclaw;
+  const pluginApiRange = packageJson.openclaw?.compat?.pluginApi;
+  const minHostVersion = packageJson.openclaw?.install?.minHostVersion;
+
+  if (typeof openClawPeerRange !== "string" || openClawPeerRange.length === 0) {
+    throw new Error("package.json peerDependencies.openclaw is missing a valid range.");
+  }
+
+  if (pluginApiRange !== openClawPeerRange) {
+    throw new Error(
+      `package.json openclaw.compat.pluginApi ${JSON.stringify(pluginApiRange)} does not match peerDependencies.openclaw ${JSON.stringify(openClawPeerRange)}.`,
+    );
+  }
+
+  if (minHostVersion !== openClawPeerRange) {
+    throw new Error(
+      `package.json openclaw.install.minHostVersion ${JSON.stringify(minHostVersion)} does not match peerDependencies.openclaw ${JSON.stringify(openClawPeerRange)}.`,
+    );
+  }
+
   if (releaseTag && releaseTag !== packageJson.version) {
     throw new Error(`Release tag ${releaseTag} does not match package.json version ${packageJson.version}.`);
   }
