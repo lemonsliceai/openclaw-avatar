@@ -37,9 +37,10 @@ jobs:
     name: Bump, publish, and tag
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment:
+      name: release
     env:
       CI: true
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TYPE: ${{ inputs.release_type }}
@@ -57,7 +58,6 @@ jobs:
 
       - name: Require publish secrets
         run: |
-          test -n "$NODE_AUTH_TOKEN" || { echo "Missing GitHub secret: NPM_TOKEN"; exit 1; }
           test -n "$CLAWHUB_TOKEN" || { echo "Missing GitHub secret: CLAWHUB_TOKEN"; exit 1; }
 
       - name: Configure push credentials
@@ -126,7 +126,7 @@ jobs:
           fi
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public
 
       - name: Install ClawHub CLI
         run: npm install --global clawhub@latest
@@ -137,7 +137,7 @@ jobs:
           clawhub --no-input whoami
 
       - name: Publish to ClawHub
-        run: clawhub --no-input package publish . --source-repo "${{ github.repository }}" --source-commit "$(git rev-parse HEAD)"
+        run: clawhub --workdir "$GITHUB_WORKSPACE" --no-input package publish . --family code-plugin --source-repo "${{ github.repository }}" --source-commit "$(git rev-parse HEAD)"
 
       - name: Create or update GitHub Release
         run: |

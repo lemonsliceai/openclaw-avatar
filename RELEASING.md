@@ -4,13 +4,14 @@ This repository is set up so you can merge to `main`, then click `Run workflow` 
 
 ## One-time setup
 
-Add these repository secrets in GitHub:
+Add these `release` environment secrets in GitHub:
 
-- `NPM_TOKEN`: npm publish token for `@lemonsliceai/openclaw-avatar`
 - `CLAWHUB_TOKEN`: ClawHub token for an account that can publish this package
 - `RELEASE_PUSH_TOKEN` (optional): fine-grained GitHub token for a bot or app that is allowed to push the automated release commit back to `main`
 
 The release workflow lives at `.github/workflows/release.yml`.
+
+The workflow now uses npm trusted publishing, so you do not need an `NPM_TOKEN` for npm publish.
 
 If `main` is protected, GitHub has to allow this workflow to push the release commit and tag:
 
@@ -22,7 +23,8 @@ If `main` is protected, GitHub has to allow this workflow to push the release co
 1. Merge the changes you want to release into `main`.
 2. Open `Actions` in GitHub and run the `Release` workflow on the `main` branch.
 3. Choose `patch`, `minor`, `major`, or `prerelease`.
-4. The workflow will:
+4. GitHub will pause for `release` environment approval before the job can access publish secrets.
+5. After approval, the workflow will:
 
 - run `npm version ... --no-git-tag-version`
 - run the existing validation suite
@@ -32,6 +34,31 @@ If `main` is protected, GitHub has to allow this workflow to push the release co
 - publish to npm
 - publish to ClawHub
 - create the GitHub Release entry
+
+## Environment Setup
+
+Recommended `release` environment settings:
+
+- Add one or more required reviewers.
+- Enable `Prevent self-review` if you want a second person to approve every release.
+- Keep deployment branches/tags restricted to protected branches only.
+
+## npm Trusted Publishing
+
+In npm, open the package settings for `@lemonsliceai/openclaw-avatar`, then add a trusted publisher with:
+
+- provider: `GitHub Actions`
+- organization or user: `lemonsliceai`
+- repository: `openclaw-avatar`
+- workflow filename: `release.yml`
+- environment name: `release`
+
+Notes:
+
+- The workflow already has the required `id-token: write` permission.
+- Trusted publishing works only on GitHub-hosted runners.
+- npm says trusted publishing requires npm CLI `11.5.1` or later and Node `22.14.0` or later.
+- After it works once, npm recommends switching the package to `Require two-factor authentication and disallow tokens`.
 
 ## Recovery
 
@@ -46,4 +73,4 @@ That republishes the version already checked into `main` without incrementing ag
 
 - The workflow must be run on `main`.
 - Tags stay in the default npm format, for example `v0.1.40`.
-- If you use npm trusted publishing instead of an npm token later, the workflow already has the required `id-token: write` permission.
+- Provenance is generated automatically for public packages from public repos when npm trusted publishing is used.
