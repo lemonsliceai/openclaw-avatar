@@ -10,11 +10,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lemonsliceai/videoChatPlugin.git"
+    "url": "git+https://github.com/lemonsliceai/openclaw-avatar.git"
   },
-  "homepage": "https://github.com/lemonsliceai/videoChatPlugin#readme",
+  "homepage": "https://github.com/lemonsliceai/openclaw-avatar#readme",
   "bugs": {
-    "url": "https://github.com/lemonsliceai/videoChatPlugin/issues"
+    "url": "https://github.com/lemonsliceai/openclaw-avatar/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -68,6 +68,10 @@
     "typecheck": "tsc --noEmit",
     "pack:check": "npm pack --dry-run --cache .npm-cache",
     "prepack": "npm run build",
-    "validate": "npm run typecheck && npm test && npm run pack:check"
+    "validate": "npm run typecheck && npm test && npm run pack:check",
+    "release:check": "node ./scripts/check-release-version.mjs",
+    "release:sync-version": "node ./scripts/sync-release-version.mjs",
+    "preversion": "npm run validate",
+    "version": "npm run release:sync-version && git add package.json package-lock.json openclaw.plugin.json"
   }
 }
