@@ -19,31 +19,6 @@ This repository is set up so you can merge to `main`, then click `Run workflow` 
 - publish to ClawHub
 - create the GitHub Release entry
 
-## Environment Setup
-
-Recommended `release` environment settings:
-
-- Add one or more required reviewers.
-- Enable `Prevent self-review` if you want a second person to approve every release.
-- Keep deployment branches/tags restricted to protected branches only.
-
-## npm Trusted Publishing
-
-In npm, open the package settings for `@lemonsliceai/openclaw-avatar`, then add a trusted publisher with:
-
-- provider: `GitHub Actions`
-- organization or user: `lemonsliceai`
-- repository: `openclaw-avatar`
-- workflow filename: `release.yml`
-- environment name: `release`
-
-Notes:
-
-- The workflow already has the required `id-token: write` permission.
-- Trusted publishing works only on GitHub-hosted runners.
-- npm says trusted publishing requires npm CLI `11.5.1` or later and Node `22.14.0` or later.
-- After it works once, npm recommends switching the package to `Require two-factor authentication and disallow tokens`.
-
 ## Recovery
 
 If a release partially fails after the version bump commit is already on `main`, rerun the same workflow with:
