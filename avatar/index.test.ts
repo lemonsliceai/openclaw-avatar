@@ -409,7 +409,7 @@ describe("avatar plugin", () => {
     expect(methods.has("avatar.session.stop")).toBe(true);
     expect(methods.has("avatar.audio.transcribe")).toBe(true);
     expect(services).toHaveLength(1);
-    expect(httpRoutes).toHaveLength(20);
+    expect(httpRoutes).toHaveLength(22);
     expect(httpRoutes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -453,6 +453,11 @@ describe("avatar plugin", () => {
           match: "exact",
         }),
         expect.objectContaining({
+          path: `${PLUGIN_ROUTE_BASE}/gateway-auth.js`,
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
           path: `${PLUGIN_ROUTE_BASE}/avatar-aspect-ratio.js`,
           auth: "plugin",
           match: "exact",
@@ -474,6 +479,11 @@ describe("avatar plugin", () => {
         }),
         expect.objectContaining({
           path: `${LEGACY_PLUGIN_ROUTE_BASE}/bootstrap`,
+          auth: "plugin",
+          match: "exact",
+        }),
+        expect.objectContaining({
+          path: `${LEGACY_PLUGIN_ROUTE_BASE}/gateway-auth.js`,
           auth: "plugin",
           match: "exact",
         }),
@@ -2553,7 +2563,7 @@ describe("avatar plugin", () => {
     expect(readmePage.res.body).toContain('id="nav-collapse-toggle"');
     expect(readmePage.res.body).toContain('/plugins/openclaw-avatar/app.js?v=');
     expect(readmePage.res.body).toContain("<ol>");
-    expect(readmePage.res.body).toContain("<h3>About OpenClaw Config</h3>");
+    expect(readmePage.res.body).toContain("<h4>About OpenClaw Config</h4>");
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
     expect(readmePage.res.body).toContain("<h2>About The Install Warning</h2>");
     expect(readmePage.res.body).toContain("<h2>Minimum Openclaw config</h2>");

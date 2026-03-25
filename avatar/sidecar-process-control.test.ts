@@ -228,8 +228,8 @@ describeUnixOnly("sidecar process control", () => {
 
   it("force kills a process group when SIGTERM is ignored", async () => {
     const stubbornScript = `
-console.log("READY");
 process.on("SIGTERM", () => {});
+console.log("READY");
 setInterval(() => {}, 1000);
 `;
     const stubbornParent = spawn(process.execPath, ["-e", stubbornScript], {
