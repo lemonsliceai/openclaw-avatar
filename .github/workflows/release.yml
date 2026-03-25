@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Select how to increment the version.
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+      prerelease_id:
+        description: Pre-release identifier to use when release_type is prerelease.
+        required: false
+        default: beta
+        type: string
+      reuse_current_version:
+        description: Retry publishing the version already committed on main without bumping again.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Bump, publish, and tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: release
+    env:
+      CI: true
+      CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TYPE: ${{ inputs.release_type }}
+      PRERELEASE_ID: ${{ inputs.prerelease_id }}
+      REUSE_CURRENT_VERSION: ${{ inputs.reuse_current_version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require main branch
+        run: test "${GITHUB_REF_NAME}" = "main" || { echo "Run this workflow from the main branch."; exit 1; }
+
+      - name: Require publish secrets
+        run: |
+          test -n "$CLAWHUB_TOKEN" || { echo "Missing GitHub secret: CLAWHUB_TOKEN"; exit 1; }
+
+      - name: Configure push credentials
+        env:
+          RELEASE_PUSH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
+          DEFAULT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          token="${RELEASE_PUSH_TOKEN:-$DEFAULT_GITHUB_TOKEN}"
+          git remote set-url origin "https://x-access-token:${token}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare release version
+        id: version
+        run: |
+          if [ "$REUSE_CURRENT_VERSION" = "true" ]; then
+            version="$(node -p "require('./package.json').version")"
+          else
+            if [ "$RELEASE_TYPE" = "prerelease" ]; then
+              npm version prerelease --preid "$PRERELEASE_ID" --no-git-tag-version
+            else
+              npm version "$RELEASE_TYPE" --no-git-tag-version
+            fi
+            version="$(node -p "require('./package.json').version")"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release version
+        run: npm run release:check -- "v${{ steps.version.outputs.version }}"
+
+      - name: Run validation for retry mode
+        if: ${{ inputs.reuse_current_version }}
+        run: npm run validate
+
+      - name: Commit release metadata
+        if: ${{ !inputs.reuse_current_version }}
+        run: |
+          git commit -m 'chore: release v${{ steps.version.outputs.version }}'
+
+      - name: Ensure release tag exists locally
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          git rev-parse "$tag" >/dev/null 2>&1 || git tag "$tag"
+
+      - name: Push release commit and tag
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if [ "$REUSE_CURRENT_VERSION" = "true" ]; then
+            git push origin "refs/tags/$tag"
+          else
+            git push origin HEAD:main --follow-tags
+          fi
+
+      - name: Publish to npm
+        run: npm publish --access public
+
+      - name: Install ClawHub CLI
+        run: npm install --global clawhub@latest
+
+      - name: Authenticate ClawHub CLI
+        run: |
+          clawhub --no-input login --token "$CLAWHUB_TOKEN"
+          clawhub --no-input whoami
+
+      - name: Publish to ClawHub
+        run: clawhub --workdir "$GITHUB_WORKSPACE" --no-input package publish . --family code-plugin --source-repo "${{ github.repository }}" --source-commit "$(git rev-parse HEAD)"
+
+      - name: Create or update GitHub Release
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$tag" --latest
+          else
+            gh release create "$tag" --title "$tag" --verify-tag --generate-notes --latest
+          fi

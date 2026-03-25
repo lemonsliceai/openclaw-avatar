@@ -55,6 +55,10 @@ npm run pack:check
 - Include screenshots or short recordings for UI changes when helpful.
 - Keep pull requests narrow in scope when possible.
 
+## Releases
+
+Release steps and GitHub Actions setup are documented in [RELEASING.md](RELEASING.md).
+
 ## Code Style
 
 - Match the existing style and file structure.
