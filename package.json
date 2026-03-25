@@ -44,7 +44,16 @@
   "openclaw": {
     "extensions": [
       "./dist/avatar/index.js"
-    ]
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.23-1"
+    },
+    "install": {
+      "minHostVersion": ">=2026.3.23-1"
+    },
+    "release": {
+      "publishToNpm": false
+    }
   },
   "peerDependencies": {
     "openclaw": ">=2026.3.23-1"

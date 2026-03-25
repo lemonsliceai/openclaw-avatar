@@ -2,6 +2,12 @@ name: Publish Release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_to_clawhub:
+        description: Also publish this release to ClawHub.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -45,7 +51,11 @@ jobs:
 
       - name: Require publish configuration
         run: |
-          test -n "$CLAWHUB_TOKEN" || { echo "Missing GitHub secret: CLAWHUB_TOKEN"; exit 1; }
+          if [ "${{ inputs.publish_to_clawhub }}" = "true" ]; then
+            test -n "$CLAWHUB_TOKEN" || { echo "Missing GitHub secret: CLAWHUB_TOKEN"; exit 1; }
+          else
+            echo "Skipping ClawHub publish for this run."
+          fi
           if [ -n "$NPM_TOKEN" ]; then
             echo "Using NPM_TOKEN authentication for npm publish."
           else
@@ -119,14 +129,17 @@ jobs:
           fi
 
       - name: Install ClawHub CLI
+        if: ${{ inputs.publish_to_clawhub }}
         run: npm install --global clawhub@latest
 
       - name: Authenticate ClawHub CLI
+        if: ${{ inputs.publish_to_clawhub }}
         run: |
           clawhub --no-input login --token "$CLAWHUB_TOKEN"
           clawhub --no-input whoami
 
       - name: Publish to ClawHub
+        if: ${{ inputs.publish_to_clawhub }}
         run: clawhub --workdir "$GITHUB_WORKSPACE" --no-input package publish . --family code-plugin --source-repo "${{ github.repository }}" --source-commit "${{ steps.release.outputs.target_sha }}"
 
       - name: Create or update GitHub Release
