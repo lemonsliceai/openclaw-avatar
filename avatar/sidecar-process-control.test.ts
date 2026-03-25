@@ -67,11 +67,13 @@ function spawnWorker() {
   console.log("CHILD_PID=" + worker.pid);
 }
 const workerScript = ${JSON.stringify(workerScript)};
-spawnWorker();
 process.on("SIGUSR2", () => {});
 process.on("SIGUSR1", () => {
   spawnWorker();
 });
+// Install handlers before announcing the first worker so group-targeted
+// cleanup cannot race with the parent's SIGUSR2 no-op handler in CI.
+spawnWorker();
 setInterval(() => {}, 1000);
 `;
 
