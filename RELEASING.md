@@ -35,7 +35,6 @@ If publishing partially fails after the release PR is merged, rerun the failed `
 - The prepare and publish workflows must both run from `main`.
 - `RELEASE_PUSH_TOKEN` is recommended for `Prepare Release` so the generated PR behaves like a normal PR and can trigger follow-on workflows.
 - `CLAWHUB_TOKEN` must be configured as a GitHub Actions secret in the `release` environment.
-- `NPM_TOKEN` is optional when npm trusted publishing is configured for this repository. If you use a token instead, it must be stored as a GitHub Actions secret named `NPM_TOKEN` in the `release` environment or at the repository level. A GitHub Actions variable will not populate `${{ secrets.NPM_TOKEN }}`.
 - The publish workflow only proceeds for commits associated with a prepared release PR.
 - Tags stay in the default npm format, for example `v0.1.40`.
 - Provenance is generated automatically for public packages from public repos when npm trusted publishing is used.
