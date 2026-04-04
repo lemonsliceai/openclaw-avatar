@@ -3,4 +3,7 @@ node_modules/
 .npm-cache/
 coverage/
 dist/
+!web/dist/
 *.tgz
+.mstro/
+.claude/

@@ -95,9 +95,7 @@ async function stopProcessIds(params: {
   postKillDelayMs?: number;
 }): Promise<number[]> {
   const uniquePids = Array.from(
-    new Set(
-      params.pids.filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid),
-    ),
+    new Set(params.pids.filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid)),
   );
   if (uniquePids.length === 0) {
     return [];
@@ -205,14 +203,14 @@ export async function stopMatchingProcesses(params: {
   }
 
   const pathTargets = Array.from(
-    new Set((params.scriptPaths ?? []).map((value) => value.trim()).filter((value) => value.length > 0)),
+    new Set(
+      (params.scriptPaths ?? []).map((value) => value.trim()).filter((value) => value.length > 0),
+    ),
   );
   const basenameTargets = params.matchBasenames
     ? Array.from(
         new Set(
-          pathTargets
-            .map((value) => path.basename(value))
-            .filter((value) => value.length > 0),
+          pathTargets.map((value) => path.basename(value)).filter((value) => value.length > 0),
         ),
       )
     : [];
@@ -232,7 +230,9 @@ export async function stopMatchingProcesses(params: {
         !keepPids.has(entry.pid) &&
         (pathTargets.some((target) => entry.command.includes(target)) ||
           basenameTargets.some((target) => entry.command.includes(target)) ||
-          commandPatterns.some((pattern) => pattern.every((token) => entry.command.includes(token)))),
+          commandPatterns.some((pattern) =>
+            pattern.every((token) => entry.command.includes(token)),
+          )),
     )
     .map((entry) => entry.pid);
 

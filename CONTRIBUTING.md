@@ -34,15 +34,18 @@ npm run validate
 If you are working on a smaller change, these scripts can also be run individually:
 
 ```bash
-npm run typecheck
-npm test
-npm run pack:check
+npm run lint         # Check lint and formatting (Biome)
+npm run typecheck    # TypeScript type checking
+npm test             # Unit and integration tests
+npm run pack:check   # Verify the package builds correctly
 ```
 
 ## Project Layout
 
-- `avatar/` contains the plugin runtime and sidecar logic.
+- `avatar/` contains the plugin runtime and sidecar logic (TypeScript, compiled to `dist/`).
 - `web/` contains the browser UI for the avatar experience.
+  - `web/src/` contains the modular TypeScript source (`gateway/`, `avatar/`, `chat/`, `ui/`).
+  - `web/dist/` contains the bundled output (built via `npm run build:web`).
 - `styles/` contains shared and page-specific stylesheets.
 - `scripts/` contains build and packaging helpers.
 - `test-utils/` contains shared test helpers and runtime mocks.
@@ -61,6 +64,8 @@ Release steps and GitHub Actions setup are documented in [RELEASING.md](RELEASIN
 
 ## Code Style
 
+- This project uses [Biome](https://biomejs.dev/) for linting and formatting. Run `npm run lint` to check and `npm run lint:fix` to auto-fix.
+- Run `npm run format` to format all source files.
 - Match the existing style and file structure.
 - Prefer small, readable changes over broad refactors.
 - Avoid unrelated cleanup in the same pull request.

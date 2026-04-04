@@ -18,10 +18,7 @@ export class GatewayWsClient {
   request(method: string, params: unknown): Promise<unknown>;
 }
 
-export function computeStreamingTextDelta(
-  nextText: string,
-  previousText?: string,
-): string | null;
+export function computeStreamingTextDelta(nextText: string, previousText?: string): string | null;
 
 export function buildLemonSliceAspectRatioPayload(aspectRatio?: string): {
   aspect_ratio: AvatarAspectRatio;

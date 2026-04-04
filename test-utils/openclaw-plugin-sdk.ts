@@ -22,7 +22,10 @@ export function hasConfiguredSecretInput(value: unknown): boolean {
   return false;
 }
 
-export function normalizeResolvedSecretInputString(params: { value: unknown; path: string }): string {
+export function normalizeResolvedSecretInputString(params: {
+  value: unknown;
+  path: string;
+}): string {
   const direct = normalizeString(params.value);
   if (direct) {
     return direct;

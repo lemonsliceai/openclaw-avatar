@@ -15,12 +15,15 @@ async function writeJson(filePath, value) {
 }
 
 async function main() {
-  const [{ filePath: pluginManifestPath, value: pluginManifest }, { filePath: packageLockPath, value: packageLock }, { value: packageJson }] =
-    await Promise.all([
-      readJson("openclaw.plugin.json"),
-      readJson("package-lock.json"),
-      readJson("package.json"),
-    ]);
+  const [
+    { filePath: pluginManifestPath, value: pluginManifest },
+    { filePath: packageLockPath, value: packageLock },
+    { value: packageJson },
+  ] = await Promise.all([
+    readJson("openclaw.plugin.json"),
+    readJson("package-lock.json"),
+    readJson("package.json"),
+  ]);
 
   const version = packageJson.version;
 
@@ -35,7 +38,10 @@ async function main() {
     packageLock.packages[""].version = version;
   }
 
-  await Promise.all([writeJson(pluginManifestPath, pluginManifest), writeJson(packageLockPath, packageLock)]);
+  await Promise.all([
+    writeJson(pluginManifestPath, pluginManifest),
+    writeJson(packageLockPath, packageLock),
+  ]);
 
   console.log(`Synced release metadata to version ${version}.`);
 }

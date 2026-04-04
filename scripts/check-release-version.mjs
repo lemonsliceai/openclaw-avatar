@@ -35,7 +35,9 @@ async function main() {
 
   for (const [label, value] of checks) {
     if (value !== packageJson.version) {
-      throw new Error(`${label} version ${JSON.stringify(value)} does not match package.json version ${packageJson.version}.`);
+      throw new Error(
+        `${label} version ${JSON.stringify(value)} does not match package.json version ${packageJson.version}.`,
+      );
     }
   }
 
@@ -60,7 +62,9 @@ async function main() {
   }
 
   if (releaseTag && releaseTag !== packageJson.version) {
-    throw new Error(`Release tag ${releaseTag} does not match package.json version ${packageJson.version}.`);
+    throw new Error(
+      `Release tag ${releaseTag} does not match package.json version ${packageJson.version}.`,
+    );
   }
 
   console.log(`Release metadata is in sync at version ${packageJson.version}.`);

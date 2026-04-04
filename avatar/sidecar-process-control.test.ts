@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   resetProcessGroupChildren,
@@ -51,15 +51,12 @@ function trackParent(parent: ChildProcess): void {
   });
 }
 
-function spawnBridgeHarness(params?: {
-  workerScript?: string;
-}): {
+function spawnBridgeHarness(params?: { workerScript?: string }): {
   parent: ChildProcess;
   waitForNextChildPid: (timeoutMs?: number) => Promise<number>;
   requestChildSpawn: () => void;
 } {
-  const workerScript =
-    params?.workerScript?.trim() || "setInterval(() => {}, 1000);";
+  const workerScript = params?.workerScript?.trim() || "setInterval(() => {}, 1000);";
   const bridgeHarnessScript = `
 const { spawn } = require("node:child_process");
 function spawnWorker() {
@@ -182,7 +179,9 @@ async function waitForStdoutLine(params: {
 
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error(`timed out waiting for stdout ${String(params.match)} after ${timeoutMs}ms`));
+      reject(
+        new Error(`timed out waiting for stdout ${String(params.match)} after ${timeoutMs}ms`),
+      );
     }, timeoutMs);
     timer.unref();
     stream.on("data", onData);
@@ -282,20 +281,13 @@ setInterval(() => {}, 1000);
 
     const stoppedPids = await stopMatchingProcesses({
       scriptPaths: [FIXTURE_WRAPPER_PATH],
-      commandPatterns: [
-        [
-          "job_proc_lazy_main.cjs",
-          FIXTURE_WRAPPER_PATH,
-          MATCHING_INSTANCE_ARG,
-        ],
-      ],
+      commandPatterns: [["job_proc_lazy_main.cjs", FIXTURE_WRAPPER_PATH, MATCHING_INSTANCE_ARG]],
       termTimeoutMs: 100,
       postKillDelayMs: 50,
       listProcesses: async () => [
         {
           pid: stalePid,
-          command:
-            `node /repo/tmp/job_proc_lazy_main.cjs ${FIXTURE_WRAPPER_PATH} ${MATCHING_INSTANCE_ARG}`,
+          command: `node /repo/tmp/job_proc_lazy_main.cjs ${FIXTURE_WRAPPER_PATH} ${MATCHING_INSTANCE_ARG}`,
         },
       ],
     });
@@ -331,20 +323,13 @@ setInterval(() => {}, 1000);
 
     const stoppedPids = await stopMatchingProcesses({
       scriptPaths: [FIXTURE_WRAPPER_PATH],
-      commandPatterns: [
-        [
-          "job_proc_lazy_main.cjs",
-          FIXTURE_WRAPPER_PATH,
-          MATCHING_INSTANCE_ARG,
-        ],
-      ],
+      commandPatterns: [["job_proc_lazy_main.cjs", FIXTURE_WRAPPER_PATH, MATCHING_INSTANCE_ARG]],
       termTimeoutMs: 100,
       postKillDelayMs: 50,
       listProcesses: async () => [
         {
           pid: stalePid,
-          command:
-            `node /repo/tmp/job_proc_lazy_main.cjs /repo/tmp/old-plugin-copy/avatar-agent-runner-wrapper.mjs ${NON_MATCHING_INSTANCE_ARG}`,
+          command: `node /repo/tmp/job_proc_lazy_main.cjs /repo/tmp/old-plugin-copy/avatar-agent-runner-wrapper.mjs ${NON_MATCHING_INSTANCE_ARG}`,
         },
       ],
     });

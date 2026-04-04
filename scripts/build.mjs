@@ -1,7 +1,7 @@
+import { spawn } from "node:child_process";
 import { copyFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const distAvatarDir = path.join(rootDir, "dist", "avatar");

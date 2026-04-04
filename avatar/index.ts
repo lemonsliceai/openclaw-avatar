@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { promises as dns } from "node:dns";
 import { readFile, stat, unlink, writeFile } from "node:fs/promises";
@@ -16,15 +16,12 @@ import type {
   RespondFn,
 } from "openclaw/plugin-sdk/core";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { AVATAR_ASPECT_RATIO_DEFAULT, AVATAR_ASPECT_RATIOS } from "./avatar-aspect-ratio.js";
 import {
   resetProcessGroupChildren,
   stopChildProcess,
   stopMatchingProcesses,
 } from "./sidecar-process-control.js";
-import {
-  AVATAR_ASPECT_RATIO_DEFAULT,
-  AVATAR_ASPECT_RATIOS,
-} from "./avatar-aspect-ratio.js";
 
 const AVATAR_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
 const AVATAR_ATTACHMENT_COUNT_MAX = 4;
@@ -189,9 +186,7 @@ type SidecarLogger = {
 };
 
 type GatewayRuntime = NonNullable<OpenClawPluginServiceContext["gateway"]>;
-type SidecarGatewayRuntime =
-  | GatewayRuntime
-  | { port: number; auth: { mode: "none" } };
+type SidecarGatewayRuntime = GatewayRuntime | { port: number; auth: { mode: "none" } };
 
 type LiveKitAgentDispatch = {
   agentName: string;
@@ -235,7 +230,10 @@ type AvatarSessionHandlers = {
   loadSessionStatus: (params: {
     roomName: string;
   }) => Promise<AvatarSessionRuntimeStatus | null> | AvatarSessionRuntimeStatus | null;
-  restartSidecar: (params: { config: OpenClawConfig; reason?: string }) => Promise<{ restarted: boolean }>;
+  restartSidecar: (params: {
+    config: OpenClawConfig;
+    reason?: string;
+  }) => Promise<{ restarted: boolean }>;
   stopSidecar: (params?: { reason?: string }) => Promise<{ stopped: boolean }>;
 };
 
@@ -283,10 +281,7 @@ function normalizeAvatarTimeoutSeconds(avatarTimeoutSeconds?: number): number {
     return AVATAR_TIMEOUT_DEFAULT_SECONDS;
   }
   const normalized = Math.floor(avatarTimeoutSeconds ?? AVATAR_TIMEOUT_DEFAULT_SECONDS);
-  return Math.min(
-    AVATAR_TIMEOUT_MAX_SECONDS,
-    Math.max(AVATAR_TIMEOUT_MIN_SECONDS, normalized),
-  );
+  return Math.min(AVATAR_TIMEOUT_MAX_SECONDS, Math.max(AVATAR_TIMEOUT_MIN_SECONDS, normalized));
 }
 
 function normalizeAvatarAspectRatio(aspectRatio?: string | null): AvatarAspectRatio {
@@ -322,10 +317,7 @@ type AvatarSubagentRuntime = {
 };
 
 type AvatarChatHandlers = {
-  loadHistory: (params: {
-    sessionKey: string;
-    limit?: number;
-  }) => Promise<AvatarChatHistoryResult>;
+  loadHistory: (params: { sessionKey: string; limit?: number }) => Promise<AvatarChatHistoryResult>;
   sendMessage: (params: {
     sessionKey: string;
     message: string;
@@ -586,9 +578,7 @@ function filterAvatarLogFieldsForVerbosity(
     return fields;
   }
   return Object.fromEntries(
-    allowedKeys
-      .filter((key) => fields[key] !== undefined)
-      .map((key) => [key, fields[key]]),
+    allowedKeys.filter((key) => fields[key] !== undefined).map((key) => [key, fields[key]]),
   );
 }
 
@@ -699,7 +689,8 @@ function parseAvatarDebugFieldValue(rawValue: string): unknown {
 
 function parseAvatarDebugFields(rawFields: string): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
-  const matcher = /([A-Za-z][A-Za-z0-9]*)=("(?:\\.|[^"])*"|true|false|null|-?\d+(?:\.\d+)?|[^\s]+)/g;
+  const matcher =
+    /([A-Za-z][A-Za-z0-9]*)=("(?:\\.|[^"])*"|true|false|null|-?\d+(?:\.\d+)?|[^\s]+)/g;
   for (const match of rawFields.matchAll(matcher)) {
     const [, key, rawValue] = match;
     fields[key] = parseAvatarDebugFieldValue(rawValue);
@@ -707,9 +698,7 @@ function parseAvatarDebugFields(rawFields: string): Record<string, unknown> {
   return fields;
 }
 
-type ParsedSemverIdentifier =
-  | { numeric: true; value: number }
-  | { numeric: false; value: string };
+type ParsedSemverIdentifier = { numeric: true; value: number } | { numeric: false; value: string };
 
 type ParsedSemverVersion = {
   core: [number, number, number];
@@ -768,7 +757,10 @@ function normalizeVersionString(value: unknown): string | null {
   return normalized && parseSemverVersion(normalized) ? normalized : null;
 }
 
-function compareSemverCore(left: [number, number, number], right: [number, number, number]): number {
+function compareSemverCore(
+  left: [number, number, number],
+  right: [number, number, number],
+): number {
   for (let index = 0; index < left.length; index += 1) {
     const delta = left[index] - right[index];
     if (delta !== 0) {
@@ -857,7 +849,10 @@ function normalizeIpAddress(address: string): string {
 
 function isPrivateOrLoopbackIpv4(address: string): boolean {
   const octets = address.split(".").map((octet) => Number.parseInt(octet, 10));
-  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+  ) {
     return false;
   }
   if (octets[0] === 127) {
@@ -981,9 +976,7 @@ function sanitizeAvatarSecretConfigInput(
   };
 }
 
-function sanitizeAvatarConfigValue(
-  value: unknown,
-): OpenClawConfig["avatar"] | undefined {
+function sanitizeAvatarConfigValue(value: unknown): OpenClawConfig["avatar"] | undefined {
   if (!isObjectRecord(value)) {
     return undefined;
   }
@@ -992,7 +985,8 @@ function sanitizeAvatarConfigValue(
   const lemonSlice = asObjectRecord(record.lemonSlice);
   const livekit = asObjectRecord(record.livekit);
 
-  const provider = normalizeOptionalString(record.provider) === "lemonslice" ? "lemonslice" : undefined;
+  const provider =
+    normalizeOptionalString(record.provider) === "lemonslice" ? "lemonslice" : undefined;
   const verbose = normalizeAvatarVerbose(record.verbose);
   const lemonSliceApiKey = sanitizeAvatarSecretConfigInput(lemonSlice.apiKey);
   const lemonSliceImageUrl = normalizeOptionalString(lemonSlice.imageUrl);
@@ -1003,27 +997,23 @@ function sanitizeAvatarConfigValue(
   const sanitized: Record<string, unknown> = {
     ...(provider ? { provider } : {}),
     ...(verbose !== undefined ? { verbose } : {}),
-    ...(
-      lemonSliceApiKey || lemonSliceImageUrl
-        ? {
-            lemonSlice: {
-              ...(lemonSliceApiKey !== undefined ? { apiKey: lemonSliceApiKey } : {}),
-              ...(lemonSliceImageUrl ? { imageUrl: lemonSliceImageUrl } : {}),
-            },
-          }
-        : {}
-    ),
-    ...(
-      livekitUrl || livekitApiKey || livekitApiSecret
-        ? {
-            livekit: {
-              ...(livekitUrl ? { url: livekitUrl } : {}),
-              ...(livekitApiKey !== undefined ? { apiKey: livekitApiKey } : {}),
-              ...(livekitApiSecret !== undefined ? { apiSecret: livekitApiSecret } : {}),
-            },
-          }
-        : {}
-    ),
+    ...(lemonSliceApiKey || lemonSliceImageUrl
+      ? {
+          lemonSlice: {
+            ...(lemonSliceApiKey !== undefined ? { apiKey: lemonSliceApiKey } : {}),
+            ...(lemonSliceImageUrl ? { imageUrl: lemonSliceImageUrl } : {}),
+          },
+        }
+      : {}),
+    ...(livekitUrl || livekitApiKey || livekitApiSecret
+      ? {
+          livekit: {
+            ...(livekitUrl ? { url: livekitUrl } : {}),
+            ...(livekitApiKey !== undefined ? { apiKey: livekitApiKey } : {}),
+            ...(livekitApiSecret !== undefined ? { apiSecret: livekitApiSecret } : {}),
+          },
+        }
+      : {}),
   };
 
   return Object.keys(sanitized).length > 0 ? (sanitized as OpenClawConfig["avatar"]) : undefined;
@@ -1104,9 +1094,11 @@ function resolveGatewayRuntimeFromConfig(config: OpenClawConfig): SidecarGateway
 }
 
 function getAvatarSubagentRuntime(api: OpenClawPluginApi): AvatarSubagentRuntime {
-  const candidate = (api.runtime as OpenClawPluginApi["runtime"] & {
-    subagent?: AvatarSubagentRuntime;
-  }).subagent;
+  const candidate = (
+    api.runtime as OpenClawPluginApi["runtime"] & {
+      subagent?: AvatarSubagentRuntime;
+    }
+  ).subagent;
   if (
     !candidate ||
     typeof candidate.run !== "function" ||
@@ -1117,9 +1109,7 @@ function getAvatarSubagentRuntime(api: OpenClawPluginApi): AvatarSubagentRuntime
   return candidate;
 }
 
-function getAvatarSpeechRuntime(
-  runtime: OpenClawPluginApi["runtime"],
-): AvatarSpeechRuntime | null {
+function getAvatarSpeechRuntime(runtime: OpenClawPluginApi["runtime"]): AvatarSpeechRuntime | null {
   const candidate = runtime.tts;
   if (!candidate || typeof candidate.textToSpeechTelephony !== "function") {
     return null;
@@ -1144,9 +1134,11 @@ function hasAvatarVideoAvatarSpeechRuntime(runtime: OpenClawPluginApi["runtime"]
 function getAvatarSttRuntime(
   runtime: OpenClawPluginApi["runtime"],
 ): AvatarAudioTranscriptionRuntime | null {
-  const sttRuntime = (runtime as OpenClawPluginApi["runtime"] & {
-    stt?: AvatarAudioTranscriptionRuntime;
-  }).stt;
+  const sttRuntime = (
+    runtime as OpenClawPluginApi["runtime"] & {
+      stt?: AvatarAudioTranscriptionRuntime;
+    }
+  ).stt;
   if (sttRuntime && typeof sttRuntime.transcribeAudioFile === "function") {
     return sttRuntime;
   }
@@ -1156,9 +1148,11 @@ function getAvatarSttRuntime(
 function getAvatarMediaUnderstandingRuntime(
   runtime: OpenClawPluginApi["runtime"],
 ): AvatarAudioTranscriptionRuntime | null {
-  const mediaUnderstanding = (runtime as OpenClawPluginApi["runtime"] & {
-    mediaUnderstanding?: AvatarAudioTranscriptionRuntime;
-  }).mediaUnderstanding;
+  const mediaUnderstanding = (
+    runtime as OpenClawPluginApi["runtime"] & {
+      mediaUnderstanding?: AvatarAudioTranscriptionRuntime;
+    }
+  ).mediaUnderstanding;
   if (mediaUnderstanding && typeof mediaUnderstanding.transcribeAudioFile === "function") {
     return mediaUnderstanding;
   }
@@ -1320,9 +1314,7 @@ async function transcribeAudioBufferWithRuntime(params: {
     return {
       text: "",
       provider:
-        (sttRuntime && "stt") ||
-        (mediaUnderstandingRuntime && "media-understanding") ||
-        undefined,
+        (sttRuntime && "stt") || (mediaUnderstandingRuntime && "media-understanding") || undefined,
     };
   } finally {
     if (filePath) {
@@ -1403,9 +1395,10 @@ function normalizeChatAttachmentInputs(value: unknown): AvatarChatAttachmentInpu
   }
   const attachments = value.filter((item) => item !== null && item !== undefined);
   const totalAttachmentBytes = attachments.reduce((total, item) => {
-    const content = typeof (item as { content?: unknown }).content === "string"
-      ? (item as { content: string }).content
-      : "";
+    const content =
+      typeof (item as { content?: unknown }).content === "string"
+        ? (item as { content: string }).content
+        : "";
     return total + Buffer.byteLength(content, "utf8");
   }, 0);
   if (
@@ -1464,9 +1457,7 @@ function parseChatHistoryParams(params: Record<string, unknown>): ParsedAvatarHi
   };
 }
 
-async function readChatHistoryParams(
-  request: IncomingMessage,
-): Promise<ParsedAvatarHistoryParams> {
+async function readChatHistoryParams(request: IncomingMessage): Promise<ParsedAvatarHistoryParams> {
   return parseChatHistoryParams(await readRequestJson(request));
 }
 
@@ -1496,10 +1487,7 @@ function respondGatewayError(
   respond(false, undefined, errorShape);
 }
 
-function getAvatarErrorCode(
-  error: unknown,
-  message: string,
-): "INVALID_REQUEST" | "UNAVAILABLE" {
+function getAvatarErrorCode(error: unknown, message: string): "INVALID_REQUEST" | "UNAVAILABLE" {
   if (error instanceof AvatarRequestError) {
     return error.code;
   }
@@ -1610,7 +1598,9 @@ function buildAvatarDispatchMetadata(params: {
     imageUrl: params.imageUrl,
     avatarTimeoutSeconds: normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds),
     aspectRatio: normalizeAvatarAspectRatio(params.aspectRatio),
-    interruptReplyOnNewMessage: normalizeInterruptReplyOnNewMessage(params.interruptReplyOnNewMessage),
+    interruptReplyOnNewMessage: normalizeInterruptReplyOnNewMessage(
+      params.interruptReplyOnNewMessage,
+    ),
   });
 }
 
@@ -1713,18 +1703,10 @@ function buildAvatarConfigResponse(
   if (!isAvatarAudioTranscriptionConfigured(config)) {
     missing.push("tools.media.audio");
   }
-  if (
-    runtime &&
-    !hasAvatarVideoAvatarSpeechRuntime(runtime) &&
-    !getAvatarSpeechRuntime(runtime)
-  ) {
+  if (runtime && !hasAvatarVideoAvatarSpeechRuntime(runtime) && !getAvatarSpeechRuntime(runtime)) {
     missing.push("messages.tts");
   }
-  if (
-    runtime &&
-    !getAvatarSttRuntime(runtime) &&
-    !getAvatarMediaUnderstandingRuntime(runtime)
-  ) {
+  if (runtime && !getAvatarSttRuntime(runtime) && !getAvatarMediaUnderstandingRuntime(runtime)) {
     missing.push("tools.media.audio");
   }
   const uniqueMissing = [...new Set(missing)];
@@ -1768,12 +1750,10 @@ function classifySetupVerificationError(message: string, error: unknown): Avatar
       : "";
   if (
     !status &&
-    (
-      /fetch failed|enotfound|econnreset|econnrefused|getaddrinfo|socket hang up|network error/i.test(
-        normalizedMessage,
-      ) ||
-      /^(ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ETIMEDOUT)$/i.test(normalizedErrorCode)
-    )
+    (/fetch failed|enotfound|econnreset|econnrefused|getaddrinfo|socket hang up|network error/i.test(
+      normalizedMessage,
+    ) ||
+      /^(ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ETIMEDOUT)$/i.test(normalizedErrorCode))
   ) {
     return new AvatarRequestError("UNAVAILABLE", normalizedMessage);
   }
@@ -1880,10 +1860,7 @@ async function verifyCoreSpeechSetupConfig(params: {
   }
 }
 
-function parseAvatarSetupInput(
-  params: Record<string, unknown>,
-  method: string,
-): AvatarSetupInput {
+function parseAvatarSetupInput(params: Record<string, unknown>, method: string): AvatarSetupInput {
   const readInput = (key: keyof AvatarSetupInput): string | undefined => {
     const value = params[key];
     if (value === undefined) {
@@ -2190,8 +2167,7 @@ async function runAvatarSetupCli(api: OpenClawPluginApi, options: unknown): Prom
       readCliOption(options, "lemonSliceApiKey") ??
       process.env.AVATAR_LEMONSLICE_API_KEY,
     livekitUrl: readCliOption(options, "livekitUrl") ?? process.env.AVATAR_LIVEKIT_URL,
-    livekitApiKey:
-      readCliOption(options, "livekitApiKey") ?? process.env.AVATAR_LIVEKIT_API_KEY,
+    livekitApiKey: readCliOption(options, "livekitApiKey") ?? process.env.AVATAR_LIVEKIT_API_KEY,
     livekitApiSecret:
       readCliOption(options, "livekitApiSecret") ?? process.env.AVATAR_LIVEKIT_API_SECRET,
   };
@@ -2241,7 +2217,8 @@ async function runAvatarSetupCli(api: OpenClawPluginApi, options: unknown): Prom
 }
 
 function registerAvatarSetupCli(api: OpenClawPluginApi): void {
-  api.registerCli(({ program }: { program: any }) => {
+  api.registerCli(
+    ({ program }: { program: any }) => {
       program
         .command(AVATAR_SETUP_COMMAND)
         .alias(LEGACY_AVATAR_SETUP_COMMAND)
@@ -2253,7 +2230,9 @@ function registerAvatarSetupCli(api: OpenClawPluginApi): void {
         .action(async (options: unknown) => {
           await runAvatarSetupCli(api, options);
         });
-    }, { commands: [AVATAR_SETUP_COMMAND, LEGACY_AVATAR_SETUP_COMMAND] });
+    },
+    { commands: [AVATAR_SETUP_COMMAND, LEGACY_AVATAR_SETUP_COMMAND] },
+  );
 }
 
 async function readRequestBody(request: IncomingMessage): Promise<string> {
@@ -2392,18 +2371,12 @@ async function resolveExistingFile(candidates: string[]): Promise<string | null>
 
 function moduleWebRootCandidates(): string[] {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  return [
-    path.resolve(moduleDir, "..", "web"),
-    path.resolve(moduleDir, "..", "..", "web"),
-  ];
+  return [path.resolve(moduleDir, "..", "web"), path.resolve(moduleDir, "..", "..", "web")];
 }
 
 function moduleStylesRootCandidates(): string[] {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  return [
-    path.resolve(moduleDir, "..", "styles"),
-    path.resolve(moduleDir, "..", "..", "styles"),
-  ];
+  return [path.resolve(moduleDir, "..", "styles"), path.resolve(moduleDir, "..", "..", "styles")];
 }
 
 function modulePackageJsonCandidates(): string[] {
@@ -2440,17 +2413,11 @@ function moduleReadmeCandidates(): string[] {
 
 function moduleAssetsRootCandidates(): string[] {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  return [
-    path.resolve(moduleDir, "..", "assets"),
-    path.resolve(moduleDir, "..", "..", "assets"),
-  ];
+  return [path.resolve(moduleDir, "..", "assets"), path.resolve(moduleDir, "..", "..", "assets")];
 }
 
 function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function escapeHtmlAttribute(value: string): string {
@@ -2522,10 +2489,8 @@ function renderMarkdownInline(value: string): string {
   });
   rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   rendered = rendered.replace(/(^|[\s(])\*([^*]+)\*(?=[\s).,!?]|$)/g, "$1<em>$2</em>");
-  rendered = rendered.replace(
-    /(^|[\s(])(https?:\/\/[^\s<]*[^\s<).,!?])/g,
-    '$1<a href="$2">$2</a>',
-  );
+  rendered = rendered.replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<).,!?])/g, '$1<a href="$2">$2</a>');
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional null-byte sentinels for HTML token replacement
   return rendered.replace(/\u0000HTML(\d+)\u0000/g, (_match, index: string) => {
     return htmlTokens[Number(index)] ?? "";
   });
@@ -2587,9 +2552,7 @@ function renderMarkdownList(lines: string[], startIndex: number, indentLength: n
   const listTag = ordered ? "ol" : "ul";
   const startNumber = startItem?.startNumber ?? null;
   const listStartAttribute =
-    ordered && startNumber !== null && startNumber !== 1
-      ? ` start="${startNumber}"`
-      : "";
+    ordered && startNumber !== null && startNumber !== 1 ? ` start="${startNumber}"` : "";
 
   while (index < lines.length) {
     const itemMatch = matchMarkdownListItem(lines[index] ?? "");
@@ -2758,7 +2721,11 @@ function renderMarkdownToHtml(markdown: string): string {
       continue;
     }
 
-    if (line.includes("|") && index + 1 < lines.length && isMarkdownTableSeparator(lines[index + 1] ?? "")) {
+    if (
+      line.includes("|") &&
+      index + 1 < lines.length &&
+      isMarkdownTableSeparator(lines[index + 1] ?? "")
+    ) {
       const headerCells = parseMarkdownTableRow(line);
       index += 2;
       const bodyRows: string[] = [];
@@ -2962,7 +2929,9 @@ function registerAvatarHttpRoutes(
       return cachedPackageVersion;
     }
     try {
-      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
+        version?: unknown;
+      };
       cachedPackageVersion =
         typeof packageJson.version === "string" && packageJson.version.trim()
           ? packageJson.version.trim()
@@ -3037,7 +3006,9 @@ function registerAvatarHttpRoutes(
     }
 
     try {
-      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
+        version?: unknown;
+      };
       cachedHostOpenClawVersion = normalizeVersionString(packageJson.version);
       return cachedHostOpenClawVersion;
     } catch {
@@ -3125,7 +3096,9 @@ function registerAvatarHttpRoutes(
     return assetsRootPath;
   };
 
-  const readAssetBuffer = async (relativePath: string): Promise<{ contentType: string; body: Buffer }> => {
+  const readAssetBuffer = async (
+    relativePath: string,
+  ): Promise<{ contentType: string; body: Buffer }> => {
     const normalized = path.posix.normalize(`/${relativePath}`).replace(/^\/+/, "");
     if (!normalized || normalized.startsWith("..")) {
       throw new Error("invalid asset path");
@@ -3229,404 +3202,406 @@ function registerAvatarHttpRoutes(
   };
 
   const apiHandler = async (req: IncomingMessage, res: ServerResponse) => {
-      const pathname = parseRequestPathname(req.url);
-      if (!pathname) {
-        return false;
-      }
-      const normalizedPath = normalizeAvatarPluginRequestPath(
-        pathname,
-        `${AVATAR_PLUGIN_ROUTE_BASE}/api`,
-      );
-      if (!normalizedPath.startsWith(`${AVATAR_PLUGIN_ROUTE_BASE}/api`)) {
-        return false;
-      }
+    const pathname = parseRequestPathname(req.url);
+    if (!pathname) {
+      return false;
+    }
+    const normalizedPath = normalizeAvatarPluginRequestPath(
+      pathname,
+      `${AVATAR_PLUGIN_ROUTE_BASE}/api`,
+    );
+    if (!normalizedPath.startsWith(`${AVATAR_PLUGIN_ROUTE_BASE}/api`)) {
+      return false;
+    }
 
-      const method = (req.method ?? "GET").toUpperCase();
+    const method = (req.method ?? "GET").toUpperCase();
 
-      try {
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/setup`) {
-          if (method === "GET") {
-            const cfg = api.runtime.config.loadConfig();
-            sendHttpResponse(
-              res,
-              asJsonResponse({
-                success: true,
-                setup: buildAvatarConfigResponse(cfg, api.runtime),
-              }),
-            );
-            return true;
-          }
-          if (method === "POST") {
-            const params = await readRequestJson(req);
-            const setupInput = parseAvatarSetupInput(params, "avatar.setup.save");
-            const currentConfig = api.runtime.config.loadConfig();
-            const nextConfig = applyAvatarSetupToConfig(currentConfig, setupInput);
-            if (shouldVerifyAvatarSetupConfig(currentConfig, nextConfig)) {
-              await verifyAvatarSetupConfig({
-                logger,
-                runtime: api.runtime,
-                config: nextConfig,
-              });
-            }
-            await writeConfigFile(api, nextConfig);
-            sendHttpResponse(
-              res,
-              asJsonResponse({
-                success: true,
-                setup: buildAvatarConfigResponse(nextConfig, api.runtime),
-              }),
-            );
-            return true;
-          }
-          sendHttpResponse(
-            res,
-            asJsonResponse(
-              {
-                success: false,
-                error: { code: "INVALID_REQUEST", message: "method not allowed" },
-              },
-              405,
-            ),
-          );
-          return true;
-        }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session`) {
-          if (method === "POST") {
-            const params = await readRequestJson(req);
-            if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
-              throw new Error("invalid avatar.session.create params");
-            }
-            if (params.avatarImageUrl !== undefined && typeof params.avatarImageUrl !== "string") {
-              throw new Error("invalid avatar.session.create params");
-            }
-            if (
-              params.avatarTimeoutSeconds !== undefined &&
-              (typeof params.avatarTimeoutSeconds !== "number" ||
-                !Number.isFinite(params.avatarTimeoutSeconds))
-            ) {
-              throw new Error("invalid avatar.session.create params");
-            }
-            if (params.aspectRatio !== undefined && typeof params.aspectRatio !== "string") {
-              throw new Error("invalid avatar.session.create params");
-            }
-            if (
-              params.interruptReplyOnNewMessage !== undefined &&
-              typeof params.interruptReplyOnNewMessage !== "boolean"
-            ) {
-              throw new Error("invalid avatar.session.create params");
-            }
-            const cfg = api.runtime.config.loadConfig();
-            const sessionKey =
-              (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
-              cfg.session?.mainKey ||
-              "main";
-            const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
-              params.interruptReplyOnNewMessage,
-            );
-            const avatarImageUrl =
-              typeof params.avatarImageUrl === "string" ? params.avatarImageUrl.trim() : undefined;
-            const avatarTimeoutSeconds =
-              typeof params.avatarTimeoutSeconds === "number"
-                ? normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds)
-                : undefined;
-            const aspectRatio =
-              typeof params.aspectRatio === "string"
-                ? normalizeAvatarAspectRatio(params.aspectRatio)
-                : undefined;
-            logAvatarEvent(logger, "info", "http.session.create.requested", {
-              sessionKey,
-              avatarImageUrlProvided: Boolean(avatarImageUrl),
-              avatarTimeoutSeconds: avatarTimeoutSeconds ?? AVATAR_TIMEOUT_DEFAULT_SECONDS,
-              aspectRatio: aspectRatio ?? AVATAR_ASPECT_RATIO_DEFAULT,
-              interruptReplyOnNewMessage,
-            });
-            const session = await handlers.createSession({
-              config: cfg,
-              sessionKey,
-              avatarImageUrl,
-              avatarTimeoutSeconds,
-              aspectRatio,
-              interruptReplyOnNewMessage,
-            });
-            logAvatarEvent(logger, "info", "http.session.create.completed", {
-              sessionKey: session.sessionKey,
-              roomName: session.roomName,
-              chatSessionKey: session.chatSessionKey,
-            });
-            sendHttpResponse(
-              res,
-              asJsonResponse({
-                success: true,
-                session,
-              }),
-            );
-            return true;
-          }
-          sendHttpResponse(
-            res,
-            asJsonResponse(
-              {
-                success: false,
-                error: { code: "INVALID_REQUEST", message: "method not allowed" },
-              },
-              405,
-            ),
-          );
-          return true;
-        }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session/status` && method === "GET") {
-          const requestUrl = parseRequestUrl(req.url);
-          const roomName = normalizeOptionalString(requestUrl?.searchParams.get("roomName"));
-          if (!roomName) {
-            throw new Error("roomName is required");
-          }
-          logAvatarEvent(logger, "info", "http.session.status.requested", {
-            roomName,
-          });
-          const status = await handlers.loadSessionStatus({ roomName });
-          logAvatarEvent(logger, "info", "http.session.status.completed", {
-            roomName,
-            found: Boolean(status),
-            updatedAt: status?.updatedAt,
-          });
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              status,
-            }),
-          );
-          return true;
-        }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session/stop` && method === "POST") {
-          const params = await readRequestJson(req);
-          if (typeof params.roomName !== "string") {
-            throw new Error("invalid avatar.session.stop params");
-          }
-          logAvatarEvent(logger, "info", "http.session.stop.requested", {
-            roomName: params.roomName,
-          });
-          const result = await handlers.stopSession({
-            roomName: params.roomName,
-          });
-          logAvatarEvent(logger, "info", "http.session.stop.completed", {
-            roomName: result.roomName,
-          });
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              ...result,
-            }),
-          );
-          return true;
-        }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/sidecar/restart` && method === "POST") {
+    try {
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/setup`) {
+        if (method === "GET") {
           const cfg = api.runtime.config.loadConfig();
-          logAvatarEvent(logger, "info", "http.sidecar.restart.requested");
-          const result = await handlers.restartSidecar({
-            config: cfg,
-            reason: "http-sidecar-restart",
-          });
-          logAvatarEvent(logger, "info", "http.sidecar.restart.completed", {
-            restarted: result.restarted,
-          });
           sendHttpResponse(
             res,
             asJsonResponse({
               success: true,
-              ...result,
+              setup: buildAvatarConfigResponse(cfg, api.runtime),
             }),
           );
           return true;
         }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/sidecar/stop` && method === "POST") {
-          logAvatarEvent(logger, "info", "http.sidecar.stop.requested");
-          const result = await handlers.stopSidecar({
-            reason: "http-sidecar-stop",
-          });
-          logAvatarEvent(logger, "info", "http.sidecar.stop.completed", {
-            stopped: result.stopped,
-          });
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              ...result,
-            }),
-          );
-          return true;
-        }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/chat/history` && method === "POST") {
-          const params = await readChatHistoryParams(req);
-          logAvatarEvent(logger, "info", "http.chat.history.requested", {
-            sessionKey: params.sessionKey,
-            limit: params.limit ?? 30,
-          });
-          const result = await handlers.loadHistory(params);
-          logAvatarEvent(logger, "info", "http.chat.history.completed", {
-            sessionKey: params.sessionKey,
-            messageCount: Array.isArray(result.messages) ? result.messages.length : 0,
-          });
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              ...result,
-            }),
-          );
-          return true;
-        }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/chat/send` && method === "POST") {
-          const params = await readChatSendParams(req);
-          logAvatarEvent(logger, "info", "http.chat.send.requested", {
-            sessionKey: params.sessionKey,
-            messageChars: params.message.length,
-            attachmentCount: params.attachments?.length ?? 0,
-            ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
-          });
-          const result = await handlers.sendMessage(params);
-          logAvatarEvent(logger, "info", "http.chat.send.completed", {
-            sessionKey: params.sessionKey,
-            messageChars: params.message.length,
-            attachmentCount: params.attachments?.length ?? 0,
-            ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
-          });
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              response: result,
-            }),
-          );
-          return true;
-        }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/transcribe` && method === "POST") {
+        if (method === "POST") {
           const params = await readRequestJson(req);
-          if (typeof params.data !== "string") {
-            throw new Error("invalid avatar.audio.transcribe params");
+          const setupInput = parseAvatarSetupInput(params, "avatar.setup.save");
+          const currentConfig = api.runtime.config.loadConfig();
+          const nextConfig = applyAvatarSetupToConfig(currentConfig, setupInput);
+          if (shouldVerifyAvatarSetupConfig(currentConfig, nextConfig)) {
+            await verifyAvatarSetupConfig({
+              logger,
+              runtime: api.runtime,
+              config: nextConfig,
+            });
           }
-          if (params.mimeType !== undefined && typeof params.mimeType !== "string") {
-            throw new Error("invalid avatar.audio.transcribe params");
-          }
-          if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
-            throw new Error("invalid avatar.audio.transcribe params");
-          }
-          if (params.captureSource !== undefined && typeof params.captureSource !== "string") {
-            throw new Error("invalid avatar.audio.transcribe params");
-          }
-          if (params.roomTrackMuted !== undefined && typeof params.roomTrackMuted !== "boolean") {
-            throw new Error("invalid avatar.audio.transcribe params");
-          }
-          if (params.captureError !== undefined && typeof params.captureError !== "string") {
-            throw new Error("invalid avatar.audio.transcribe params");
-          }
-          const cfg = api.runtime.config.loadConfig();
-          const base64Length = params.data.length;
-          logAvatarEvent(logger, "info", "http.transcribe.requested", {
-            mimeType: params.mimeType ?? "application/octet-stream",
-            base64Chars: base64Length,
-            ...(typeof params.sessionKey === "string" && params.sessionKey.trim()
-              ? { sessionKey: params.sessionKey.trim() }
-              : {}),
-            ...(typeof params.captureSource === "string" && params.captureSource.trim()
-              ? { captureSource: params.captureSource.trim() }
-              : {}),
-            ...(params.roomTrackMuted === true ? { roomTrackMuted: true } : {}),
-            ...(typeof params.captureError === "string" && params.captureError.trim()
-              ? { captureError: params.captureError.trim() }
-              : {}),
-          });
-          const result = await transcribeAvatarAudio({
-            runtime: api.runtime,
-            logger,
-            cfg,
-            base64Data: params.data,
-            mimeType: params.mimeType,
-            sessionKey: params.sessionKey,
-            captureSource: params.captureSource,
-            roomTrackMuted: params.roomTrackMuted,
-            captureError: params.captureError,
-          });
-          logAvatarEvent(logger, "info", "http.transcribe.completed", {
-            mimeType: params.mimeType ?? "application/octet-stream",
-            base64Chars: base64Length,
-            transcriptChars: result.transcript.length,
-          });
+          await writeConfigFile(api, nextConfig);
           sendHttpResponse(
             res,
             asJsonResponse({
               success: true,
-              ...result,
+              setup: buildAvatarConfigResponse(nextConfig, api.runtime),
             }),
           );
           return true;
         }
-
-        if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/synthesize` && method === "POST") {
-          const params = await readRequestJson(req);
-          if (typeof params.text !== "string") {
-            throw new Error("invalid avatar.audio.synthesize params");
-          }
-          const cfg = api.runtime.config.loadConfig();
-          logAvatarEvent(logger, "info", "http.synthesize.requested", {
-            textChars: params.text.length,
-          });
-          const result = await synthesizeAvatarAudio({
-            runtime: api.runtime,
-            logger,
-            cfg,
-            text: params.text,
-          });
-          logAvatarEvent(logger, "info", "http.synthesize.completed", {
-            textChars: params.text.length,
-            sampleRate: result.sampleRate,
-            provider: result.provider ?? "runtime",
-          });
-          setNoStoreHeaders(res);
-          sendHttpResponse(
-            res,
-            asJsonResponse({
-              success: true,
-              ...result,
-            }),
-          );
-          return true;
-        }
-
-        sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
-        return true;
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Avatar plugin page request failed";
-        const code = getAvatarErrorCode(error, message);
-        logAvatarEvent(logger, code === "INVALID_REQUEST" ? "warn" : "error", "http.request.failed", {
-          method,
-          path: normalizedPath,
-          code,
-          error: message,
-        });
         sendHttpResponse(
           res,
           asJsonResponse(
             {
               success: false,
-              error: { code, message },
+              error: { code: "INVALID_REQUEST", message: "method not allowed" },
             },
-            code === "INVALID_REQUEST" ? 400 : 503,
+            405,
           ),
         );
         return true;
       }
-    };
+
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session`) {
+        if (method === "POST") {
+          const params = await readRequestJson(req);
+          if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
+            throw new Error("invalid avatar.session.create params");
+          }
+          if (params.avatarImageUrl !== undefined && typeof params.avatarImageUrl !== "string") {
+            throw new Error("invalid avatar.session.create params");
+          }
+          if (
+            params.avatarTimeoutSeconds !== undefined &&
+            (typeof params.avatarTimeoutSeconds !== "number" ||
+              !Number.isFinite(params.avatarTimeoutSeconds))
+          ) {
+            throw new Error("invalid avatar.session.create params");
+          }
+          if (params.aspectRatio !== undefined && typeof params.aspectRatio !== "string") {
+            throw new Error("invalid avatar.session.create params");
+          }
+          if (
+            params.interruptReplyOnNewMessage !== undefined &&
+            typeof params.interruptReplyOnNewMessage !== "boolean"
+          ) {
+            throw new Error("invalid avatar.session.create params");
+          }
+          const cfg = api.runtime.config.loadConfig();
+          const sessionKey =
+            (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
+            cfg.session?.mainKey ||
+            "main";
+          const interruptReplyOnNewMessage = normalizeInterruptReplyOnNewMessage(
+            params.interruptReplyOnNewMessage,
+          );
+          const avatarImageUrl =
+            typeof params.avatarImageUrl === "string" ? params.avatarImageUrl.trim() : undefined;
+          const avatarTimeoutSeconds =
+            typeof params.avatarTimeoutSeconds === "number"
+              ? normalizeAvatarTimeoutSeconds(params.avatarTimeoutSeconds)
+              : undefined;
+          const aspectRatio =
+            typeof params.aspectRatio === "string"
+              ? normalizeAvatarAspectRatio(params.aspectRatio)
+              : undefined;
+          logAvatarEvent(logger, "info", "http.session.create.requested", {
+            sessionKey,
+            avatarImageUrlProvided: Boolean(avatarImageUrl),
+            avatarTimeoutSeconds: avatarTimeoutSeconds ?? AVATAR_TIMEOUT_DEFAULT_SECONDS,
+            aspectRatio: aspectRatio ?? AVATAR_ASPECT_RATIO_DEFAULT,
+            interruptReplyOnNewMessage,
+          });
+          const session = await handlers.createSession({
+            config: cfg,
+            sessionKey,
+            avatarImageUrl,
+            avatarTimeoutSeconds,
+            aspectRatio,
+            interruptReplyOnNewMessage,
+          });
+          logAvatarEvent(logger, "info", "http.session.create.completed", {
+            sessionKey: session.sessionKey,
+            roomName: session.roomName,
+            chatSessionKey: session.chatSessionKey,
+          });
+          sendHttpResponse(
+            res,
+            asJsonResponse({
+              success: true,
+              session,
+            }),
+          );
+          return true;
+        }
+        sendHttpResponse(
+          res,
+          asJsonResponse(
+            {
+              success: false,
+              error: { code: "INVALID_REQUEST", message: "method not allowed" },
+            },
+            405,
+          ),
+        );
+        return true;
+      }
+
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session/status` && method === "GET") {
+        const requestUrl = parseRequestUrl(req.url);
+        const roomName = normalizeOptionalString(requestUrl?.searchParams.get("roomName"));
+        if (!roomName) {
+          throw new Error("roomName is required");
+        }
+        logAvatarEvent(logger, "info", "http.session.status.requested", {
+          roomName,
+        });
+        const status = await handlers.loadSessionStatus({ roomName });
+        logAvatarEvent(logger, "info", "http.session.status.completed", {
+          roomName,
+          found: Boolean(status),
+          updatedAt: status?.updatedAt,
+        });
+        sendHttpResponse(
+          res,
+          asJsonResponse({
+            success: true,
+            status,
+          }),
+        );
+        return true;
+      }
+
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/session/stop` && method === "POST") {
+        const params = await readRequestJson(req);
+        if (typeof params.roomName !== "string") {
+          throw new Error("invalid avatar.session.stop params");
+        }
+        logAvatarEvent(logger, "info", "http.session.stop.requested", {
+          roomName: params.roomName,
+        });
+        const result = await handlers.stopSession({
+          roomName: params.roomName,
+        });
+        logAvatarEvent(logger, "info", "http.session.stop.completed", {
+          roomName: result.roomName,
+        });
+        sendHttpResponse(
+          res,
+          asJsonResponse({
+            success: true,
+            ...result,
+          }),
+        );
+        return true;
+      }
+
+      if (
+        normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/sidecar/restart` &&
+        method === "POST"
+      ) {
+        const cfg = api.runtime.config.loadConfig();
+        logAvatarEvent(logger, "info", "http.sidecar.restart.requested");
+        const result = await handlers.restartSidecar({
+          config: cfg,
+          reason: "http-sidecar-restart",
+        });
+        logAvatarEvent(logger, "info", "http.sidecar.restart.completed", {
+          restarted: result.restarted,
+        });
+        sendHttpResponse(
+          res,
+          asJsonResponse({
+            success: true,
+            ...result,
+          }),
+        );
+        return true;
+      }
+
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/sidecar/stop` && method === "POST") {
+        logAvatarEvent(logger, "info", "http.sidecar.stop.requested");
+        const result = await handlers.stopSidecar({
+          reason: "http-sidecar-stop",
+        });
+        logAvatarEvent(logger, "info", "http.sidecar.stop.completed", {
+          stopped: result.stopped,
+        });
+        sendHttpResponse(
+          res,
+          asJsonResponse({
+            success: true,
+            ...result,
+          }),
+        );
+        return true;
+      }
+
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/chat/history` && method === "POST") {
+        const params = await readChatHistoryParams(req);
+        logAvatarEvent(logger, "info", "http.chat.history.requested", {
+          sessionKey: params.sessionKey,
+          limit: params.limit ?? 30,
+        });
+        const result = await handlers.loadHistory(params);
+        logAvatarEvent(logger, "info", "http.chat.history.completed", {
+          sessionKey: params.sessionKey,
+          messageCount: Array.isArray(result.messages) ? result.messages.length : 0,
+        });
+        sendHttpResponse(
+          res,
+          asJsonResponse({
+            success: true,
+            ...result,
+          }),
+        );
+        return true;
+      }
+
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/chat/send` && method === "POST") {
+        const params = await readChatSendParams(req);
+        logAvatarEvent(logger, "info", "http.chat.send.requested", {
+          sessionKey: params.sessionKey,
+          messageChars: params.message.length,
+          attachmentCount: params.attachments?.length ?? 0,
+          ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
+        });
+        const result = await handlers.sendMessage(params);
+        logAvatarEvent(logger, "info", "http.chat.send.completed", {
+          sessionKey: params.sessionKey,
+          messageChars: params.message.length,
+          attachmentCount: params.attachments?.length ?? 0,
+          ...summarizeIdempotencyKeyForLog(params.idempotencyKey),
+        });
+        sendHttpResponse(
+          res,
+          asJsonResponse({
+            success: true,
+            response: result,
+          }),
+        );
+        return true;
+      }
+
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/transcribe` && method === "POST") {
+        const params = await readRequestJson(req);
+        if (typeof params.data !== "string") {
+          throw new Error("invalid avatar.audio.transcribe params");
+        }
+        if (params.mimeType !== undefined && typeof params.mimeType !== "string") {
+          throw new Error("invalid avatar.audio.transcribe params");
+        }
+        if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
+          throw new Error("invalid avatar.audio.transcribe params");
+        }
+        if (params.captureSource !== undefined && typeof params.captureSource !== "string") {
+          throw new Error("invalid avatar.audio.transcribe params");
+        }
+        if (params.roomTrackMuted !== undefined && typeof params.roomTrackMuted !== "boolean") {
+          throw new Error("invalid avatar.audio.transcribe params");
+        }
+        if (params.captureError !== undefined && typeof params.captureError !== "string") {
+          throw new Error("invalid avatar.audio.transcribe params");
+        }
+        const cfg = api.runtime.config.loadConfig();
+        const base64Length = params.data.length;
+        logAvatarEvent(logger, "info", "http.transcribe.requested", {
+          mimeType: params.mimeType ?? "application/octet-stream",
+          base64Chars: base64Length,
+          ...(typeof params.sessionKey === "string" && params.sessionKey.trim()
+            ? { sessionKey: params.sessionKey.trim() }
+            : {}),
+          ...(typeof params.captureSource === "string" && params.captureSource.trim()
+            ? { captureSource: params.captureSource.trim() }
+            : {}),
+          ...(params.roomTrackMuted === true ? { roomTrackMuted: true } : {}),
+          ...(typeof params.captureError === "string" && params.captureError.trim()
+            ? { captureError: params.captureError.trim() }
+            : {}),
+        });
+        const result = await transcribeAvatarAudio({
+          runtime: api.runtime,
+          logger,
+          cfg,
+          base64Data: params.data,
+          mimeType: params.mimeType,
+          sessionKey: params.sessionKey,
+          captureSource: params.captureSource,
+          roomTrackMuted: params.roomTrackMuted,
+          captureError: params.captureError,
+        });
+        logAvatarEvent(logger, "info", "http.transcribe.completed", {
+          mimeType: params.mimeType ?? "application/octet-stream",
+          base64Chars: base64Length,
+          transcriptChars: result.transcript.length,
+        });
+        sendHttpResponse(
+          res,
+          asJsonResponse({
+            success: true,
+            ...result,
+          }),
+        );
+        return true;
+      }
+
+      if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/api/synthesize` && method === "POST") {
+        const params = await readRequestJson(req);
+        if (typeof params.text !== "string") {
+          throw new Error("invalid avatar.audio.synthesize params");
+        }
+        const cfg = api.runtime.config.loadConfig();
+        logAvatarEvent(logger, "info", "http.synthesize.requested", {
+          textChars: params.text.length,
+        });
+        const result = await synthesizeAvatarAudio({
+          runtime: api.runtime,
+          logger,
+          cfg,
+          text: params.text,
+        });
+        logAvatarEvent(logger, "info", "http.synthesize.completed", {
+          textChars: params.text.length,
+          sampleRate: result.sampleRate,
+          provider: result.provider ?? "runtime",
+        });
+        setNoStoreHeaders(res);
+        sendHttpResponse(
+          res,
+          asJsonResponse({
+            success: true,
+            ...result,
+          }),
+        );
+        return true;
+      }
+
+      sendHttpResponse(res, asTextResponse("Not Found", "text/plain; charset=utf-8", 404));
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Avatar plugin page request failed";
+      const code = getAvatarErrorCode(error, message);
+      logAvatarEvent(logger, code === "INVALID_REQUEST" ? "warn" : "error", "http.request.failed", {
+        method,
+        path: normalizedPath,
+        code,
+        error: message,
+      });
+      sendHttpResponse(
+        res,
+        asJsonResponse(
+          {
+            success: false,
+            error: { code, message },
+          },
+          code === "INVALID_REQUEST" ? 400 : 503,
+        ),
+      );
+      return true;
+    }
+  };
 
   for (const routePath of [
     `${AVATAR_PLUGIN_ROUTE_BASE}/api`,
@@ -3652,14 +3627,11 @@ function registerAvatarHttpRoutes(
           normalizedPath.slice(`${AVATAR_PLUGIN_ROUTE_BASE}/assets/`.length),
         );
         const asset = await readAssetBuffer(assetPath);
-        sendHttpResponse(
-          res,
-          {
-            status: 200,
-            headers: { "content-type": asset.contentType },
-            body: asset.body,
-          },
-        );
+        sendHttpResponse(res, {
+          status: 200,
+          headers: { "content-type": asset.contentType },
+          body: asset.body,
+        });
         return true;
       }
       if (normalizedPath.startsWith(`${AVATAR_PLUGIN_ROUTE_BASE}/styles/`)) {
@@ -3674,7 +3646,9 @@ function registerAvatarHttpRoutes(
         const html = await readRenderedHtmlAsset("index.html");
         sendHttpResponse(
           res,
-          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+          withNoStoreHeaders(
+            withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")),
+          ),
         );
         return true;
       }
@@ -3682,7 +3656,9 @@ function registerAvatarHttpRoutes(
         const html = await readRenderedReadmePage();
         sendHttpResponse(
           res,
-          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+          withNoStoreHeaders(
+            withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")),
+          ),
         );
         return true;
       }
@@ -3693,12 +3669,14 @@ function registerAvatarHttpRoutes(
         const html = await readRenderedHtmlAsset("settings.html");
         sendHttpResponse(
           res,
-          withNoStoreHeaders(withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8"))),
+          withNoStoreHeaders(
+            withBrowserShellHeaders(asTextResponse(html, "text/html; charset=utf-8")),
+          ),
         );
         return true;
       }
       if (normalizedPath === `${AVATAR_PLUGIN_ROUTE_BASE}/app.js`) {
-        const script = await readWebAsset("app.js");
+        const script = await readWebAsset("dist/app.js");
         sendHttpResponse(
           res,
           withNoStoreHeaders(asTextResponse(script, "application/javascript; charset=utf-8")),
@@ -3762,38 +3740,38 @@ function registerAvatarHttpRoutes(
   }
 
   const bootstrapHandler = async (req: IncomingMessage, res: ServerResponse) => {
-      const pathname = parseRequestPathname(req.url);
-      if (!pathname) {
-        return false;
-      }
-      const normalizedPath = normalizeAvatarPluginRequestPath(
-        pathname,
-        `${AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`,
+    const pathname = parseRequestPathname(req.url);
+    if (!pathname) {
+      return false;
+    }
+    const normalizedPath = normalizeAvatarPluginRequestPath(
+      pathname,
+      `${AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`,
+    );
+    if (normalizedPath !== `${AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`) {
+      return false;
+    }
+    setNoStoreHeaders(res);
+    try {
+      const config = api.runtime.config.loadConfig();
+      sendHttpResponse(res, asJsonResponse(await buildBrowserBootstrapPayload(config)));
+      return true;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "failed to load Avatar browser bootstrap";
+      sendHttpResponse(
+        res,
+        asJsonResponse(
+          {
+            success: false,
+            error: { code: "UNAVAILABLE", message },
+          },
+          503,
+        ),
       );
-      if (normalizedPath !== `${AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`) {
-        return false;
-      }
-      setNoStoreHeaders(res);
-      try {
-        const config = api.runtime.config.loadConfig();
-        sendHttpResponse(res, asJsonResponse(await buildBrowserBootstrapPayload(config)));
-        return true;
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "failed to load Avatar browser bootstrap";
-        sendHttpResponse(
-          res,
-          asJsonResponse(
-            {
-              success: false,
-              error: { code: "UNAVAILABLE", message },
-            },
-            503,
-          ),
-        );
-        return true;
-      }
-    };
+      return true;
+    }
+  };
 
   for (const routePath of [
     `${AVATAR_PLUGIN_ROUTE_BASE}/bootstrap`,
@@ -3907,7 +3885,9 @@ function collectRunnerCandidates(params: { entryScript?: string }): string[] {
       pushCandidate(path.join(current, "avatar-agent-runner.js"));
       pushCandidate(path.join(current, "dist", "avatar-agent-runner.js"));
       pushCandidate(path.join(current, "openclaw", "dist", "avatar-agent-runner.js"));
-      pushCandidate(path.join(current, "node_modules", "openclaw", "dist", "avatar-agent-runner.js"));
+      pushCandidate(
+        path.join(current, "node_modules", "openclaw", "dist", "avatar-agent-runner.js"),
+      );
       const parent = path.dirname(current);
       if (parent === current) {
         break;
@@ -4001,9 +3981,7 @@ async function createAvatarSession(params: {
     path: "avatar.livekit.apiSecret",
   });
   if (!avatarImageUrl) {
-    throw new Error(
-      "invalid avatar.session.create params: avatarImageUrl is required",
-    );
+    throw new Error("invalid avatar.session.create params: avatarImageUrl is required");
   }
   if (!livekitUrl || !apiKey || !apiSecret) {
     throw new Error("Avatar session creation is unavailable: missing LiveKit credentials");
@@ -4050,9 +4028,7 @@ async function createAvatarSession(params: {
   };
 }
 
-async function stopAvatarSession(params: {
-  roomName: string;
-}): Promise<AvatarSessionStopResult> {
+async function stopAvatarSession(params: { roomName: string }): Promise<AvatarSessionStopResult> {
   const roomName = validateAvatarRoomName(params.roomName);
   return {
     stopped: true,
@@ -4079,12 +4055,7 @@ function resolveAvatarAgentCredentials(config: OpenClawConfig): SidecarCredentia
     value: effective.avatar?.livekit?.apiSecret,
     path: "avatar.livekit.apiSecret",
   });
-  if (
-    !lemonSliceApiKey ||
-    !livekitUrl ||
-    !livekitApiKey ||
-    !livekitApiSecret
-  ) {
+  if (!lemonSliceApiKey || !livekitUrl || !livekitApiKey || !livekitApiSecret) {
     return null;
   }
 
@@ -4275,7 +4246,9 @@ async function observeAvatarSessionState(params: {
   if (!credentials) {
     return;
   }
-  const maxAttempts = Number.isFinite(params.maxAttempts) ? Math.max(1, params.maxAttempts ?? 0) : 12;
+  const maxAttempts = Number.isFinite(params.maxAttempts)
+    ? Math.max(1, params.maxAttempts ?? 0)
+    : 12;
   const delayMs = Number.isFinite(params.delayMs) ? Math.max(100, params.delayMs ?? 0) : 1_000;
   try {
     const { AgentDispatchClient, RoomServiceClient } = await import("livekit-server-sdk");
@@ -4302,10 +4275,13 @@ async function observeAvatarSessionState(params: {
       ]);
 
       const rooms = roomsResult.status === "fulfilled" ? roomsResult.value : [];
-      const participants = participantsResult.status === "fulfilled" ? participantsResult.value : [];
+      const participants =
+        participantsResult.status === "fulfilled" ? participantsResult.value : [];
       const dispatch = dispatchResult.status === "fulfilled" ? dispatchResult.value : undefined;
       const participantIdentities = participants
-        .map((participant) => (typeof participant?.identity === "string" ? participant.identity : ""))
+        .map((participant) =>
+          typeof participant?.identity === "string" ? participant.identity : "",
+        )
         .filter(Boolean);
       const browserParticipantJoined = participantIdentities.includes(params.participantIdentity);
       const dispatchJobs = Array.isArray(dispatch?.state?.jobs) ? dispatch.state.jobs : [];
@@ -4315,18 +4291,26 @@ async function observeAvatarSessionState(params: {
       const dispatchJobStatuses = dispatchJobs.map((job) => ({
         id: typeof job?.id === "string" ? job.id : "",
         status: typeof job?.state?.status === "number" ? job.state.status : undefined,
-        error: typeof job?.state?.error === "string" && job.state.error.trim() ? job.state.error : undefined,
+        error:
+          typeof job?.state?.error === "string" && job.state.error.trim()
+            ? job.state.error
+            : undefined,
         startedAt:
           typeof job?.state?.startedAt === "bigint" ? job.state.startedAt.toString() : undefined,
         endedAt: typeof job?.state?.endedAt === "bigint" ? job.state.endedAt.toString() : undefined,
       }));
-      const dispatchJobStatusSummary = dispatchJobStatuses.reduce<Record<string, number>>((summary, job) => {
-        const statusKey = job.status === undefined ? "unknown" : String(job.status);
-        summary[statusKey] = (summary[statusKey] ?? 0) + 1;
-        return summary;
-      }, {});
+      const dispatchJobStatusSummary = dispatchJobStatuses.reduce<Record<string, number>>(
+        (summary, job) => {
+          const statusKey = job.status === undefined ? "unknown" : String(job.status);
+          summary[statusKey] = (summary[statusKey] ?? 0) + 1;
+          return summary;
+        },
+        {},
+      );
       const deletedAt =
-        typeof dispatch?.state?.deletedAt === "bigint" ? dispatch.state.deletedAt.toString() : undefined;
+        typeof dispatch?.state?.deletedAt === "bigint"
+          ? dispatch.state.deletedAt.toString()
+          : undefined;
 
       logAvatarEvent(params.logger, "info", "livekit.session.observe", {
         attempt,
@@ -4432,9 +4416,13 @@ async function createAvatarAgentDispatch(params: {
       credentials.livekitApiKey,
       credentials.livekitApiSecret,
     );
-    const dispatch = await client.createDispatch(params.session.roomName, params.session.agentName, {
-      metadata,
-    });
+    const dispatch = await client.createDispatch(
+      params.session.roomName,
+      params.session.agentName,
+      {
+        metadata,
+      },
+    );
     logAvatarEvent(params.logger, "info", "agent-dispatch.create.succeeded", {
       roomName: params.session.roomName,
       agentName: params.session.agentName,
@@ -4583,9 +4571,7 @@ async function startAvatarAgentSidecar(params: {
 
   const credentials = resolveAvatarAgentCredentials(params.config);
   if (!credentials) {
-    params.log.info(
-      "Avatar agent sidecar disabled: missing LiveKit or LemonSlice credentials",
-    );
+    params.log.info("Avatar agent sidecar disabled: missing LiveKit or LemonSlice credentials");
     return null;
   }
   const configFingerprint = resolveAvatarConfigFingerprint(params.config);
@@ -4645,7 +4631,8 @@ async function startAvatarAgentSidecar(params: {
   const recentExits: number[] = [];
   let unsupportedLegacyCommand = false;
   let activeLaunchCommand = launchCommand;
-  const hasRunningChild = () => Boolean(child && child.exitCode === null && child.signalCode === null);
+  const hasRunningChild = () =>
+    Boolean(child && child.exitCode === null && child.signalCode === null);
   let readyPromise: Promise<void> = Promise.resolve();
   let resolveReady: (() => void) | null = null;
   let rejectReady: ((error: Error) => void) | null = null;
@@ -4884,7 +4871,9 @@ const avatarPlugin = definePluginEntry({
     const sessionRuntimeStatusByRoom = new Map<string, AvatarSessionRuntimeStatus>();
     const roomConfigByName = new Map<string, OpenClawConfig>();
     const sessionByRoom = new Map<string, AvatarSessionResult>();
-    const gatewayLogger = createAvatarGatewayLogger(api.logger, () => api.runtime.config.loadConfig());
+    const gatewayLogger = createAvatarGatewayLogger(api.logger, () =>
+      api.runtime.config.loadConfig(),
+    );
 
     const updateSessionRuntimeStatus = (
       roomName: string,
@@ -5103,8 +5092,7 @@ const avatarPlugin = definePluginEntry({
               roomName,
               sessionKey: normalizeOptionalString(fields.sessionKey),
               runId: normalizeOptionalString(fields.runId),
-              interrupted:
-                typeof fields.interrupted === "boolean" ? fields.interrupted : undefined,
+              interrupted: typeof fields.interrupted === "boolean" ? fields.interrupted : undefined,
               outputAudioSink:
                 normalizeOptionalString(fields.outputAudioSink) ??
                 sessionRuntimeStatusByRoom.get(roomName)?.avatarOutputAudioSink,
@@ -5452,7 +5440,10 @@ const avatarPlugin = definePluginEntry({
       const roomsToRedispatch = collectRoomsForRedispatch();
       await stopManagedSidecar({ reason: `restart:${params.reason ?? "unspecified"}` });
       const runtimeGateway =
-        params.gateway ?? lastGateway ?? resolveGatewayRuntimeFromConfig(params.config) ?? undefined;
+        params.gateway ??
+        lastGateway ??
+        resolveGatewayRuntimeFromConfig(params.config) ??
+        undefined;
       const readyAgentName = await ensureSidecarRunning(params.config, runtimeGateway);
       if (!readyAgentName) {
         logAvatarEvent(gatewayLogger, "warn", "sidecar.restart.redispatch.skipped", {
@@ -5519,13 +5510,18 @@ const avatarPlugin = definePluginEntry({
                 dispatchId: nextDispatch.id,
                 logger: gatewayLogger,
               }).catch((cleanupError) => {
-                logAvatarEvent(gatewayLogger, "warn", "sidecar.restart.redispatch.rollback.failed", {
-                  roomName: room.roomName,
-                  dispatchId: nextDispatch.id,
-                  priorDispatchId: oldDispatchId,
-                  error:
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-                });
+                logAvatarEvent(
+                  gatewayLogger,
+                  "warn",
+                  "sidecar.restart.redispatch.rollback.failed",
+                  {
+                    roomName: room.roomName,
+                    dispatchId: nextDispatch.id,
+                    priorDispatchId: oldDispatchId,
+                    error:
+                      cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+                  },
+                );
               });
             }
             throw error;
@@ -5644,7 +5640,10 @@ const avatarPlugin = definePluginEntry({
       logAvatarEvent(gatewayLogger, "info", "session.stop.begin", {
         roomName: params.roomName,
       });
-      if (!roomConfigByName.has(params.roomName) || !sessionObservationIdsByRoom.has(params.roomName)) {
+      if (
+        !roomConfigByName.has(params.roomName) ||
+        !sessionObservationIdsByRoom.has(params.roomName)
+      ) {
         const message = `Avatar session stop refused for unmanaged room ${params.roomName}`;
         logAvatarEvent(gatewayLogger, "warn", "session.stop.skipped", {
           roomName: params.roomName,
@@ -5745,15 +5744,19 @@ const avatarPlugin = definePluginEntry({
     };
 
     registerAvatarSetupCli(api);
-    registerAvatarHttpRoutes(api, {
-      createSession: createManagedSession,
-      stopSession: stopManagedSession,
-      loadSessionStatus: ({ roomName }) => sessionRuntimeStatusByRoom.get(roomName) ?? null,
-      restartSidecar: async ({ config, reason }) => restartManagedSidecar({ config, reason }),
-      stopSidecar: async (params) => stopManagedSidecar(params),
-      loadHistory: loadManagedChatHistory,
-      sendMessage: sendManagedChatMessage,
-    }, gatewayLogger);
+    registerAvatarHttpRoutes(
+      api,
+      {
+        createSession: createManagedSession,
+        stopSession: stopManagedSession,
+        loadSessionStatus: ({ roomName }) => sessionRuntimeStatusByRoom.get(roomName) ?? null,
+        restartSidecar: async ({ config, reason }) => restartManagedSidecar({ config, reason }),
+        stopSidecar: async (params) => stopManagedSidecar(params),
+        loadHistory: loadManagedChatHistory,
+        sendMessage: sendManagedChatMessage,
+      },
+      gatewayLogger,
+    );
 
     api.registerGatewayMethod(
       "avatar.config",
@@ -5813,8 +5816,7 @@ const avatarPlugin = definePluginEntry({
           await writeConfigFile(api, nextConfig);
           respond(true, { setup: buildAvatarConfigResponse(nextConfig, api.runtime) });
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "failed to save Avatar setup";
+          const message = error instanceof Error ? error.message : "failed to save Avatar setup";
           respondGatewayError(respond, getAvatarErrorCode(error, message), message);
         }
       },
@@ -5828,19 +5830,11 @@ const avatarPlugin = definePluginEntry({
             return;
           }
           if (params.sessionKey !== undefined && typeof params.sessionKey !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid avatar.session.create params",
-            );
+            respondGatewayError(respond, "INVALID_REQUEST", "invalid avatar.session.create params");
             return;
           }
           if (params.avatarImageUrl !== undefined && typeof params.avatarImageUrl !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid avatar.session.create params",
-            );
+            respondGatewayError(respond, "INVALID_REQUEST", "invalid avatar.session.create params");
             return;
           }
           if (
@@ -5848,30 +5842,18 @@ const avatarPlugin = definePluginEntry({
             (typeof params.avatarTimeoutSeconds !== "number" ||
               !Number.isFinite(params.avatarTimeoutSeconds))
           ) {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid avatar.session.create params",
-            );
+            respondGatewayError(respond, "INVALID_REQUEST", "invalid avatar.session.create params");
             return;
           }
           if (params.aspectRatio !== undefined && typeof params.aspectRatio !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid avatar.session.create params",
-            );
+            respondGatewayError(respond, "INVALID_REQUEST", "invalid avatar.session.create params");
             return;
           }
           if (
             params.interruptReplyOnNewMessage !== undefined &&
             typeof params.interruptReplyOnNewMessage !== "boolean"
           ) {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid avatar.session.create params",
-            );
+            respondGatewayError(respond, "INVALID_REQUEST", "invalid avatar.session.create params");
             return;
           }
           const cfg = api.runtime.config.loadConfig();
@@ -5920,11 +5902,7 @@ const avatarPlugin = definePluginEntry({
             return;
           }
           if (typeof params.roomName !== "string") {
-            respondGatewayError(
-              respond,
-              "INVALID_REQUEST",
-              "invalid avatar.session.stop params",
-            );
+            respondGatewayError(respond, "INVALID_REQUEST", "invalid avatar.session.stop params");
             return;
           }
           const result = await stopManagedSession({
@@ -5932,8 +5910,7 @@ const avatarPlugin = definePluginEntry({
           });
           respond(true, result);
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Avatar session stop failed";
+          const message = error instanceof Error ? error.message : "Avatar session stop failed";
           respondGatewayError(
             respond,
             message.includes("invalid ") || message.endsWith(" is required")
@@ -6054,8 +6031,7 @@ const avatarPlugin = definePluginEntry({
           });
           respond(true, result);
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Avatar transcription failed";
+          const message = error instanceof Error ? error.message : "Avatar transcription failed";
           const invalidMessages = new Set([
             "audio data is required",
             "invalid base64 audio payload",
@@ -6081,8 +6057,7 @@ const avatarPlugin = definePluginEntry({
           const result = await loadManagedChatHistory(parseChatHistoryParams(params));
           respond(true, result);
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Avatar chat history failed";
+          const message = error instanceof Error ? error.message : "Avatar chat history failed";
           respondGatewayError(
             respond,
             message === INVALID_CHAT_HISTORY_PARAMS_ERROR ? "INVALID_REQUEST" : "UNAVAILABLE",
@@ -6102,8 +6077,7 @@ const avatarPlugin = definePluginEntry({
           const result = await sendManagedChatMessage(parseChatSendParams(params));
           respond(true, result);
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Avatar chat send failed";
+          const message = error instanceof Error ? error.message : "Avatar chat send failed";
           respondGatewayError(
             respond,
             message === INVALID_CHAT_SEND_PARAMS_ERROR ? "INVALID_REQUEST" : "UNAVAILABLE",

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,7 +148,10 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
 }
 
 function stripHtml(html: string): string {
-  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function extractListItemText(html: string): string[] {
@@ -568,7 +571,10 @@ describe("avatar plugin", () => {
     const { services } = setup();
     const service = services[0] as
       | {
-          start?: (ctx: { config: typeof baseConfig; gateway: { port: number; auth: object } }) => Promise<void>;
+          start?: (ctx: {
+            config: typeof baseConfig;
+            gateway: { port: number; auth: object };
+          }) => Promise<void>;
           stop?: () => Promise<void>;
         }
       | undefined;
@@ -596,10 +602,7 @@ describe("avatar plugin", () => {
           expect.stringContaining("/avatar/avatar-agent-runner-wrapper.mjs"),
           SERVICE_GATEWAY_INSTANCE_ARG,
         ],
-        [
-          expect.stringContaining("/avatar/avatar-agent-bridge.mjs"),
-          SERVICE_GATEWAY_INSTANCE_ARG,
-        ],
+        [expect.stringContaining("/avatar/avatar-agent-bridge.mjs"), SERVICE_GATEWAY_INSTANCE_ARG],
       ],
       termTimeoutMs: 400,
       postKillDelayMs: 200,
@@ -617,7 +620,10 @@ describe("avatar plugin", () => {
     const { services } = setup();
     const service = services[0] as
       | {
-          start?: (ctx: { config: typeof baseConfig; gateway: { port: number; auth: object } }) => Promise<void>;
+          start?: (ctx: {
+            config: typeof baseConfig;
+            gateway: { port: number; auth: object };
+          }) => Promise<void>;
           stop?: () => Promise<void>;
         }
       | undefined;
@@ -644,10 +650,7 @@ describe("avatar plugin", () => {
           expect.stringContaining("/avatar/avatar-agent-runner-wrapper.mjs"),
           SERVICE_GATEWAY_INSTANCE_ARG,
         ],
-        [
-          expect.stringContaining("/avatar/avatar-agent-bridge.mjs"),
-          SERVICE_GATEWAY_INSTANCE_ARG,
-        ],
+        [expect.stringContaining("/avatar/avatar-agent-bridge.mjs"), SERVICE_GATEWAY_INSTANCE_ARG],
       ],
       termTimeoutMs: 400,
       postKillDelayMs: 200,
@@ -657,7 +660,9 @@ describe("avatar plugin", () => {
     expect(spawnArgs?.[1]).toEqual(expect.stringContaining("/avatar/avatar-agent-runner.js"));
     expect(spawnArgs?.at(-1)).toBe(SERVICE_GATEWAY_INSTANCE_ARG);
     if ((spawnArgs?.length ?? 0) > 3) {
-      expect(spawnArgs?.[2]).toEqual(expect.stringContaining("/openclaw/dist/avatar-agent-runner.js"));
+      expect(spawnArgs?.[2]).toEqual(
+        expect.stringContaining("/openclaw/dist/avatar-agent-runner.js"),
+      );
     }
     await service?.stop?.();
   });
@@ -666,7 +671,10 @@ describe("avatar plugin", () => {
     const { services } = setup();
     const service = services[0] as
       | {
-          start?: (ctx: { config: typeof baseConfig; gateway: { port: number; auth: object } }) => Promise<void>;
+          start?: (ctx: {
+            config: typeof baseConfig;
+            gateway: { port: number; auth: object };
+          }) => Promise<void>;
           stop?: () => Promise<void>;
         }
       | undefined;
@@ -719,7 +727,10 @@ describe("avatar plugin", () => {
     const { services } = setup();
     const service = services[0] as
       | {
-          start?: (ctx: { config: typeof baseConfig; gateway: { port: number; auth: object } }) => Promise<void>;
+          start?: (ctx: {
+            config: typeof baseConfig;
+            gateway: { port: number; auth: object };
+          }) => Promise<void>;
           stop?: () => Promise<void>;
         }
       | undefined;
@@ -727,9 +738,7 @@ describe("avatar plugin", () => {
 
     const firstChild = createSpawnedChild(4104);
     const secondChild = createSpawnedChild(4105);
-    mockSpawn
-      .mockImplementationOnce(() => firstChild)
-      .mockImplementationOnce(() => secondChild);
+    mockSpawn.mockImplementationOnce(() => firstChild).mockImplementationOnce(() => secondChild);
 
     await service?.start?.({
       config: baseConfig,
@@ -768,7 +777,10 @@ describe("avatar plugin", () => {
     const { services, methods, logger } = setup(config);
     const service = services[0] as
       | {
-          start?: (ctx: { config: typeof config; gateway: { port: number; auth: object } }) => Promise<void>;
+          start?: (ctx: {
+            config: typeof config;
+            gateway: { port: number; auth: object };
+          }) => Promise<void>;
           stop?: () => Promise<void>;
         }
       | undefined;
@@ -831,16 +843,17 @@ describe("avatar plugin", () => {
       infoMessages.some((message) => message.startsWith("[avatar] session.stop.completed")),
     ).toBe(true);
     expect(
-      infoMessages.every((message) =>
-        message.startsWith("[avatar] sidecar.ready") ||
-        message.startsWith("[avatar] session.progress.job.accepted") ||
-        message.startsWith("[avatar] session.progress.agent.connected") ||
-        message.startsWith("[avatar] session.progress.avatar.starting") ||
-        message.startsWith("[avatar] session.progress.avatar.connected") ||
-        message.startsWith("[avatar] speech.playback.begin") ||
-        message.startsWith("[avatar] speech.playback.finished") ||
-        message.startsWith("[avatar] session.create.succeeded") ||
-        message.startsWith("[avatar] session.stop.completed"),
+      infoMessages.every(
+        (message) =>
+          message.startsWith("[avatar] sidecar.ready") ||
+          message.startsWith("[avatar] session.progress.job.accepted") ||
+          message.startsWith("[avatar] session.progress.agent.connected") ||
+          message.startsWith("[avatar] session.progress.avatar.starting") ||
+          message.startsWith("[avatar] session.progress.avatar.connected") ||
+          message.startsWith("[avatar] speech.playback.begin") ||
+          message.startsWith("[avatar] speech.playback.finished") ||
+          message.startsWith("[avatar] session.create.succeeded") ||
+          message.startsWith("[avatar] session.stop.completed"),
       ),
     ).toBe(true);
     expect(
@@ -900,7 +913,10 @@ describe("avatar plugin", () => {
     const { services, methods, logger } = setup(config);
     const service = services[0] as
       | {
-          start?: (ctx: { config: typeof config; gateway: { port: number; auth: object } }) => Promise<void>;
+          start?: (ctx: {
+            config: typeof config;
+            gateway: { port: number; auth: object };
+          }) => Promise<void>;
           stop?: () => Promise<void>;
         }
       | undefined;
@@ -967,11 +983,13 @@ describe("avatar plugin", () => {
 
   it("treats runtime stt as a valid transcription capability in config status", async () => {
     const { methods, runtime } = setup(baseConfig, { disableVideoAvatarRuntime: true });
-    (runtime as typeof runtime & {
-      tts?: {
-        textToSpeechTelephony: ReturnType<typeof vi.fn>;
-      };
-    }).tts = {
+    (
+      runtime as typeof runtime & {
+        tts?: {
+          textToSpeechTelephony: ReturnType<typeof vi.fn>;
+        };
+      }
+    ).tts = {
       textToSpeechTelephony: vi.fn().mockResolvedValue({
         success: true,
         audioBuffer: Buffer.from("pcm-audio"),
@@ -1031,12 +1049,12 @@ describe("avatar plugin", () => {
     expect(call?.[0]).toBe(true);
     const payload = call?.[1] as
       | {
-        roomName?: string;
-        participantToken?: string;
-        agentName?: string;
-        aspectRatio?: string;
-        interruptReplyOnNewMessage?: boolean;
-      }
+          roomName?: string;
+          participantToken?: string;
+          agentName?: string;
+          aspectRatio?: string;
+          interruptReplyOnNewMessage?: boolean;
+        }
       | undefined;
     expect(payload?.roomName).toContain("openclaw-agent-main-main-");
     expect(payload?.participantToken?.split(".")).toHaveLength(3);
@@ -1111,10 +1129,10 @@ describe("avatar plugin", () => {
     const payload = call?.[1] as
       | {
           sessionKey?: string;
-        chatSessionKey?: string;
-        participantToken?: string;
-        aspectRatio?: string;
-      }
+          chatSessionKey?: string;
+          participantToken?: string;
+          aspectRatio?: string;
+        }
       | undefined;
     expect(payload?.sessionKey).toBe("main");
     expect(payload?.chatSessionKey).toBe("agent:main:main");
@@ -1493,9 +1511,7 @@ describe("avatar plugin", () => {
 
     const firstChild = createSpawnedChild(4106);
     const secondChild = createSpawnedChild(4107);
-    mockSpawn
-      .mockImplementationOnce(() => firstChild)
-      .mockImplementationOnce(() => secondChild);
+    mockSpawn.mockImplementationOnce(() => firstChild).mockImplementationOnce(() => secondChild);
 
     await createTestSession(methods);
     await flushMicrotasks();
@@ -1519,9 +1535,7 @@ describe("avatar plugin", () => {
 
     const firstChild = createSpawnedChild(4108);
     const secondChild = createSpawnedChild(4109);
-    mockSpawn
-      .mockImplementationOnce(() => firstChild)
-      .mockImplementationOnce(() => secondChild);
+    mockSpawn.mockImplementationOnce(() => firstChild).mockImplementationOnce(() => secondChild);
 
     await createTestSession(methods);
 
@@ -1544,11 +1558,13 @@ describe("avatar plugin", () => {
   it("re-dispatches active rooms to the replacement sidecar during restart", async () => {
     const { methods } = setup();
     let dispatchSequence = 0;
-    mockAgentDispatchCreateDispatch.mockImplementation(async (roomName: string, agentName: string) => ({
-      id: `dispatch-${++dispatchSequence}`,
-      room: roomName,
-      agentName,
-    }));
+    mockAgentDispatchCreateDispatch.mockImplementation(
+      async (roomName: string, agentName: string) => ({
+        id: `dispatch-${++dispatchSequence}`,
+        room: roomName,
+        agentName,
+      }),
+    );
 
     const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as
@@ -1574,11 +1590,13 @@ describe("avatar plugin", () => {
   it("rolls back the replacement dispatch if deleting the old dispatch fails during restart", async () => {
     const { methods } = setup();
     let dispatchSequence = 0;
-    mockAgentDispatchCreateDispatch.mockImplementation(async (roomName: string, agentName: string) => ({
-      id: `dispatch-${++dispatchSequence}`,
-      room: roomName,
-      agentName,
-    }));
+    mockAgentDispatchCreateDispatch.mockImplementation(
+      async (roomName: string, agentName: string) => ({
+        id: `dispatch-${++dispatchSequence}`,
+        room: roomName,
+        agentName,
+      }),
+    );
 
     const createRespond = await createTestSession(methods);
     const createPayload = createRespond.mock.calls[0]?.[1] as { roomName?: string } | undefined;
@@ -2382,7 +2400,6 @@ describe("avatar plugin", () => {
     expect(runtime.config.writeConfigFile).not.toHaveBeenCalled();
   });
 
-
   it("rejects session create when the avatar image URL is not direct", async () => {
     const { methods } = setup(baseConfig, { disableVideoAvatarRuntime: true });
     const respond = await invoke(methods, "avatar.session.create", {
@@ -2418,7 +2435,9 @@ describe("avatar plugin", () => {
     expect(call?.[0]).toBe(false);
     expect(call?.[2]?.code).toBe("INVALID_REQUEST");
     const message = call?.[2]?.message;
-    expect(message?.startsWith("invalid avatar.session.create params: aspectRatio must be one of")).toBe(true);
+    expect(
+      message?.startsWith("invalid avatar.session.create params: aspectRatio must be one of"),
+    ).toBe(true);
     for (const ratio of AVATAR_ASPECT_RATIOS) {
       expect(message).toContain(ratio);
     }
@@ -2544,7 +2563,7 @@ describe("avatar plugin", () => {
     expect(page.res.header("content-type")).toBe("text/html; charset=utf-8");
     expect(page.res.header("permissions-policy")).toBe("microphone=(self)");
     expect(page.res.body).toContain("<title>Avatar</title>");
-    expect(page.res.body).toContain('data-shared-topbar');
+    expect(page.res.body).toContain("data-shared-topbar");
     expect(page.res.body).toContain('id="package-version-value"');
     expect(page.res.body).toContain(`>${packageJson.version}</span>`);
     expect(page.res.body).not.toContain("__SHARED_SHELL_BOOTSTRAP__");
@@ -2561,7 +2580,7 @@ describe("avatar plugin", () => {
     expect(readmePage.res.body).toContain('id="package-version-value"');
     expect(readmePage.res.body).toContain('id="theme-toggle"');
     expect(readmePage.res.body).toContain('id="nav-collapse-toggle"');
-    expect(readmePage.res.body).toContain('/plugins/openclaw-avatar/app.js?v=');
+    expect(readmePage.res.body).toContain("/plugins/openclaw-avatar/app.js?v=");
     expect(readmePage.res.body).toContain("<ol>");
     expect(readmePage.res.body).toContain("<h4>About OpenClaw Config</h4>");
     expect(readmePage.res.body).toContain("<h2>Usage tips</h2>");
@@ -2584,13 +2603,9 @@ describe("avatar plugin", () => {
     expect(aspectRatioModule.res.body).toContain("AVATAR_ASPECT_RATIOS");
     expect(aspectRatioModule.res.body).toContain("AVATAR_ASPECT_RATIO_DEFAULT");
 
-    const gatewayAuthModule = await invokeHttpRoute(
-      httpRoutes,
-      "/plugins/avatar/gateway-auth.js",
-      {
-        url: "/plugins/avatar/gateway-auth.js",
-      },
-    );
+    const gatewayAuthModule = await invokeHttpRoute(httpRoutes, "/plugins/avatar/gateway-auth.js", {
+      url: "/plugins/avatar/gateway-auth.js",
+    });
     expect(gatewayAuthModule.handled).toBe(true);
     expect(gatewayAuthModule.res.statusCode).toBe(200);
     expect(gatewayAuthModule.res.header("content-type")).toBe(
@@ -2627,7 +2642,10 @@ describe("avatar plugin", () => {
     const fakeHostPackageJson = path.join(tempRoot, "plugins", "package.json");
 
     await mkdir(fakePluginRoot, { recursive: true });
-    await writeFile(fakeHostReadme, "# OpenClaw Host README\n\nThis should not appear in the plugin UI.\n");
+    await writeFile(
+      fakeHostReadme,
+      "# OpenClaw Host README\n\nThis should not appear in the plugin UI.\n",
+    );
     await writeFile(
       fakeHostPackageJson,
       JSON.stringify({ name: "openclaw-host", version: "2026.3.14" }, null, 2),
@@ -2853,12 +2871,17 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
 
   it("treats OpenClaw prerelease versions with semver ordering", async () => {
     const prereleaseSetup = setup();
-    (prereleaseSetup.runtime as typeof prereleaseSetup.runtime & { openclawVersion: string }).openclawVersion =
-      "2026.3.23-0";
+    (
+      prereleaseSetup.runtime as typeof prereleaseSetup.runtime & { openclawVersion: string }
+    ).openclawVersion = "2026.3.23-0";
 
-    const prereleaseBootstrap = await invokeHttpRoute(prereleaseSetup.httpRoutes, "/plugins/avatar/bootstrap", {
-      url: "/plugins/avatar/bootstrap",
-    });
+    const prereleaseBootstrap = await invokeHttpRoute(
+      prereleaseSetup.httpRoutes,
+      "/plugins/avatar/bootstrap",
+      {
+        url: "/plugins/avatar/bootstrap",
+      },
+    );
     expect(prereleaseBootstrap.handled).toBe(true);
     expect(prereleaseBootstrap.res.statusCode).toBe(200);
     expect(JSON.parse(prereleaseBootstrap.res.body)).toMatchObject({
@@ -2880,7 +2903,7 @@ openclaw plugins install @lemonsliceai/openclaw-avatar@latest
       matchingPrereleaseSetup.httpRoutes,
       "/plugins/avatar/bootstrap",
       {
-      url: "/plugins/avatar/bootstrap",
+        url: "/plugins/avatar/bootstrap",
       },
     );
     expect(matchingPrereleaseBootstrap.handled).toBe(true);

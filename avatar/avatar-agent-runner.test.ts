@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import avatarAgent, {
-  GatewayWsClient,
   buildLemonSliceAspectRatioPayload,
   computeStreamingTextDelta,
+  GatewayWsClient,
 } from "./avatar-agent-runner.js";
 import {
   AVATAR_ASPECT_RATIO_DEFAULT,
@@ -211,9 +211,7 @@ describe("computeStreamingTextDelta", () => {
 
 describe("avatar aspect ratio constants", () => {
   it("keeps the runner validation whitelist aligned with the shared constants", () => {
-    expect(Array.from(AVATAR_ASPECT_RATIO_LOOKUP)).toEqual([
-      ...AVATAR_ASPECT_RATIOS,
-    ]);
+    expect(Array.from(AVATAR_ASPECT_RATIO_LOOKUP)).toEqual([...AVATAR_ASPECT_RATIOS]);
     expect(AVATAR_ASPECT_RATIO_DEFAULT).toBe("3x2");
   });
 
@@ -305,7 +303,10 @@ describe("avatarAgent test mode", () => {
     const events = (await readFile(signalFile, "utf8"))
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as { type?: string; roomName?: string; participantIdentity?: string });
+      .map(
+        (line) =>
+          JSON.parse(line) as { type?: string; roomName?: string; participantIdentity?: string },
+      );
 
     expect(events).toEqual(
       expect.arrayContaining([
