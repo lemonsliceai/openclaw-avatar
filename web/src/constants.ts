@@ -62,7 +62,6 @@ export const AVATAR_PANE_MAX_WIDTH = 1200;
 // ---------------------------------------------------------------------------
 
 export const AVATAR_DEBUG_LOGGING = false;
-export const AVATAR_DEBUG_LOGGING_QUERY_PARAM = "avatarDebug";
 
 // ---------------------------------------------------------------------------
 // Avatar PiP
@@ -104,12 +103,6 @@ export const AVATAR_AUTO_HELLO_MESSAGE = "hello";
 // ---------------------------------------------------------------------------
 
 export const VOICE_CHAT_RUN_ID_PREFIX = "avatar-agent-";
-export const VOICE_TRANSCRIPT_EVENT_TOPIC = "avatar.user-transcript";
-export const VOICE_TRANSCRIPT_EVENT_TYPE = "avatar.user-transcript";
-export const AVATAR_CONTROL_EVENT_TOPIC = "avatar.avatar-control";
-export const AVATAR_CONTROL_ACK_EVENT_TOPIC = "avatar.avatar-control-ack";
-export const VOICE_TRANSCRIPT_DUPLICATE_WINDOW_MS = 5_000;
-export const VOICE_TRANSCRIPT_DUPLICATE_MIN_LENGTH = 12;
 
 // ---------------------------------------------------------------------------
 // Avatar echo suppression
@@ -128,7 +121,6 @@ export const AVATAR_ECHO_MAX_RECENT_REPLIES = 4;
 // ---------------------------------------------------------------------------
 
 export const MINIMUM_COMPATIBLE_OPENCLAW_VERSION = "2026.3.22";
-export const INCOMPATIBLE_OPENCLAW_VERSION_MESSAGE = "incompatible openclaw version";
 
 // ---------------------------------------------------------------------------
 // Server-side speech / VAD

@@ -29,7 +29,6 @@
     "lemonslice"
   ],
   "files": [
-    "assets",
     "dist",
     "LICENSE",
     "openclaw.plugin.json",
